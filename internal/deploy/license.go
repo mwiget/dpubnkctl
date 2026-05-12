@@ -85,10 +85,17 @@ func decodeJWTSegment(s string) (map[string]any, error) {
 	return out, nil
 }
 
-// ExtractFARDockerConfig opens the FAR tgz and returns the bytes of the
-// dockerconfigjson it contains. The tgz packed by F5 typically holds
-// exactly one file named ".dockerconfigjson" (sometimes inside a
-// directory) — we return the first match.
+// ExtractFARDockerConfig opens the FAR tgz and returns the
+// dockerconfigjson bytes ready to drop into a Secret's data field.
+//
+// Two on-disk formats are supported:
+//
+//  1. A literal `.dockerconfigjson` (older F5 packs).
+//  2. A base64-encoded GCP service-account JSON (current F5 format —
+//     filename is typically `cne_pull_64.json`). We decode it,
+//     wrap it in the GAR `_json_key:<sa-json>` auth scheme, and build
+//     the dockerconfigjson around `repo.f5.com`. Mirrors the recipe in
+//     bnk-forge backend/routes/project_secrets.py.
 func ExtractFARDockerConfig(tgzPath string) ([]byte, error) {
 	f, err := os.Open(tgzPath)
 	if err != nil {
@@ -114,15 +121,62 @@ func ExtractFARDockerConfig(tgzPath string) ([]byte, error) {
 		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
+		body, err := io.ReadAll(t)
+		if err != nil {
+			return nil, err
+		}
 		base := hdr.Name
 		if i := strings.LastIndexByte(base, '/'); i >= 0 {
 			base = base[i+1:]
 		}
-		if base == ".dockerconfigjson" || base == "dockerconfigjson" || base == "config.json" {
-			return io.ReadAll(t)
+
+		// Format 1: already a dockerconfigjson.
+		if hasAuthsKey(body) {
+			return body, nil
 		}
+
+		// Format 2: base64-encoded GCP SA JSON. Try base64-decode, then
+		// require the decoded blob to be a service_account JSON.
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(body)))
+		if err == nil && isServiceAccountJSON(decoded) {
+			return buildGARDockerConfig(decoded), nil
+		}
+		// Or the file may already be raw service-account JSON (no base64 wrapper).
+		if isServiceAccountJSON(body) {
+			return buildGARDockerConfig(body), nil
+		}
+
+		return nil, fmt.Errorf("far tgz %s entry %s is neither a dockerconfigjson nor a (base64-encoded) GCP service_account JSON", tgzPath, base)
 	}
-	return nil, fmt.Errorf("far tgz %s: no .dockerconfigjson found", tgzPath)
+	return nil, fmt.Errorf("far tgz %s: no regular files inside", tgzPath)
+}
+
+func hasAuthsKey(b []byte) bool {
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return false
+	}
+	_, ok := m["auths"]
+	return ok
+}
+
+func isServiceAccountJSON(b []byte) bool {
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return false
+	}
+	t, _ := m["type"].(string)
+	return t == "service_account"
+}
+
+// buildGARDockerConfig wraps a GCP service-account JSON as a
+// dockerconfigjson for repo.f5.com (GAR-backed). Auth scheme is
+// "_json_key:<raw-sa-json>" base64-encoded — Google Artifact Registry's
+// documented "JSON key" auth mode.
+func buildGARDockerConfig(saJSON []byte) []byte {
+	auth := base64.StdEncoding.EncodeToString(append([]byte("_json_key:"), saJSON...))
+	cfg := fmt.Sprintf(`{"auths":{"repo.f5.com":{"auth":%q}}}`, auth)
+	return []byte(cfg)
 }
 
 // RenderFARSecret produces a Secret manifest of type

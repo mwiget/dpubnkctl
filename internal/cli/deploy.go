@@ -143,12 +143,10 @@ func runDeployPrereqs(ctx context.Context, out io.Writer, f *deployPrereqsFlags)
 
 	// 5. cert-manager.
 	fmt.Fprintln(out, "[5/5] Installing cert-manager ...")
-	if err := r.HelmRepoAdd(ctx, "jetstack", version.CertManagerRepo); err != nil {
-		return err
-	}
 	if err := r.HelmUpgrade(ctx,
 		"cert-manager",
-		"jetstack/cert-manager",
+		"cert-manager", // chart name (resolved via --repo)
+		version.CertManagerRepo,
 		"cert-manager",
 		version.CertManagerVersion,
 		"installCRDs: true\n",

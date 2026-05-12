@@ -96,37 +96,21 @@ func (r *Runner) Wait(ctx context.Context, namespace, condition, selector string
 	return nil
 }
 
-// HelmRepoAdd is a no-op for OCI charts; for HTTP repos it adds + updates.
-func (r *Runner) HelmRepoAdd(ctx context.Context, name, url string) error {
-	if strings.HasPrefix(url, "oci://") {
-		return nil
+// HelmUpgrade installs or upgrades a release. Pass repoURL non-empty for
+// HTTP charts (uses --repo so we don't need persistent helm repo state
+// across docker-run invocations); leave empty for OCI charts (chart name
+// is the full oci:// URL).
+//
+// valuesYAML is optional. extraArgs are appended verbatim to helm.
+func (r *Runner) HelmUpgrade(ctx context.Context, release, chart, repoURL, namespace, chartVersion, valuesYAML string, extraArgs ...string) error {
+	dockerArgs := []string{
+		"run", "--rm",
+		"-v", r.KubeconfigPath + ":/kubeconfig:ro",
+		"--network=host",
+		"-e", "KUBECONFIG=/kubeconfig",
 	}
-	args := r.helmArgs("repo", "add", name, url)
-	cmd := exec.CommandContext(ctx, "docker", args...)
-	var out bytes.Buffer
-	cmd.Stdout = io.MultiWriter(r.Out, &out)
-	cmd.Stderr = cmd.Stdout
-	if err := cmd.Run(); err != nil {
-		// Already-exists is not fatal.
-		if !strings.Contains(out.String(), "already exists") {
-			return fmt.Errorf("helm repo add %s: %w\n%s", name, err, out.String())
-		}
-	}
-	cmd2 := exec.CommandContext(ctx, "docker", r.helmArgs("repo", "update")...)
-	cmd2.Stdout, cmd2.Stderr = io.Discard, io.Discard
-	return cmd2.Run()
-}
 
-// HelmUpgrade installs or upgrades a release. valuesYAML may be empty.
-func (r *Runner) HelmUpgrade(ctx context.Context, release, chart, namespace, chartVersion, valuesYAML string, extraArgs ...string) error {
-	args := r.helmArgs("upgrade", "--install", release, chart,
-		"--namespace", namespace, "--create-namespace",
-		"--wait", "--timeout=10m")
-	if chartVersion != "" {
-		args = append(args, "--version", chartVersion)
-	}
 	if valuesYAML != "" {
-		// Stage values file at /values.yaml inside the helm container.
 		tmp, err := os.CreateTemp("", "dpubnkctl-helm-values-*.yaml")
 		if err != nil {
 			return err
@@ -137,26 +121,25 @@ func (r *Runner) HelmUpgrade(ctx context.Context, release, chart, namespace, cha
 			return err
 		}
 		tmp.Close()
-		// Replace the helm-args mount list to also include the values file.
-		args = append(args[:0],
-			"run", "--rm",
-			"-v", r.KubeconfigPath+":/kubeconfig:ro",
-			"-v", tmp.Name()+":/values.yaml:ro",
-			"--network=host",
-			"-e", "KUBECONFIG=/kubeconfig",
-			version.K8sToolsImage,
-			"helm",
-			"upgrade", "--install", release, chart,
-			"--namespace", namespace, "--create-namespace",
-			"--wait", "--timeout=10m",
-			"-f", "/values.yaml",
-		)
-		if chartVersion != "" {
-			args = append(args, "--version", chartVersion)
-		}
+		dockerArgs = append(dockerArgs, "-v", tmp.Name()+":/values.yaml:ro")
 	}
-	args = append(args, extraArgs...)
-	cmd := exec.CommandContext(ctx, "docker", args...)
+
+	dockerArgs = append(dockerArgs, version.K8sToolsImage, "helm",
+		"upgrade", "--install", release, chart,
+		"--namespace", namespace, "--create-namespace",
+		"--wait", "--timeout=10m")
+	if repoURL != "" {
+		dockerArgs = append(dockerArgs, "--repo", repoURL)
+	}
+	if chartVersion != "" {
+		dockerArgs = append(dockerArgs, "--version", chartVersion)
+	}
+	if valuesYAML != "" {
+		dockerArgs = append(dockerArgs, "-f", "/values.yaml")
+	}
+	dockerArgs = append(dockerArgs, extraArgs...)
+
+	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
 	var out bytes.Buffer
 	cmd.Stdout = io.MultiWriter(r.Out, &out)
 	cmd.Stderr = cmd.Stdout
