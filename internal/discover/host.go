@@ -24,13 +24,10 @@ func DiscoverHost(ctx context.Context, opts HostOptions) (*Result, error) {
 	r.Host = host
 	r.Warnings = append(r.Warnings, hostWarn...)
 
-	if host.Tools.Ipmitool != "" {
-		bmc, bmcWarn := probeBMC(ctx, opts.Runner)
-		r.BMC = bmc
-		r.Warnings = append(r.Warnings, bmcWarn...)
-	} else {
-		r.Warnings = append(r.Warnings, "ipmitool not installed: BMC not auto-discovered")
-	}
+	// DPU BMC discovery happens later: it requires running ipmitool from
+	// inside the DPU OS, which doesn't exist until Phase 2 (provision).
+	// Operators can still record a known BMC IP via `discover host
+	// --bmc-address` on a per-host basis.
 
 	dpus, dpuWarn := probeDPUs(ctx, opts.Runner, host.Tools)
 	r.DPUs = dpus

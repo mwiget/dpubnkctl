@@ -127,6 +127,24 @@ func TestParseMlxconfig_PendingReboot(t *testing.T) {
 	}
 }
 
+func TestParseMlxconfig_AsteriskMarkedRow(t *testing.T) {
+	// mlxconfig prefixes non-default rows with `*` — must not break the regex.
+	in := `Configurations:                                    Default                Current                Next Boot
+*       NUM_OF_VFS                                  16                     46                     46
+        PF_TOTAL_SF                                 0                      0                      0
+`
+	got := parseMlxconfig(in)
+	if got == nil {
+		t.Fatal("nil")
+	}
+	if got.NumOfVFs != 46 {
+		t.Errorf("NumOfVFs = %d, want 46 (asterisk-marked row)", got.NumOfVFs)
+	}
+	if got.PFTotalSF != 0 {
+		t.Errorf("PFTotalSF = %d, want 0", got.PFTotalSF)
+	}
+}
+
 func TestParseRshimMisc(t *testing.T) {
 	in := `DEV_NAME        rshim0
 DEV_INFO        BlueField-3(Rev 1)

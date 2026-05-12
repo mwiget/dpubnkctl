@@ -69,10 +69,12 @@ func probeTools(ctx context.Context, c Runner) Tools {
 	return t
 }
 
-// probeRshim checks for kernel module + /dev/rshim* devices.
+// probeRshim detects rshim by either kernel module presence or /dev/rshim*
+// device nodes. Some setups ship rshim as a built-in module (no lsmod
+// row) but still expose /dev/rshim0 — treat that as "loaded".
 func probeRshim(ctx context.Context, c Runner) RshimState {
 	st := RshimState{}
-	if r := c.Run(ctx, "lsmod 2>/dev/null | grep -q '^rshim ' && echo yes || echo no"); r.OK() {
+	if r := c.Run(ctx, "lsmod 2>/dev/null | grep -Eq '^(mlx_)?rshim' && echo yes || echo no"); r.OK() {
 		st.Loaded = strings.TrimSpace(r.Stdout) == "yes"
 	}
 	if r := c.Run(ctx, "ls -d /dev/rshim* 2>/dev/null || true"); r.OK() {
@@ -80,25 +82,11 @@ func probeRshim(ctx context.Context, c Runner) RshimState {
 			st.Devices = append(st.Devices, line)
 		}
 	}
-	return st
-}
-
-// probeBMC tries `ipmitool lan print 1` then `ipmitool lan print` if the
-// first returns nothing useful.
-func probeBMC(ctx context.Context, c Runner) (*BMCInfo, []string) {
-	for _, cmd := range []string{
-		"ipmitool lan print 1 2>/dev/null",
-		"ipmitool lan print 2>/dev/null",
-	} {
-		r := c.Run(ctx, cmd)
-		if !r.OK() {
-			continue
-		}
-		if bmc := parseIpmitoolLan(r.Stdout); bmc != nil {
-			return bmc, nil
-		}
+	// /dev/rshim* without an lsmod row still counts as loaded.
+	if !st.Loaded && len(st.Devices) > 0 {
+		st.Loaded = true
 	}
-	return nil, []string{"BMC not auto-discovered (ipmitool absent or returned no IP)"}
+	return st
 }
 
 // probeDPUs lists all Mellanox/NVIDIA functions, then for each unique card
@@ -119,28 +107,59 @@ func probeDPUs(ctx context.Context, c Runner, tools Tools) ([]DPUDetail, []strin
 	}
 
 	for i := range dpus {
-		// rshim/misc is only meaningful for DPUs the host can see via rshim.
-		// We try the first /dev/rshim* — multi-DPU mapping comes later.
-		if dpus[i].PCI != "" {
-			if tools.Mlxconfig != "" {
-				cmd := fmt.Sprintf("mlxconfig -d %s -e q 2>/dev/null || true", dpus[i].PCI)
-				if rr := c.Run(ctx, cmd); rr.OK() && strings.TrimSpace(rr.Stdout) != "" {
-					dpus[i].Mlxconfig = parseMlxconfig(rr.Stdout)
-				}
-			}
+		if tools.Mlxconfig == "" || dpus[i].PCI == "" {
+			continue
 		}
+		// mlxconfig needs root on every machine I've seen. Try direct first
+		// (cheap if user is root); if it fails, fall back to passwordless
+		// sudo. If both fail, warn — the operator may need NOPASSWD sudo.
+		got := tryMlxconfig(ctx, c, dpus[i].PCI, "")
+		if got == nil {
+			got = tryMlxconfig(ctx, c, dpus[i].PCI, "sudo -n ")
+		}
+		if got == nil {
+			warnings = append(warnings,
+				fmt.Sprintf("mlxconfig present but could not read DPU %s (root or NOPASSWD sudo required)", dpus[i].PCI))
+			continue
+		}
+		dpus[i].Mlxconfig = got
 	}
 
 	// rshim misc — if a single device, capture its misc once and assign to
 	// the first DPU; mapping rshim<->PCI requires extra plumbing we'll do
-	// in Phase 2 (where it actually matters for flashing).
-	if r := c.Run(ctx, "cat /dev/rshim0/misc 2>/dev/null || true"); r.OK() {
-		if misc := parseRshimMisc(r.Stdout); misc != nil && len(dpus) > 0 {
-			dpus[0].RshimMisc = misc
-		}
+	// in Phase 2 (where it actually matters for flashing). Try plain then
+	// sudo -n; /dev/rshim0/misc is root-only on most systems.
+	if misc := tryRshimMisc(ctx, c); misc != nil && len(dpus) > 0 {
+		dpus[0].RshimMisc = misc
 	}
 
 	return dpus, warnings
+}
+
+func tryMlxconfig(ctx context.Context, c Runner, pci, prefix string) *DPUMlxconfig {
+	cmd := fmt.Sprintf("%smlxconfig -d %s -e q 2>/dev/null || true", prefix, pci)
+	r := c.Run(ctx, cmd)
+	if !r.OK() || strings.TrimSpace(r.Stdout) == "" {
+		return nil
+	}
+	if !strings.Contains(r.Stdout, "Configurations:") {
+		return nil
+	}
+	return parseMlxconfig(r.Stdout)
+}
+
+func tryRshimMisc(ctx context.Context, c Runner) map[string]string {
+	for _, prefix := range []string{"", "sudo -n "} {
+		cmd := prefix + "cat /dev/rshim0/misc 2>/dev/null || true"
+		r := c.Run(ctx, cmd)
+		if !r.OK() || strings.TrimSpace(r.Stdout) == "" {
+			continue
+		}
+		if misc := parseRshimMisc(r.Stdout); misc != nil {
+			return misc
+		}
+	}
+	return nil
 }
 
 // mergeFunctionsByCard collapses lspci output to one entry per physical card.

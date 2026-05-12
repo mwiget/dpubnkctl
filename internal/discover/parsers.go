@@ -123,9 +123,11 @@ func parseIpmitoolLan(s string) *BMCInfo {
 // columns (Default, Current, Next Boot).
 //
 //	        INTERNAL_CPU_MODEL                          EMBEDDED_CPU(1)        EMBEDDED_CPU(1)        EMBEDDED_CPU(1)
+//	*       NUM_OF_VFS                                  16                     46                     46
 //
-// Tabs and runs of spaces both occur in the wild.
-var mlxconfigRow = regexp.MustCompile(`^\s+([A-Z][A-Z0-9_]+(?:\[\d+\])?)\s+(\S+)\s+(\S+)\s+(\S+)\s*$`)
+// mlxconfig prefixes rows where Current != Default with `*`. Allow an
+// optional leading marker. Tabs and runs of spaces both occur in the wild.
+var mlxconfigRow = regexp.MustCompile(`^\s*\*?\s+([A-Z][A-Z0-9_]+(?:\[\d+\])?)\s+(\S+)\s+(\S+)\s+(\S+)\s*$`)
 
 // stripParen extracts "EMBEDDED_CPU" from "EMBEDDED_CPU(1)" or returns
 // the input unchanged.

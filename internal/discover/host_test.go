@@ -123,32 +123,3 @@ func TestProbeDPUs_WithoutMlxconfig(t *testing.T) {
 	}
 }
 
-func TestProbeBMC_Found(t *testing.T) {
-	f := &fakeRunner{canned: map[string]ssh.Result{
-		"ipmitool lan print 1": ok("IP Address              : 192.168.1.110\nMAC Address             : 00:25:90:aa:bb:cc\n"),
-	}}
-	bmc, warnings := probeBMC(context.Background(), f)
-	if bmc == nil {
-		t.Fatal("bmc nil")
-	}
-	if bmc.IP != "192.168.1.110" {
-		t.Errorf("IP=%q", bmc.IP)
-	}
-	if len(warnings) != 0 {
-		t.Errorf("warnings=%v", warnings)
-	}
-}
-
-func TestProbeBMC_NotFound(t *testing.T) {
-	f := &fakeRunner{canned: map[string]ssh.Result{
-		"ipmitool lan print 1": {ExitCode: 1},
-		"ipmitool lan print":   {ExitCode: 1},
-	}}
-	bmc, warnings := probeBMC(context.Background(), f)
-	if bmc != nil {
-		t.Errorf("expected nil bmc, got %+v", bmc)
-	}
-	if len(warnings) == 0 {
-		t.Errorf("expected warning about missing BMC")
-	}
-}

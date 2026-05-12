@@ -23,12 +23,7 @@ func newDiscoverCmd() *cobra.Command {
 		Short: "Probe hosts and DPUs over SSH, build inventory",
 	}
 	cmd.AddCommand(newDiscoverHostCmd())
-	cmd.AddCommand(&cobra.Command{
-		Use:   "range <cidr>",
-		Short: "Scan an IP range for hosts, DPU BMCs, and DPU-OS endpoints",
-		Args:  cobra.ExactArgs(1),
-		RunE:  notYet("discover range", "a later phase"),
-	})
+	cmd.AddCommand(newDiscoverRangeCmd())
 	return cmd
 }
 
