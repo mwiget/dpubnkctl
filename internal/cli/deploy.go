@@ -22,6 +22,7 @@ func newDeployCmd() *cobra.Command {
 		Short: "Install the BNK platform (cert-manager, FLO, CNEInstance, VLANs, GatewayClass)",
 	}
 	cmd.AddCommand(newDeployPrereqsCmd())
+	cmd.AddCommand(newDeployNetworkCmd())
 	cmd.AddCommand(newDeployFLOCmd())
 	cmd.AddCommand(newDeployCNECmd())
 	return cmd

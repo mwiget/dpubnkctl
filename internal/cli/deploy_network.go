@@ -1,0 +1,171 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/mwiget/dpubnkctl/internal/deploy"
+	"github.com/mwiget/dpubnkctl/internal/embedded"
+	"github.com/mwiget/dpubnkctl/internal/poc"
+)
+
+type deployNetworkFlags struct {
+	pocDir        string
+	yolo          bool
+	confirmDeploy string
+	skipPull      bool
+	waitTimeout   time.Duration
+}
+
+func newDeployNetworkCmd() *cobra.Command {
+	f := &deployNetworkFlags{}
+	cmd := &cobra.Command{
+		Use:   "network",
+		Short: "Install Multus CNI + SR-IOV plugin + NetworkAttachmentDefinitions for BNK (DESTRUCTIVE)",
+		Long: `Phase 4c — install the data-plane network plumbing FLO needs:
+
+  multus.yaml                  Multus CNI v4.0.1 (provides the
+                               NetworkAttachmentDefinition CRD)
+  cni-plugins.yaml             standard CNI plugins (host-device etc.)
+  sriovdp-config.yaml          SR-IOV device plugin config:
+                               nvidia.com/bf3_p0_sf1, nvidia.com/bf3_p1_sf1
+  sriov-cni-daemonset.yaml     SR-IOV CNI daemonset
+  sriovdp-daemonset.yaml       SR-IOV device plugin daemonset
+                               (registers SF resources to kubelet)
+  nad-sf.yaml                  sf-external + sf-internal NADs
+                               (type: sf, references nvidia.com/bf3_p*_sf1)
+
+All six manifests are embedded verbatim from
+f5-bnk-nvidia-bf3-installations v2.2.0-static/resources/. After this,
+FLO controller should stop crashlooping on the missing NAD CRD and
+reconcile the CNEInstance applied by 'deploy cne'.
+
+Required gates:
+  --yolo                    acknowledge cluster writes
+  --confirm-deploy NAME     must equal poc.yaml.metadata.name`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDeployNetwork(cmd.Context(), cmd.OutOrStdout(), f)
+		},
+	}
+	cmd.Flags().StringVar(&f.pocDir, "poc", "", "PoC repo path (default: current directory)")
+	cmd.Flags().BoolVar(&f.yolo, "yolo", false, "Acknowledge cluster writes")
+	cmd.Flags().StringVar(&f.confirmDeploy, "confirm-deploy", "", "Must equal poc.yaml.metadata.name (typo guard)")
+	cmd.Flags().BoolVar(&f.skipPull, "skip-pull", false, "Skip docker pull of alpine/k8s image")
+	cmd.Flags().DurationVar(&f.waitTimeout, "wait-timeout", 5*time.Minute, "Per-rollout wait")
+	return cmd
+}
+
+// applyOrder is the f5-bnk-tested sequence — multus first (provides
+// NAD CRD), then plugins, then SR-IOV, then NADs last.
+var applyOrder = []string{
+	"multus.yaml",
+	"cni-plugins.yaml",
+	"sriovdp-config.yaml",
+	"sriov-cni-daemonset.yaml",
+	"sriovdp-daemonset.yaml",
+	"nad-sf.yaml",
+}
+
+func runDeployNetwork(ctx context.Context, out io.Writer, f *deployNetworkFlags) error {
+	repo, err := resolvePoCDir(f.pocDir)
+	if err != nil {
+		return err
+	}
+	p, err := poc.Load(repo)
+	if err != nil {
+		return fmt.Errorf("not a PoC repo (%s): %w", repo, err)
+	}
+	if !f.yolo {
+		return errors.New("refusing destructive deploy without --yolo")
+	}
+	if f.confirmDeploy != p.Metadata.Name {
+		return fmt.Errorf("--confirm-deploy must equal poc.yaml.metadata.name (%q), got %q", p.Metadata.Name, f.confirmDeploy)
+	}
+	kubeconfig := filepath.Join(repo, "artifacts", "kubeconfig")
+	if _, err := os.Stat(kubeconfig); err != nil {
+		return fmt.Errorf("kubeconfig %s missing — run `dpubnkctl cluster up` first", kubeconfig)
+	}
+
+	r := &deploy.Runner{KubeconfigPath: kubeconfig, Out: prefixWriter{w: out, prefix: "      | "}}
+
+	fmt.Fprintf(out, "PoC:        %s\n", p.Metadata.Name)
+	fmt.Fprintf(out, "Cluster:    %s\n\n", kubeconfig)
+
+	if !f.skipPull {
+		fmt.Fprintln(out, "[1/3] Tools preflight ...")
+		if err := r.CheckTools(ctx); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintln(out, "      ok")
+
+	// Save manifests to artifacts/network-rendered/ for SE review.
+	stagedDir := filepath.Join(repo, "artifacts", "network-rendered")
+	if err := os.MkdirAll(stagedDir, 0o755); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(out, "[2/3] Applying %d manifests in order ...\n", len(applyOrder))
+	for _, name := range applyOrder {
+		raw, err := embedded.Templates.ReadFile("templates/network/" + name)
+		if err != nil {
+			return fmt.Errorf("read embedded %s: %w", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(stagedDir, name), raw, 0o644); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "      → %s\n", name)
+		if err := r.Apply(ctx, string(raw)); err != nil {
+			return fmt.Errorf("apply %s: %w", name, err)
+		}
+		// After multus.yaml lands, the NAD CRD is created — wait for it
+		// to become Established before we apply any NADs (otherwise
+		// kubectl's API discovery cache hasn't refreshed and reports
+		// "no matches for kind NetworkAttachmentDefinition").
+		if name == "multus.yaml" {
+			if err := r.Wait(ctx, "", "Established",
+				"crd/network-attachment-definitions.k8s.cni.cncf.io", 2*time.Minute); err != nil {
+				fmt.Fprintf(out, "      WARN: NAD CRD not Established: %v\n", err)
+			}
+		}
+	}
+	fmt.Fprintln(out, "      all applied.")
+
+	// 3. Wait for the daemonsets to roll out.
+	fmt.Fprintln(out, "[3/3] Waiting for Multus + SR-IOV daemonsets to be Ready ...")
+	rollouts := []struct {
+		ns       string
+		dsName   string
+		friendly string
+	}{
+		{"kube-system", "kube-multus-ds", "Multus"},
+		{"kube-system", "kube-sriov-cni-ds-amd64", "SR-IOV CNI"},
+		{"kube-system", "kube-sriov-device-plugin-amd64", "SR-IOV device plugin"},
+	}
+	for _, ro := range rollouts {
+		fmt.Fprintf(out, "      waiting on daemonset/%s ...\n", ro.dsName)
+		// Poll for "all desired pods scheduled". `kubectl rollout status ds`
+		// is the right idiom but our Wait wraps `kubectl wait` — use
+		// status by --for=condition=Available isn't supported on DaemonSet,
+		// so fall back to pod readiness via label selector.
+		if err := r.Wait(ctx, ro.ns, "Ready",
+			"pod", f.waitTimeout,
+			"-l", "name="+ro.dsName); err != nil {
+			fmt.Fprintf(out, "      WARN: %s pods not Ready within %s — `kubectl -n %s get ds %s` (%v)\n",
+				ro.friendly, f.waitTimeout, ro.ns, ro.dsName, err)
+		} else {
+			fmt.Fprintf(out, "      %s pods Ready.\n", ro.friendly)
+		}
+	}
+
+	appendDeployJournal(repo, p.Metadata.Name, "", "NETWORK INSTALLED", "")
+	fmt.Fprintln(out, "\nDONE.  FLO should now reconcile the CNEInstance — re-check `kubectl -n f5-operators get cneinstance,pods`.")
+	return nil
+}
