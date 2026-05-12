@@ -148,8 +148,10 @@ func runDeployFLO(ctx context.Context, out io.Writer, f *deployFLOFlags) error {
 	if err := r.HelmUpgradeOCI(ctx,
 		deploy.OCIAuth{
 			RegistryHost: "repo.f5.com",
-			Username:     "_json_key",
-			Password:     saJSON,
+			// _json_key (raw JSON password) — both auth forms work for
+			// helm registry login; this one is simpler.
+			Username: "_json_key",
+			Password: saJSON,
 		},
 		"flo",
 		version.FLOChartName,

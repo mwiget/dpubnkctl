@@ -170,19 +170,30 @@ func isServiceAccountJSON(b []byte) bool {
 }
 
 // buildGARDockerConfig wraps a GCP service-account JSON as a
-// dockerconfigjson for repo.f5.com (GAR-backed). Auth scheme is
-// "_json_key:<raw-sa-json>" base64-encoded — Google Artifact Registry's
-// documented "JSON key" auth mode.
+// dockerconfigjson for repo.f5.com (GAR-backed).
+//
+// Auth scheme: "_json_key_base64:<base64-of-sa-json>" base64-encoded.
+// Matches f5-bnk-nvidia-bf3-installations v2.2.0-static/extra_playbooks/
+// bnk.yml — which is what FLO's manifest-registry code path expects.
+//
+// (Google Artifact Registry also accepts "_json_key:<raw-sa-json>" for
+// docker/helm CLI auth; but FLO's own auth parser only accepts the
+// _json_key_base64 form. Bug-for-bug compatibility with f5-bnk wins.)
 func buildGARDockerConfig(saJSON []byte) []byte {
-	auth := base64.StdEncoding.EncodeToString(append([]byte("_json_key:"), saJSON...))
+	saB64 := base64.StdEncoding.EncodeToString(saJSON)
+	auth := base64.StdEncoding.EncodeToString([]byte("_json_key_base64:" + saB64))
 	cfg := fmt.Sprintf(`{"auths":{"repo.f5.com":{"auth":%q}}}`, auth)
 	return []byte(cfg)
 }
 
 // UnwrapGARAuth is the inverse of buildGARDockerConfig: given a
-// dockerconfigjson with auths.repo.f5.com.auth = base64("_json_key:<json>"),
-// returns the raw service-account JSON. Used by `helm registry login`
-// which needs the password directly, not wrapped.
+// dockerconfigjson with auths.repo.f5.com.auth, returns the raw
+// service-account JSON. Used by `helm registry login` which needs the
+// password directly. Handles both auth forms in case an operator
+// supplies a hand-crafted dockerconfigjson:
+//
+//   _json_key:<raw-json>            (older bnk-forge convention)
+//   _json_key_base64:<base64-json>  (current f5-bnk convention)
 func UnwrapGARAuth(dockerCfg []byte) (string, error) {
 	var cfg struct {
 		Auths map[string]struct {
@@ -200,12 +211,21 @@ func UnwrapGARAuth(dockerCfg []byte) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("decode auth: %w", err)
 	}
-	const prefix = "_json_key:"
 	s := string(raw)
-	if !strings.HasPrefix(s, prefix) {
-		return "", fmt.Errorf("auth does not start with %q", prefix)
+	switch {
+	case strings.HasPrefix(s, "_json_key_base64:"):
+		// password is base64-encoded SA JSON; decode it back.
+		pw := s[len("_json_key_base64:"):]
+		dec, err := base64.StdEncoding.DecodeString(pw)
+		if err != nil {
+			return "", fmt.Errorf("decode _json_key_base64 password: %w", err)
+		}
+		return string(dec), nil
+	case strings.HasPrefix(s, "_json_key:"):
+		return s[len("_json_key:"):], nil
+	default:
+		return "", fmt.Errorf("auth does not start with _json_key: or _json_key_base64:")
 	}
-	return s[len(prefix):], nil
 }
 
 // RenderFARSecret produces a Secret manifest of type
