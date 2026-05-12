@@ -41,6 +41,12 @@ func New(name string) *PoC {
 			DPUMTU:       version.DefaultDPUMTU,
 			VLANs:        []VLAN{},
 		},
+		Provisioning: Provisioning{
+			DPUPasswordHashRef: "keys/dpu_password.hash",
+			DPUDNS:             []string{"8.8.8.8", "1.1.1.1"},
+			DPUNTP:             []string{"pool.ntp.org"},
+			BFBCacheDir:        "~/.cache/dpubnkctl/bfb",
+		},
 		Hosts: []Host{},
 		BNK: BNK{
 			FARKeyRef: "keys/f5-far-auth-key.tgz",

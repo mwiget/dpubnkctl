@@ -13,16 +13,17 @@ const (
 )
 
 type PoC struct {
-	APIVersion string   `yaml:"apiVersion"`
-	Kind       string   `yaml:"kind"`
-	Metadata   Metadata `yaml:"metadata"`
-	Versions   Versions `yaml:"versions"`
-	Topology   Topology `yaml:"topology"`
-	Network    Network  `yaml:"network"`
-	Hosts      []Host   `yaml:"hosts"`
-	BNK        BNK      `yaml:"bnk"`
-	Status     Status   `yaml:"status"`
-	Agent      Agent    `yaml:"agent"`
+	APIVersion   string       `yaml:"apiVersion"`
+	Kind         string       `yaml:"kind"`
+	Metadata     Metadata     `yaml:"metadata"`
+	Versions     Versions     `yaml:"versions"`
+	Topology     Topology     `yaml:"topology"`
+	Network      Network      `yaml:"network"`
+	Provisioning Provisioning `yaml:"provisioning"`
+	Hosts        []Host       `yaml:"hosts"`
+	BNK          BNK          `yaml:"bnk"`
+	Status       Status       `yaml:"status"`
+	Agent        Agent        `yaml:"agent"`
 }
 
 type Metadata struct {
@@ -93,11 +94,36 @@ type BMC struct {
 }
 
 type DPU struct {
-	Serial string `yaml:"serial"`
-	PCI    string `yaml:"pci"`
-	BMCIP  string `yaml:"bmc_ip,omitempty"`
-	Mode   string `yaml:"mode"` // dpu | nic
-	LAG    bool   `yaml:"lag"`
+	Serial   string    `yaml:"serial"`
+	PCI      string    `yaml:"pci"`
+	BMCIP    string    `yaml:"bmc_ip,omitempty"`
+	Mode     string    `yaml:"mode"` // dpu | nic
+	LAG      bool      `yaml:"lag"`
+	Hostname string    `yaml:"hostname,omitempty"`     // DPU OS hostname (set before flash)
+	TmfifoIP string    `yaml:"tmfifo_ip,omitempty"`    // tmfifo_net0 CIDR, e.g. 192.168.100.2/30
+	VLANs    []DPUVLAN `yaml:"vlans,omitempty"`        // per-DPU VLAN interfaces
+}
+
+// DPUVLAN describes one OVS internal VLAN interface created on the DPU
+// after flash. For LAG mode all VLANs hang off br-lag; for non-LAG the
+// uplink decides which bridge (sf-external for p0, sf-internal for p1).
+type DPUVLAN struct {
+	Name           string `yaml:"name"`            // interface name on DPU, e.g. external0
+	Tag            int    `yaml:"tag"`             // 802.1q VLAN id
+	IP             string `yaml:"ip"`              // CIDR, e.g. 10.10.40.5/24
+	DefaultGateway string `yaml:"default_gateway,omitempty"`
+	Uplink         string `yaml:"uplink,omitempty"` // p0 | p1 — non-LAG only
+}
+
+// Provisioning holds inputs needed to render bf.conf and execute the
+// flash. Most fields are PoC-wide; per-DPU VLAN/IP details live on DPU.
+type Provisioning struct {
+	DPUPasswordHashRef string   `yaml:"dpu_password_hash_ref"` // path under repo, gitignored — content of `openssl passwd -1 '<password>'`
+	DPUDNS             []string `yaml:"dpu_dns"`
+	DPUDNSDomains      []string `yaml:"dpu_dns_domains,omitempty"`
+	DPUNTP             []string `yaml:"dpu_ntp"`
+	BFBURL             string   `yaml:"bfb_url,omitempty"`     // override of binary-pinned default
+	BFBCacheDir        string   `yaml:"bfb_cache_dir"`          // ~/.cache/dpubnkctl/bfb by default
 }
 
 type BNK struct {

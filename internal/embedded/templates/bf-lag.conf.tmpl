@@ -1,0 +1,210 @@
+#==============================================================================
+#  bf.conf — LAG TEMPLATE  (rendered by dpubnkctl from bf-lag.conf.tmpl)
+#
+#  802.3ad LAG across both physical uplinks (p0 + p1) → bond0, attached
+#  to a single OVS bridge `br-lag`. VLAN interfaces hang off br-lag as
+#  internal ports with the configured 802.1q tag.
+#==============================================================================
+
+# UPDATE_DPU_OS - Update/Install BlueField Operating System (Default: yes)
+UPDATE_DPU_OS="yes"
+# openssl passwd -1 "<clear_password>"
+# ubuntu_PASSWORD=''
+ubuntu_PASSWORD='{{.PasswordHash}}'
+MTU={{.DPUMtu}}
+
+# bfb_modify_os – SHELL function called after the file system is extracted on the target partitions.
+bfb_modify_os()
+{
+    # Set hostname
+    local hname="{{.Hostname}}"
+    echo ${hname} > /mnt/etc/hostname
+    echo "127.0.0.1 ${hname}" >> /mnt/etc/hosts
+
+    cat << EOFNET > /mnt/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+network: {config: disabled}
+EOFNET
+
+    # Configure mgmt
+    cat << EOFMGMT > /mnt/etc/netplan/50-mgmt.yaml
+network:
+  renderer: networkd
+  ethernets:
+    tmfifo_net0:
+      dhcp4: false
+      addresses:
+        - {{.TmfifoIP}}
+    oob_net0:
+      dhcp4: true
+      dhcp6: true
+  version: 2
+EOFMGMT
+    chmod 600 /mnt/etc/netplan/50-mgmt.yaml
+
+    cat << EOFRESOLVE > /mnt/etc/systemd/resolved.conf
+[Resolve]
+DNS={{.DNSServers}}
+Domains={{.DNSDomains}}
+FallbackDNS=
+DNSStubListener=yes
+EOFRESOLVE
+
+    cat << EOFTIMESYNC > /mnt/etc/systemd/timesyncd.conf
+[Time]
+NTP={{.NTPServers}}
+EOFTIMESYNC
+
+    # Modules for kubernetes and DPDK. mst_pci is added so `mst start`
+    # survives a reboot.
+    cat << EOFMODULES >> /mnt/etc/modules-load.d/custom.conf
+overlay
+br_netfilter
+vfio_pci
+mst_pci
+EOFMODULES
+
+    # sysctl settings for kubernetes
+    cat << EOFSYSCTL >> /mnt/etc/sysctl.d/kubernetes.conf
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_forward = 1
+EOFSYSCTL
+
+    # Hugepages on the kernel cmdline (8192 × 2MB = 16 GB).
+    local grub_cmd="console=hvc0 console=ttyAMA0 earlycon=pl011,0x13010000 fixrttc net.ifnames=0 biosdevname=0 iommu.passthrough=1 cgroup_no_v1=net_prio,net_cls default_hugepagesz=2MB hugepagesz=2M hugepages=8192"
+    sed -i -E "s|^(GRUB_CMDLINE_LINUX=\")(.*)\"|\1${grub_cmd}\"|" /mnt/etc/default/grub
+    ilog "$(chroot /mnt env PATH=$PATH /usr/sbin/grub-mkconfig -o /boot/grub/grub.cfg)"
+
+    # Provision one SF per PF (sfnum=1) — matches F5's BNK CNE recipe.
+    rm -f /mnt/etc/mellanox/mlnx-sf.conf
+    for pciid in $(lspci -nD 2> /dev/null | grep 15b3:a2d[26c] | awk '{print $1}')
+        do
+            cat << EOFSF >> /mnt/etc/mellanox/mlnx-sf.conf
+/sbin/mlnx-sf --action create --device $pciid --sfnum 1 --enable-trust --hwaddr $(uuidgen | sed -e 's/-//;s/^\(..\)\(..\)\(..\)\(..\)\(..\).*$/02:\1:\2:\3:\4:\5/')
+EOFSF
+        done
+
+    cat <<EOFSF > /mnt/etc/mellanox/mlnx-ovs.conf
+CREATE_OVS_BRIDGES="yes"
+OVS_BRIDGE1="br-lag"
+OVS_BRIDGE1_PORTS="bond0 pf0hpf en3f0pf0sf1 en3f1pf1sf1"
+OVS_BRIDGE2="not-used"
+OVS_BRIDGE2_PORTS="dummy" # prevents bridge2 from being created
+OVS_HW_OFFLOAD="yes"
+EOFSF
+
+    cat <<EOFBF >> /mnt/etc/mellanox/mlnx-bf.conf
+LAG_HASH_MODE="yes"
+EOFBF
+
+    # Configure bond0
+    cat << EOFBOND > /mnt/etc/netplan/70-bf-lag.yaml
+network:
+  renderer: networkd
+  bonds:
+    bond0:
+      optional: true
+      mtu: "$MTU"
+      dhcp4: no
+      interfaces: [p0, p1]
+      parameters:
+        mode: 802.3ad
+        lacp-rate: fast
+        mii-monitor-interval: 100
+        transmit-hash-policy: "layer3+4"
+  ethernets:
+    p0:
+      mtu: "$MTU"
+      dhcp4: no
+      optional: true
+    p1:
+      mtu: "$MTU"
+      dhcp4: no
+      optional: true
+  version: 2
+EOFBOND
+    chmod 600 /mnt/etc/netplan/70-bf-lag.yaml
+
+# --- Persist OVS VLAN config via systemd oneshot ---
+cat > /mnt/usr/local/sbin/ovs-vlan-init.sh <<'EOS'
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Wait for OVS DB socket to be ready
+for i in $(seq 1 60); do
+  ovs-vsctl --timeout=2 show >/dev/null 2>&1 && break
+  sleep 1
+done
+{{range $i, $vlan := .VLANs}}
+# vlan {{$i}}
+ovs-vsctl --may-exist add-port br-lag {{$vlan.Name}} -- set interface {{$vlan.Name}} type=internal
+ovs-vsctl set port {{$vlan.Name}} tag={{$vlan.Tag}}
+ip link set {{$vlan.Name}} up
+ip addr replace {{$vlan.IP}} dev {{$vlan.Name}}
+{{- if $vlan.DefaultGateway}}
+ip route replace default via {{$vlan.DefaultGateway}} dev {{$vlan.Name}}
+{{- end}}
+{{end}}
+EOS
+
+chmod 755 /mnt/usr/local/sbin/ovs-vlan-init.sh
+
+cat > /mnt/etc/systemd/system/ovs-vlan-init.service <<'EOS'
+[Unit]
+Description=Configure OVS VLAN trunks and internal VLAN interfaces
+After=openvswitch-switch.service
+Wants=openvswitch-switch.service
+StartLimitInterval=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ovs-vlan-init.sh
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOS
+
+# Enable in the target OS
+mkdir -p /mnt/etc/systemd/system/multi-user.target.wants
+ln -sf /etc/systemd/system/ovs-vlan-init.service \
+  /mnt/etc/systemd/system/multi-user.target.wants/ovs-vlan-init.service
+
+# Mask dnsmasq in the target OS
+ln -sf /dev/null /mnt/etc/systemd/system/dnsmasq.service
+
+# Auto-upgrade NIC firmware on every boot.
+echo 'RUN_FW_UPDATER_ONBOOT=yes' >> /mnt/etc/infiniband/openib.conf
+
+    # Cloud-init for deleting standalone kubelet
+    cat << EOFCLOUDINIT >> /mnt/var/lib/cloud/seed/nocloud-net/user-data
+write_files:
+  - path: /var/tmp/setup-script.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      systemctl stop containerd kubelet kubepods.slice
+      rm -rf /var/lib/containerd/*
+      rm -rf /run/containerd/*
+      rm -f /usr/lib/systemd/system/kubelet.service.d/90-kubelet-bluefield.conf
+      systemctl daemon-reload
+runcmd:
+  - [ /var/tmp/setup-script.sh ]
+EOFCLOUDINIT
+}
+
+# bfb_post_install — sets LAG_RESOURCE_ALLOCATION=1 and SF/VF counts.
+bfb_post_install()
+{
+    log ===================== bfb_post_install =====================
+    mst start
+    mst_device=$(/bin/ls /dev/mst/mt*pciconf0 2> /dev/null)
+    log "Setting SF enable and BAR size for $mst_device"
+    for mst_device in /dev/mst/mt*pciconf*
+    do
+      mlxconfig -y -d $mst_device s PF_BAR2_ENABLE=0 PER_PF_NUM_SF=1 PF_TOTAL_SF=20 PF_SF_BAR_SIZE=10 NUM_OF_VFS=46 LAG_RESOURCE_ALLOCATION=1 INTERNAL_CPU_OFFLOAD_ENGINE=0 INTERNAL_CPU_MODEL=1
+      mlxprivhost -d $mst_device p  # disable Zero-Trust Mode
+    done
+}

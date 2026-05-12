@@ -14,21 +14,6 @@ import (
 //   destroy   -> Phase 4 (paired with deploy)
 //   journal   -> Phase 5
 
-func newProvisionCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "provision",
-		Short: "Flash and configure DPUs (Phase 2, not yet implemented)",
-		RunE:  notYet("provision", "Phase 2"),
-	}
-	cmd.AddCommand(&cobra.Command{
-		Use:   "dpu <serial-or-bmc-ip>",
-		Short: "Flash a single DPU with the pinned BFB image (LAG or non-LAG per poc.yaml)",
-		Args:  cobra.ExactArgs(1),
-		RunE:  notYet("provision dpu", "Phase 2"),
-	})
-	return cmd
-}
-
 func newClusterCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cluster",
