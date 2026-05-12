@@ -14,20 +14,6 @@ import (
 //   destroy   -> Phase 4 (paired with deploy)
 //   journal   -> Phase 5
 
-func newClusterCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "cluster",
-		Short: "Bring up the Kubernetes cluster (Phase 3, not yet implemented)",
-		RunE:  notYet("cluster", "Phase 3"),
-	}
-	cmd.AddCommand(
-		&cobra.Command{Use: "up", Short: "kubespray (>=3 hosts) or kubeadm (1-2 hosts)", RunE: notYet("cluster up", "Phase 3")},
-		&cobra.Command{Use: "status", Short: "Show cluster + node readiness", RunE: notYet("cluster status", "Phase 3")},
-		&cobra.Command{Use: "down", Short: "Tear down the cluster", RunE: notYet("cluster down", "Phase 3")},
-	)
-	return cmd
-}
-
 func newDeployCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "deploy",
