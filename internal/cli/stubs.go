@@ -14,27 +14,6 @@ import (
 //   destroy   -> Phase 4 (paired with deploy)
 //   journal   -> Phase 5
 
-func newDiscoverCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "discover",
-		Short: "Probe hosts and DPUs, build inventory (Phase 1, not yet implemented)",
-		RunE:  notYet("discover", "Phase 1"),
-	}
-	cmd.AddCommand(&cobra.Command{
-		Use:   "host <ip>",
-		Short: "Probe a single host over SSH (auto-discover BMC via ipmitool, classify DPUs)",
-		Args:  cobra.ExactArgs(1),
-		RunE:  notYet("discover host", "Phase 1"),
-	})
-	cmd.AddCommand(&cobra.Command{
-		Use:   "range <cidr>",
-		Short: "Scan an IP range for hosts, DPU BMCs, and DPU-OS endpoints",
-		Args:  cobra.ExactArgs(1),
-		RunE:  notYet("discover range", "Phase 1"),
-	})
-	return cmd
-}
-
 func newProvisionCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "provision",
