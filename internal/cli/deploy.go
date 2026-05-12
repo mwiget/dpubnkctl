@@ -22,10 +22,11 @@ func newDeployCmd() *cobra.Command {
 		Short: "Install the BNK platform (cert-manager, FLO, CNEInstance, VLANs, GatewayClass)",
 	}
 	cmd.AddCommand(newDeployPrereqsCmd())
+	cmd.AddCommand(newDeployFLOCmd())
 	cmd.AddCommand(&cobra.Command{
-		Use:   "flo",
-		Short: "Install F5 Lifecycle Operator + CNEInstance + VLANs + GatewayClass (next iteration)",
-		RunE:  notYet("deploy flo", "the next iteration of Phase 4"),
+		Use:   "cne",
+		Short: "Apply CNEInstance + F5SPKVlan + GatewayClass (Phase 4b.2, next iteration)",
+		RunE:  notYet("deploy cne", "Phase 4b.2"),
 	})
 	return cmd
 }

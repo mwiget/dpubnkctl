@@ -76,9 +76,10 @@ func (r *Runner) Kubectl(ctx context.Context, args ...string) error {
 	return nil
 }
 
-// Wait runs `kubectl wait` against an arbitrary selector. Useful for
-// rollout completion (cert-manager webhook, FLO CRDs, etc.).
-func (r *Runner) Wait(ctx context.Context, namespace, condition, selector string, timeout time.Duration) error {
+// Wait runs `kubectl wait` against an arbitrary selector with optional
+// extra flags (e.g. -l app=foo). Useful for rollout completion when the
+// resource name is chart-prefixed and unknown a priori.
+func (r *Runner) Wait(ctx context.Context, namespace, condition, selector string, timeout time.Duration, extraArgs ...string) error {
 	args := r.kubectlArgs("wait")
 	if namespace != "" {
 		args = append(args, "-n", namespace)
@@ -86,12 +87,78 @@ func (r *Runner) Wait(ctx context.Context, namespace, condition, selector string
 	args = append(args, "--for=condition="+condition,
 		"--timeout="+timeout.String(),
 		selector)
+	args = append(args, extraArgs...)
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	var out bytes.Buffer
 	cmd.Stdout = io.MultiWriter(r.Out, &out)
 	cmd.Stderr = cmd.Stdout
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("kubectl wait %s: %w\n%s", selector, err, out.String())
+	}
+	return nil
+}
+
+// OCIAuth carries the credentials for an authenticated OCI helm chart
+// pull. RegistryHost is the bare hostname (e.g. "repo.f5.com").
+// Username/Password go to `helm registry login`.
+type OCIAuth struct {
+	RegistryHost string
+	Username     string
+	Password     string
+}
+
+// HelmUpgradeOCI is a variant of HelmUpgrade that runs `helm registry
+// login` and then `helm upgrade` inside the same container so the
+// docker --rm doesn't lose the login state between invocations.
+func (r *Runner) HelmUpgradeOCI(ctx context.Context, auth OCIAuth, release, ociChart, namespace, chartVersion, valuesYAML string, extraArgs ...string) error {
+	dockerArgs := []string{
+		"run", "--rm", "-i",
+		"-v", r.KubeconfigPath + ":/kubeconfig:ro",
+		"--network=host",
+		"-e", "KUBECONFIG=/kubeconfig",
+	}
+	if valuesYAML != "" {
+		tmp, err := os.CreateTemp("", "dpubnkctl-helm-values-*.yaml")
+		if err != nil {
+			return err
+		}
+		defer os.Remove(tmp.Name())
+		if _, err := tmp.WriteString(valuesYAML); err != nil {
+			tmp.Close()
+			return err
+		}
+		tmp.Close()
+		dockerArgs = append(dockerArgs, "-v", tmp.Name()+":/values.yaml:ro")
+	}
+	// Build the upgrade command tail.
+	upgradeArgs := []string{
+		"helm", "upgrade", "--install", release, ociChart,
+		"--namespace", namespace, "--create-namespace",
+		"--wait", "--timeout=10m",
+	}
+	if chartVersion != "" {
+		upgradeArgs = append(upgradeArgs, "--version", chartVersion)
+	}
+	if valuesYAML != "" {
+		upgradeArgs = append(upgradeArgs, "-f", "/values.yaml")
+	}
+	upgradeArgs = append(upgradeArgs, extraArgs...)
+
+	// Compose: login (password from stdin) && upgrade.
+	// quoting matters here — the password JSON has no embedded single
+	// quotes (GCP SA JSON uses only double quotes), so single-quote it.
+	script := fmt.Sprintf(
+		`echo '%s' | helm registry login %s --username %s --password-stdin && %s`,
+		auth.Password, auth.RegistryHost, auth.Username,
+		strings.Join(upgradeArgs, " "))
+
+	dockerArgs = append(dockerArgs, version.K8sToolsImage, "sh", "-c", script)
+	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
+	var out bytes.Buffer
+	cmd.Stdout = io.MultiWriter(r.Out, &out)
+	cmd.Stderr = cmd.Stdout
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("helm upgrade %s (oci): %w\n%s", release, err, out.String())
 	}
 	return nil
 }

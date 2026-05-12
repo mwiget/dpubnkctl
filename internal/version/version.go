@@ -40,4 +40,10 @@ const (
 	CertManagerChart   = "cert-manager"
 	CertManagerRepo    = "https://charts.jetstack.io"
 	CertManagerVersion = "v1.16.2"
+
+	// FLO chart — F5 Lifecycle Operator. OCI repo, no helm-repo
+	// state needed. Version pinned to match
+	// f5-bnk-nvidia-bf3-installations v2.2.0-static.
+	FLOChartRepo = "oci://repo.f5.com/charts"
+	FLOChartName = "oci://repo.f5.com/charts/f5-lifecycle-operator"
 )

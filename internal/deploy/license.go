@@ -179,6 +179,35 @@ func buildGARDockerConfig(saJSON []byte) []byte {
 	return []byte(cfg)
 }
 
+// UnwrapGARAuth is the inverse of buildGARDockerConfig: given a
+// dockerconfigjson with auths.repo.f5.com.auth = base64("_json_key:<json>"),
+// returns the raw service-account JSON. Used by `helm registry login`
+// which needs the password directly, not wrapped.
+func UnwrapGARAuth(dockerCfg []byte) (string, error) {
+	var cfg struct {
+		Auths map[string]struct {
+			Auth string `json:"auth"`
+		} `json:"auths"`
+	}
+	if err := json.Unmarshal(dockerCfg, &cfg); err != nil {
+		return "", err
+	}
+	entry, ok := cfg.Auths["repo.f5.com"]
+	if !ok {
+		return "", fmt.Errorf("dockerconfigjson has no auths.repo.f5.com")
+	}
+	raw, err := base64.StdEncoding.DecodeString(entry.Auth)
+	if err != nil {
+		return "", fmt.Errorf("decode auth: %w", err)
+	}
+	const prefix = "_json_key:"
+	s := string(raw)
+	if !strings.HasPrefix(s, prefix) {
+		return "", fmt.Errorf("auth does not start with %q", prefix)
+	}
+	return s[len(prefix):], nil
+}
+
 // RenderFARSecret produces a Secret manifest of type
 // kubernetes.io/dockerconfigjson named "far-secret" in the given
 // namespace. dockerConfigJSON is raw JSON (not base64-encoded — k8s
