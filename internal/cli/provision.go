@@ -21,12 +21,7 @@ func newProvisionCmd() *cobra.Command {
 		Short: "Flash and configure DPUs",
 	}
 	cmd.AddCommand(newProvisionPlanCmd())
-	cmd.AddCommand(&cobra.Command{
-		Use:   "dpu <hostname>",
-		Short: "Execute the flash plan against a host (destructive — gated by --yolo)",
-		Args:  cobra.ExactArgs(1),
-		RunE:  notYet("provision dpu", "the next iteration of Phase 2"),
-	})
+	cmd.AddCommand(newProvisionDPUCmd())
 	return cmd
 }
 

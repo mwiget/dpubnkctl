@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -120,6 +121,65 @@ func (c *Client) Run(ctx context.Context, cmd string) Result {
 		return r
 	}
 }
+
+// RunStream executes cmd on the remote host and streams combined
+// stdout+stderr to w line-by-line. Sends SSH keepalives every 30 s so
+// long jobs (bfb-install, kubespray) survive NAT/firewall timeouts.
+// Returns the exit code; non-zero is reported but not turned into an
+// error (caller decides whether that's fatal).
+func (c *Client) RunStream(ctx context.Context, cmd string, w io.Writer) (int, error) {
+	sess, err := c.conn.NewSession()
+	if err != nil {
+		return -1, fmt.Errorf("new session: %w", err)
+	}
+	defer sess.Close()
+
+	sess.Stdout = w
+	sess.Stderr = w
+
+	if err := sess.Start(cmd); err != nil {
+		return -1, fmt.Errorf("start: %w", err)
+	}
+
+	// Keepalive ticker — silently drop the result, we only care about
+	// keeping the underlying TCP session alive across long-running jobs.
+	keepCtx, keepCancel := context.WithCancel(ctx)
+	defer keepCancel()
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-keepCtx.Done():
+				return
+			case <-t.C:
+				_, _, _ = c.conn.SendRequest("keepalive@openssh.com", true, nil)
+			}
+		}
+	}()
+
+	done := make(chan error, 1)
+	go func() { done <- sess.Wait() }()
+
+	select {
+	case <-ctx.Done():
+		_ = sess.Signal(xssh.SIGKILL)
+		return -1, ctx.Err()
+	case waitErr := <-done:
+		if waitErr == nil {
+			return 0, nil
+		}
+		var exitErr *xssh.ExitError
+		if errors.As(waitErr, &exitErr) {
+			return exitErr.ExitStatus(), nil
+		}
+		return -1, waitErr
+	}
+}
+
+// Conn returns the underlying ssh.Client so packages outside this one
+// can layer SFTP / port-forwards / etc. without re-dialing.
+func (c *Client) Conn() *xssh.Client { return c.conn }
 
 // buildClientConfig wires authentication and host-key callback.
 func buildClientConfig(cfg Config) (*xssh.ClientConfig, error) {
