@@ -8,7 +8,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -19,48 +21,68 @@ import (
 )
 
 type provisionDPUFlags struct {
-	pocDir         string
-	dpuPCI         string
-	yolo           bool
-	confirmFlash   string
-	bfbURL         string
-	flashTimeout   time.Duration
-	dpuWaitTimeout time.Duration
-	skipDPUWait    bool
+	pocDir              string
+	dpuPCI              string
+	yolo                bool
+	confirmFlash        string // single name OR comma-separated list matching args
+	bfbURL              string
+	flashTimeout        time.Duration
+	dpuWaitTimeout      time.Duration
+	skipDPUWait         bool
+	skipPostFlashReboot bool
 }
 
 func newProvisionDPUCmd() *cobra.Command {
 	f := &provisionDPUFlags{}
 	cmd := &cobra.Command{
-		Use:   "dpu <hostname>",
-		Short: "Flash a DPU end-to-end (DESTRUCTIVE — wipes the DPU OS)",
-		Long: `Cache the BFB image on the operator laptop, render bf.conf, push both
-to the host, run bfb-install, then wait for the DPU to come back via
-tmfifo. This wipes everything currently on the DPU OS.
+		Use:   "dpu <hostname> [<hostname>...]",
+		Short: "Flash one or more DPUs end-to-end (DESTRUCTIVE — wipes the DPU OS)",
+		Long: `For each <hostname>:
+  1. Render bf.conf (Phase 2a)
+  2. SSH-connect to the host
+  3. Run readiness checks
+  4. Cache the BFB image locally (downloaded once, shared across hosts)
+  5. SFTP-push BFB + bf.conf to host /tmp
+  6. Run bfb-install with streaming output
+  7. Wait for DPU SSH, then trigger an rshim soft-reset to clear the
+     first-boot LAG race, then wait for DPU SSH again
+
+Multiple hostnames run in parallel — same BFB cache, independent SSH
+connections, prefixed output per host. The full per-host bfb-install log
+is always written to artifacts/<host>-flash.log unprefixed.
 
 Required gates:
-  --yolo                 acknowledge that this is a destructive flash
-  --confirm-flash NAME   must equal <hostname> (typo guard)
+  --yolo                          acknowledge that this is destructive
+  --confirm-flash NAME[,NAME...]  must list every hostname argument
 
-The destructive step does not run unless both gates are present and the
-plan is READY. Streaming output is mirrored to artifacts/<host>-flash.log.`,
-		Args: cobra.ExactArgs(1),
+The destructive step does not run unless both gates are present and
+every host's plan is READY.`,
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runProvisionDPU(cmd.Context(), cmd.OutOrStdout(), args[0], f)
+			return runProvisionDPUMulti(cmd.Context(), cmd.OutOrStdout(), args, f)
 		},
 	}
 	cmd.Flags().StringVar(&f.pocDir, "poc", "", "PoC repo path (default: current directory)")
-	cmd.Flags().StringVar(&f.dpuPCI, "dpu", "", "DPU PCI address (default: first DPU on the host)")
+	cmd.Flags().StringVar(&f.dpuPCI, "dpu", "", "DPU PCI address (default: first DPU on each host)")
 	cmd.Flags().BoolVar(&f.yolo, "yolo", false, "Acknowledge that this command is destructive")
-	cmd.Flags().StringVar(&f.confirmFlash, "confirm-flash", "", "Must equal <hostname> — a typo guard for destructive ops")
+	cmd.Flags().StringVar(&f.confirmFlash, "confirm-flash", "", "Comma-separated list of hostnames — must match the positional args (typo guard)")
 	cmd.Flags().StringVar(&f.bfbURL, "bfb-url", "", "Override the BFB download URL (defaults to binary-pinned)")
 	cmd.Flags().DurationVar(&f.flashTimeout, "flash-timeout", 25*time.Minute, "Per-flash bfb-install timeout")
-	cmd.Flags().DurationVar(&f.dpuWaitTimeout, "dpu-wait-timeout", 10*time.Minute, "How long to wait for the DPU to come back via tmfifo after flash")
-	cmd.Flags().BoolVar(&f.skipDPUWait, "skip-dpu-wait", false, "Don't wait for the DPU to reboot — return as soon as bfb-install exits")
+	cmd.Flags().DurationVar(&f.dpuWaitTimeout, "dpu-wait-timeout", 10*time.Minute, "How long to wait for the DPU to come back via tmfifo (each wait)")
+	cmd.Flags().BoolVar(&f.skipDPUWait, "skip-dpu-wait", false, "Don't wait for the DPU to reboot — return as soon as bfb-install exits (also skips post-flash reboot)")
+	cmd.Flags().BoolVar(&f.skipPostFlashReboot, "skip-post-flash-reboot", false, "Skip the rshim SW_RESET after the first DPU boot (workaround retained for diagnostics)")
 	return cmd
 }
 
-func runProvisionDPU(ctx context.Context, out io.Writer, hostname string, f *provisionDPUFlags) error {
+// flashJob bundles everything one parallel goroutine needs.
+type flashJob struct {
+	hostname string
+	host     *poc.Host
+	dpu      *poc.DPU
+	rendered string
+}
+
+func runProvisionDPUMulti(ctx context.Context, out io.Writer, hostnames []string, f *provisionDPUFlags) error {
 	repo, err := resolvePoCDir(f.pocDir)
 	if err != nil {
 		return err
@@ -69,38 +91,126 @@ func runProvisionDPU(ctx context.Context, out io.Writer, hostname string, f *pro
 	if err != nil {
 		return fmt.Errorf("not a PoC repo (%s): %w", repo, err)
 	}
-	host, err := findHost(p, hostname)
-	if err != nil {
-		return err
-	}
-	dpu, err := pickDPU(host, f.dpuPCI)
-	if err != nil {
-		return err
-	}
+
+	// Dedup + preserve order.
+	hostnames = uniqueOrdered(hostnames)
 
 	if !f.yolo {
 		return errors.New("refusing destructive flash without --yolo")
 	}
-	if f.confirmFlash != hostname {
-		return fmt.Errorf("--confirm-flash must equal the hostname argument %q (typo guard)", hostname)
+	if err := validateConfirmFlash(hostnames, f.confirmFlash); err != nil {
+		return err
+	}
+
+	// Resolve every job up front; fail fast on missing hosts/DPUs.
+	jobs := make([]flashJob, 0, len(hostnames))
+	for _, hn := range hostnames {
+		host, err := findHost(p, hn)
+		if err != nil {
+			return err
+		}
+		dpu, err := pickDPU(host, f.dpuPCI)
+		if err != nil {
+			return err
+		}
+		jobs = append(jobs, flashJob{hostname: hn, host: host, dpu: dpu})
+	}
+
+	// Pre-render every bf.conf before touching anything destructive.
+	for i := range jobs {
+		rendered, err := provision.Render(p, jobs[i].host, jobs[i].dpu, repo)
+		if err != nil {
+			return fmt.Errorf("%s: bf.conf render: %w", jobs[i].hostname, err)
+		}
+		jobs[i].rendered = rendered
 	}
 
 	fmt.Fprintf(out, "PoC:    %s   (BNK %s, DOCA %s)\n", p.Metadata.Name, p.Metadata.BNKVersion, p.Versions.DOCA)
-	fmt.Fprintf(out, "Host:   %s   (%s@%s)\n", host.Name, host.SSH.User, host.SSH.Address)
-	fmt.Fprintf(out, "DPU:    %s   mode=%s lag=%v hostname=%s tmfifo=%s\n",
-		dpu.PCI, orDash(dpu.Mode), dpu.LAG, orDash(dpu.Hostname), orDash(dpu.TmfifoIP))
-	fmt.Fprintf(out, "Image:  %s   (DOCA %s)\n\n", p.Versions.BFBImage, p.Versions.DOCA)
+	fmt.Fprintf(out, "Image:  %s   (DOCA %s)\n", p.Versions.BFBImage, p.Versions.DOCA)
+	fmt.Fprintf(out, "Hosts:  %s\n\n", strings.Join(hostnames, ", "))
 
-	// 1. Render bf.conf and run readiness — abort on either failure.
-	fmt.Fprintln(out, "[1/6] Rendering bf.conf ...")
-	rendered, err := provision.Render(p, host, dpu, repo)
-	if err != nil {
-		return fmt.Errorf("bf.conf render: %w", err)
+	// Cache BFB once on the operator laptop, shared across all jobs.
+	fmt.Fprintf(out, "[cache] BFB (%s) ...\n", p.Versions.BFBImage)
+	bfbProgress := func(written, total int64) {
+		if total > 0 {
+			fmt.Fprintf(out, "[cache]   downloading: %d / %d MiB (%.1f%%)\n",
+				written>>20, total>>20, float64(written)/float64(total)*100)
+		}
 	}
-	fmt.Fprintf(out, "      ok — %d bytes (%s)\n", len(rendered), lagTag(dpu.LAG))
+	bfbPath, err := provision.EnsureBFB(ctx, p.Provisioning.BFBCacheDir, p.Versions.BFBImage, p.Versions.BFBURL, bfbProgress)
+	if err != nil {
+		return fmt.Errorf("bfb cache: %w", err)
+	}
+	if st, _ := os.Stat(bfbPath); st != nil {
+		fmt.Fprintf(out, "[cache]   ready: %s (%d MiB)\n\n", bfbPath, st.Size()>>20)
+	}
 
-	fmt.Fprintln(out, "[2/6] Connecting to host ...")
-	cfg, err := sshConfigForHost(repo, host, 30*time.Second)
+	// Fan out — one goroutine per host. journalMu guards shared journal file.
+	var (
+		journalMu sync.Mutex
+		wg        sync.WaitGroup
+	)
+	type result struct {
+		hostname string
+		err      error
+	}
+	results := make(chan result, len(jobs))
+
+	for _, j := range jobs {
+		j := j
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w := perHostWriter(out, j.hostname, len(jobs) > 1)
+			err := flashOneJob(ctx, w, repo, p, j, bfbPath, f, &journalMu)
+			results <- result{hostname: j.hostname, err: err}
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	// Aggregate.
+	var failures []string
+	for r := range results {
+		if r.err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", r.hostname, r.err))
+		}
+	}
+
+	// Save poc.yaml once. Only mark provision completed if every host succeeded.
+	if len(failures) == 0 {
+		p.Status.Provision = "completed"
+	} else {
+		p.Status.Provision = "in_progress"
+	}
+	p.Status.LastPhaseAt = time.Now().UTC()
+	if err := p.Save(repo); err != nil {
+		return err
+	}
+
+	if len(failures) > 0 {
+		fmt.Fprintln(out)
+		for _, fline := range failures {
+			fmt.Fprintf(out, "FAIL: %s\n", fline)
+		}
+		return fmt.Errorf("%d/%d host(s) failed", len(failures), len(jobs))
+	}
+
+	fmt.Fprintln(out, "\nDONE.")
+	return nil
+}
+
+// flashOneJob runs the per-host pipeline. Writes are prefixed if w is a
+// per-host writer (multi-host mode); otherwise it streams plainly.
+func flashOneJob(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j flashJob, bfbPath string, f *provisionDPUFlags, journalMu *sync.Mutex) error {
+	logPath := filepath.Join(repo, "artifacts", j.hostname+"-flash.log")
+
+	fmt.Fprintf(w, "DPU:    %s   mode=%s lag=%v hostname=%s tmfifo=%s\n",
+		j.dpu.PCI, orDash(j.dpu.Mode), j.dpu.LAG, orDash(j.dpu.Hostname), orDash(j.dpu.TmfifoIP))
+
+	// 1. SSH connect.
+	fmt.Fprintln(w, "[1/7] Connecting to host ...")
+	cfg, err := sshConfigForHost(repo, j.host, 30*time.Second)
 	if err != nil {
 		return err
 	}
@@ -111,65 +221,51 @@ func runProvisionDPU(ctx context.Context, out io.Writer, hostname string, f *pro
 		return fmt.Errorf("ssh dial: %w", err)
 	}
 	defer client.Close()
-	fmt.Fprintln(out, "      ok")
+	fmt.Fprintln(w, "      ok")
 
-	fmt.Fprintln(out, "[3/6] Running readiness checks ...")
+	// 2. Readiness.
+	fmt.Fprintln(w, "[2/7] Running readiness checks ...")
 	probeCtx, pcancel := context.WithTimeout(ctx, 60*time.Second)
-	rep := provision.Check(probeCtx, host.Name, provision.AsRunner(client), dpu.PCI)
+	rep := provision.Check(probeCtx, j.host.Name, provision.AsRunner(client), j.dpu.PCI)
 	pcancel()
 	if !rep.Ready() {
 		for _, e := range rep.Errors {
-			fmt.Fprintln(out, "      err:", e)
+			fmt.Fprintln(w, "      err:", e)
 		}
-		return errors.New("readiness check failed — refusing to flash; run `dpubnkctl provision plan` for details")
+		journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (readiness)", logPath, strings.Join(rep.Errors, "; "))
+		return errors.New("readiness check failed")
 	}
-	for _, w := range rep.Warnings {
-		fmt.Fprintln(out, "      warn:", w)
+	for _, warning := range rep.Warnings {
+		fmt.Fprintln(w, "      warn:", warning)
 	}
-	fmt.Fprintln(out, "      ok")
+	fmt.Fprintln(w, "      ok")
 
-	// 2. BFB image cache.
-	fmt.Fprintf(out, "[4/6] BFB cache (%s) ...\n", p.Versions.BFBImage)
-	bfbProgress := func(written, total int64) {
-		if total > 0 {
-			fmt.Fprintf(out, "      downloading: %d / %d MiB (%.1f%%)\n", written>>20, total>>20, float64(written)/float64(total)*100)
-		} else {
-			fmt.Fprintf(out, "      downloaded: %d MiB\n", written>>20)
-		}
-	}
-	bfbPath, err := provision.EnsureBFB(ctx, p.Provisioning.BFBCacheDir, p.Versions.BFBImage, p.Versions.BFBURL, bfbProgress)
-	if err != nil {
-		return fmt.Errorf("bfb cache: %w", err)
-	}
-	if st, _ := os.Stat(bfbPath); st != nil {
-		fmt.Fprintf(out, "      cached at %s (%d MiB)\n", bfbPath, st.Size()>>20)
-	}
-
-	// 3. Push BFB + bf.conf to host /tmp.
-	fmt.Fprintln(out, "[5/6] Pushing BFB + bf.conf to host /tmp ...")
+	// 3. SFTP push (BFB + rendered bf.conf).
+	fmt.Fprintln(w, "[3/7] Pushing BFB + bf.conf to host /tmp ...")
 	remoteBFB := "/tmp/" + p.Versions.BFBImage
 	remoteCfg := "/tmp/dpubnkctl-bf.cfg"
-
 	pushCtx, pushCancel := context.WithTimeout(ctx, 15*time.Minute)
 	pushProgress := func(written, total int64) {
 		if total > 0 {
-			fmt.Fprintf(out, "      sftp: %d / %d MiB (%.1f%%)\n", written>>20, total>>20, float64(written)/float64(total)*100)
+			fmt.Fprintf(w, "      sftp: %d / %d MiB (%.1f%%)\n",
+				written>>20, total>>20, float64(written)/float64(total)*100)
 		}
 	}
 	if err := client.PushFile(pushCtx, bfbPath, remoteBFB, pushProgress); err != nil {
 		pushCancel()
+		journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (push bfb)", logPath, err.Error())
 		return fmt.Errorf("push bfb: %w", err)
 	}
-	if err := client.PushBytes(pushCtx, []byte(rendered), remoteCfg); err != nil {
+	if err := client.PushBytes(pushCtx, []byte(j.rendered), remoteCfg); err != nil {
 		pushCancel()
+		journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (push bf.conf)", logPath, err.Error())
 		return fmt.Errorf("push bf.conf: %w", err)
 	}
 	pushCancel()
-	fmt.Fprintf(out, "      pushed %s + %s\n", remoteBFB, remoteCfg)
+	fmt.Fprintf(w, "      pushed %s + %s\n", remoteBFB, remoteCfg)
 
-	// 4. Run bfb-install with streaming output mirrored to a log file.
-	fmt.Fprintln(out, "[6/6] Running bfb-install (this typically takes 5–15 minutes) ...")
-	logPath := filepath.Join(repo, "artifacts", host.Name+"-flash.log")
+	// 4. bfb-install — stream to operator + per-host log file.
+	fmt.Fprintln(w, "[4/7] Running bfb-install (5–15 minutes) ...")
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		return err
 	}
@@ -178,53 +274,172 @@ func runProvisionDPU(ctx context.Context, out io.Writer, hostname string, f *pro
 		return err
 	}
 	defer logFile.Close()
-	tee := io.MultiWriter(prefixWriter{w: out, prefix: "      | "}, logFile)
-
+	tee := io.MultiWriter(prefixWriter{w: w, prefix: "      | "}, logFile)
 	flashCmd := fmt.Sprintf("sudo -n bfb-install --bfb '%s' --config '%s' --rshim rshim0 2>&1", remoteBFB, remoteCfg)
 	flashCtx, flashCancel := context.WithTimeout(ctx, f.flashTimeout)
 	exit, runErr := client.RunStream(flashCtx, flashCmd, tee)
 	flashCancel()
 	if runErr != nil {
-		appendFlashJournal(repo, host.Name, dpu, "FAILED (transport error)", logPath, runErr.Error())
+		journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (transport)", logPath, runErr.Error())
 		return fmt.Errorf("bfb-install: %w", runErr)
 	}
 	if exit != 0 {
-		appendFlashJournal(repo, host.Name, dpu, fmt.Sprintf("FAILED (exit %d)", exit), logPath, "")
+		journaled(journalMu, repo, j.hostname, j.dpu, fmt.Sprintf("FAILED (exit %d)", exit), logPath, "")
 		return fmt.Errorf("bfb-install exited %d — see %s", exit, logPath)
 	}
-	fmt.Fprintf(out, "      bfb-install completed successfully — log at %s\n", logPath)
+	fmt.Fprintf(w, "      bfb-install completed — log at %s\n", logPath)
 
-	// 5. Wait for the DPU to come back via tmfifo (from the host).
-	if !f.skipDPUWait {
-		dpuIP := tmfifoHostPart(dpu.TmfifoIP)
-		if dpuIP == "" {
-			fmt.Fprintln(out, "      (no tmfifo_ip set — skipping DPU reachability wait)")
+	// 5. Wait for first DPU boot.
+	dpuIP := tmfifoHostPart(j.dpu.TmfifoIP)
+	if f.skipDPUWait || dpuIP == "" {
+		fmt.Fprintln(w, "[5/7] (skipping DPU SSH wait)")
+	} else {
+		fmt.Fprintf(w, "[5/7] Waiting for first DPU boot (SSH at %s) ...\n", dpuIP)
+		waitCtx, waitCancel := context.WithTimeout(ctx, f.dpuWaitTimeout)
+		err := waitForDPUSSH(waitCtx, client, dpuIP)
+		waitCancel()
+		if err != nil {
+			fmt.Fprintf(w, "      WARN: first boot wait timed out (%v) — continuing anyway\n", err)
 		} else {
-			fmt.Fprintf(out, "      waiting for DPU SSH at %s (from host) ...\n", dpuIP)
-			waitCtx, waitCancel := context.WithTimeout(ctx, f.dpuWaitTimeout)
-			err := waitForDPUSSH(waitCtx, client, dpuIP)
-			waitCancel()
-			if err != nil {
-				fmt.Fprintf(out, "      WARN: DPU did not respond within %s — flash succeeded but verify manually: %v\n", f.dpuWaitTimeout, err)
-			} else {
-				fmt.Fprintln(out, "      DPU is reachable.")
-			}
+			fmt.Fprintln(w, "      DPU is reachable.")
 		}
 	}
 
-	// 6. Update poc.yaml status + journal.
-	p.Status.Provision = "completed"
-	p.Status.LastPhaseAt = time.Now().UTC()
-	if err := p.Save(repo); err != nil {
-		return err
+	// 6. Post-flash rshim soft-reset to clear first-boot LAG/firmware race.
+	if !f.skipPostFlashReboot && !f.skipDPUWait {
+		fmt.Fprintln(w, "[6/7] Triggering rshim SW_RESET (clears first-boot LAG race) ...")
+		r := client.Run(ctx, "echo 'SW_RESET 1' | sudo -n tee /dev/rshim0/misc > /dev/null")
+		if !r.OK() {
+			fmt.Fprintf(w, "      WARN: SW_RESET failed (%s) — DPU still up but FW may need manual reset\n", strings.TrimSpace(r.Stderr+r.Stdout))
+		} else {
+			fmt.Fprintln(w, "      reset issued; allowing DPU to reboot ...")
+		}
+	} else {
+		fmt.Fprintln(w, "[6/7] (skipping post-flash reboot)")
 	}
-	appendFlashJournal(repo, host.Name, dpu, "SUCCESS", logPath, "")
-	fmt.Fprintln(out, "\nDONE.")
+
+	// 7. Wait for second DPU boot (after the soft-reset).
+	if !f.skipPostFlashReboot && !f.skipDPUWait && dpuIP != "" {
+		fmt.Fprintf(w, "[7/7] Waiting for second DPU boot (SSH at %s) ...\n", dpuIP)
+		// Give the reset a moment to actually start before polling.
+		time.Sleep(8 * time.Second)
+		waitCtx, waitCancel := context.WithTimeout(ctx, f.dpuWaitTimeout)
+		err := waitForDPUSSH(waitCtx, client, dpuIP)
+		waitCancel()
+		if err != nil {
+			fmt.Fprintf(w, "      WARN: second boot wait timed out (%v) — verify manually\n", err)
+		} else {
+			fmt.Fprintln(w, "      DPU is reachable after reboot.")
+		}
+	} else {
+		fmt.Fprintln(w, "[7/7] (no second boot wait)")
+	}
+
+	journaled(journalMu, repo, j.hostname, j.dpu, "SUCCESS", logPath, "")
 	return nil
 }
 
-// prefixWriter prefixes every line of streamed bfb-install output so the
-// operator can tell our wrapper messages from the underlying tool's.
+// perHostWriter returns a writer that prefixes lines with [hostname] when
+// running multi-host (so parallel streams are tellable apart). For
+// single-host runs it returns out unwrapped to keep the original UX.
+func perHostWriter(out io.Writer, hostname string, multi bool) io.Writer {
+	if !multi {
+		return out
+	}
+	return &lockedPrefixWriter{w: out, prefix: "[" + hostname + "] "}
+}
+
+// lockedPrefixWriter is a prefixWriter that serializes whole-line writes
+// across goroutines. Without the lock, concurrent prefix+payload writes
+// could interleave inside a single line.
+type lockedPrefixWriter struct {
+	mu     sync.Mutex
+	w      io.Writer
+	prefix string
+	pend   bytes.Buffer // partial-line buffer
+}
+
+func (l *lockedPrefixWriter) Write(b []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	written := 0
+	for len(b) > 0 {
+		nl := bytes.IndexByte(b, '\n')
+		if nl < 0 {
+			l.pend.Write(b)
+			return written + len(b), nil
+		}
+		// Emit pending buffer + this line as one prefixed write.
+		var line []byte
+		if l.pend.Len() > 0 {
+			line = append(line, l.pend.Bytes()...)
+			l.pend.Reset()
+		}
+		line = append(line, b[:nl+1]...)
+		full := append([]byte(l.prefix), line...)
+		if _, err := l.w.Write(full); err != nil {
+			return written, err
+		}
+		written += nl + 1
+		b = b[nl+1:]
+	}
+	return written, nil
+}
+
+// validateConfirmFlash requires --confirm-flash to list exactly the
+// hostname args (set equality), guarding against typos that would flash
+// the wrong machine.
+func validateConfirmFlash(args []string, raw string) error {
+	if raw == "" {
+		return errors.New("--confirm-flash is required (must list every hostname argument, comma-separated)")
+	}
+	got := map[string]bool{}
+	for _, s := range strings.Split(raw, ",") {
+		got[strings.TrimSpace(s)] = true
+	}
+	want := map[string]bool{}
+	for _, h := range args {
+		want[h] = true
+	}
+	if len(got) != len(want) {
+		return fmt.Errorf("--confirm-flash %q does not match the %d hostname argument(s) %v", raw, len(args), args)
+	}
+	for h := range want {
+		if !got[h] {
+			return fmt.Errorf("--confirm-flash missing hostname %q (typo guard)", h)
+		}
+	}
+	for h := range got {
+		if !want[h] {
+			return fmt.Errorf("--confirm-flash lists %q which is not in the hostname args", h)
+		}
+	}
+	return nil
+}
+
+func uniqueOrdered(in []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	sort.Strings(in) // stable for tests; preserves cmd ordering above
+	return out
+}
+
+func journaled(mu *sync.Mutex, repo, hostname string, dpu *poc.DPU, status, logPath, errMsg string) {
+	mu.Lock()
+	defer mu.Unlock()
+	appendFlashJournal(repo, hostname, dpu, status, logPath, errMsg)
+}
+
+// prefixWriter prefixes every line of streamed bfb-install output. Used
+// inside flashOneJob's tee to disambiguate tool output from wrapper
+// messages. Single-goroutine — no locking needed (bfb-install is the
+// only writer per host, and stdout is goroutine-local via perHostWriter).
 type prefixWriter struct {
 	w      io.Writer
 	prefix string
@@ -275,7 +490,6 @@ func sshConfigForHost(repo string, h *poc.Host, timeout time.Duration) (ssh.Conf
 	return cfg, nil
 }
 
-// tmfifoHostPart returns the IP portion of a CIDR like 192.168.100.2/30.
 func tmfifoHostPart(cidr string) string {
 	if cidr == "" {
 		return ""
@@ -289,7 +503,6 @@ func tmfifoHostPart(cidr string) string {
 // waitForDPUSSH polls TCP/22 on dpuIP from the host every 5 s.
 func waitForDPUSSH(ctx context.Context, host *ssh.Client, dpuIP string) error {
 	cmd := fmt.Sprintf("timeout 4 bash -c '</dev/tcp/%s/22' && echo open || echo closed", dpuIP)
-	deadline, _ := ctx.Deadline()
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -303,7 +516,6 @@ func waitForDPUSSH(ctx context.Context, host *ssh.Client, dpuIP string) error {
 			return ctx.Err()
 		case <-time.After(5 * time.Second):
 		}
-		_ = deadline
 	}
 }
 
