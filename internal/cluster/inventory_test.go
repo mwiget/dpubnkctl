@@ -136,14 +136,19 @@ func TestRender_DataPlaneNodeIP(t *testing.T) {
 	}
 	hosts := files["hosts.yml"]
 	for _, want := range []string{
-		"ip: 10.10.41.66",          // h1 nodeIP from internal/41
-		"ip: 10.10.41.67",          // h2 nodeIP from internal/41
-		"access_ip: 10.0.0.10",     // h1 keeps mgmt as access_ip
-		"access_ip: 10.0.0.11",     // h2 keeps mgmt as access_ip
+		"ip: 10.10.41.66",       // h1 nodeIP from internal/41
+		"ip: 10.10.41.67",       // h2 nodeIP from internal/41
+		"ansible_host: 10.0.0.10", // h1 keeps mgmt as ansible_host
+		"ansible_host: 10.0.0.11", // h2 keeps mgmt as ansible_host
 	} {
 		if !strings.Contains(hosts, want) {
 			t.Errorf("hosts.yml missing %q\n%s", want, hosts)
 		}
+	}
+	// Must NOT emit access_ip — that would override etcd/apiserver
+	// advertised endpoints and break the etcd healthcheck.
+	if strings.Contains(hosts, "access_ip:") {
+		t.Errorf("hosts.yml should NOT contain access_ip (kubespray would mis-advertise etcd):\n%s", hosts)
 	}
 	all := files["group_vars/all/all.yml"]
 	for _, want := range []string{

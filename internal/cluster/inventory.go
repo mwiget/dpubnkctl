@@ -141,10 +141,15 @@ func Render(p *poc.PoC, plan Plan) (map[string]string, error) {
 // /inventory/keys inside the kubespray container — see runClusterUp,
 // which copies each host's KeyRef there before invoking docker.
 //
-// Per-host `ip:` (becomes kubelet --node-ip) is the data-plane IP of
-// the VLAN matching network.node_ip_role; if unset we fall back to
-// ssh.address. `access_ip` always stays the management/SSH address so
-// ansible can reach the host even when the data-plane VLAN is down.
+// Per-host `ip:` becomes kubelet --node-ip AND the etcd/apiserver
+// advertised endpoint. When network.node_ip_role is set we pick the
+// matching data-plane VLAN IP; otherwise fall back to ssh.address.
+//
+// We deliberately do NOT set kubespray's `access_ip` — that var
+// overrides the externally-advertised endpoint for etcd/kubelet,
+// which would mismatch the listen address (etcd binds to `ip`,
+// advertises `access_ip`) and break the etcd healthcheck.
+// `ansible_host` alone handles SSH reachability for ansible.
 func renderHostsYAML(p *poc.PoC, plan Plan) (string, error) {
 	role := p.Network.NodeIPRole
 	hostsBlock := map[string]any{}
@@ -166,7 +171,6 @@ func renderHostsYAML(p *poc.PoC, plan Plan) (string, error) {
 			"ansible_host":                 h.SSH.Address,
 			"ansible_user":                 h.SSH.User,
 			"ip":                           nodeIP,
-			"access_ip":                    h.SSH.Address,
 			"ansible_ssh_private_key_file": "/inventory/keys/" + name + ".pem",
 		}
 		if h.SSH.Port != 0 && h.SSH.Port != 22 {
