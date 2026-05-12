@@ -88,21 +88,28 @@ func InstallKubeBinaries(ctx context.Context, dpu *ssh.Client, k8sMinor string) 
 // JoinDPU runs the kubeadm-supplied join command on the DPU, with our
 // node name override. Containerd is the default CRI (set up by bf.conf).
 //
-// nodeIP, when non-empty, is passed as kubeadm's --node-ip so kubelet
-// registers with that address. Calico tunnel endpoints + kubectl
-// get nodes -o wide INTERNAL-IP both pick this up — required when the
-// cluster's east-west fabric is on a different subnet than the DPU's
-// management (oob_net0) IP.
+// nodeIP, when non-empty, is written to /etc/default/kubelet as
+// KUBELET_EXTRA_ARGS=--node-ip=<ip> BEFORE kubeadm join runs. kubeadm
+// join then starts kubelet via systemd, which sources /etc/default/
+// kubelet — so kubelet registers with that --node-ip. Required when
+// the cluster's east-west fabric is on a different subnet than the
+// DPU's management (oob_net0) IP. (We can't pass --node-ip to kubeadm
+// join directly — it's a kubelet flag, not a kubeadm one.)
 func JoinDPU(ctx context.Context, dpu *ssh.Client, jc *JoinCommand, dpuHostname, nodeIP string) error {
+	if nodeIP != "" {
+		// Drop a small file kubelet's systemd unit reads via EnvironmentFile=
+		// (kubespray + kubeadm both wire this in). Single line, idempotent
+		// — re-running join overwrites it with the same content.
+		env := fmt.Sprintf(`echo 'KUBELET_EXTRA_ARGS=--node-ip=%s' | sudo -n tee /etc/default/kubelet >/dev/null`, nodeIP)
+		if r := dpu.Run(ctx, env); !r.OK() {
+			return fmt.Errorf("write /etc/default/kubelet: exit=%d %s", r.ExitCode, strings.TrimSpace(r.Stderr+r.Stdout))
+		}
+	}
 	// Append --node-name so the DPU registers under the friendly name we
 	// chose at flash time (worker1-bf3, worker2-bf3) rather than its
 	// kernel hostname. Containerd default cri-socket also explicit.
-	extra := ""
-	if nodeIP != "" {
-		extra = " --node-ip " + nodeIP
-	}
-	cmd := fmt.Sprintf("sudo -n %s --node-name %s --cri-socket unix:///run/containerd/containerd.sock%s 2>&1",
-		jc.Raw, dpuHostname, extra)
+	cmd := fmt.Sprintf("sudo -n %s --node-name %s --cri-socket unix:///run/containerd/containerd.sock 2>&1",
+		jc.Raw, dpuHostname)
 	// Long timeout — TLS bootstrap + initial pull can take a few minutes.
 	joinCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
