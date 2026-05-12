@@ -29,4 +29,15 @@ const (
 	// Kubespray pins — match f5-bnk-nvidia-bf3-installations v2.2.0-static.
 	KubesprayImage   = "quay.io/kubespray/kubespray:v2.28.1"
 	KubesprayVersion = "v2.28.1"
+
+	// kubectl + helm — used during Phase 4 (BNK deploy). alpine/k8s
+	// bundles both with stable versioned tags (bitnami/kubectl removed
+	// versioned tags in late 2024). One image keeps `docker pull`
+	// surface small.
+	K8sToolsImage = "alpine/k8s:1.32.8"
+
+	// Cert-manager — required dependency for the FLO chart's webhook.
+	CertManagerChart   = "cert-manager"
+	CertManagerRepo    = "https://charts.jetstack.io"
+	CertManagerVersion = "v1.16.2"
 )

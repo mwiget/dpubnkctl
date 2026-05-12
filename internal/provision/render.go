@@ -19,14 +19,15 @@ import (
 // RenderInputs is the flat view passed to the bf.conf templates. Built
 // from PoC + Host + DPU by Render().
 type RenderInputs struct {
-	PasswordHash string         // hash from openssl passwd -1 '<pw>'
-	DPUMtu       int            // network.dpu_mtu
-	Hostname     string         // dpu.hostname (DPU OS hostname)
-	TmfifoIP     string         // dpu.tmfifo_ip CIDR (e.g. 192.168.100.2/30)
-	DNSServers   string         // space-separated for resolved.conf
-	DNSDomains   string
-	NTPServers   string
-	VLANs        []RenderedVLAN
+	PasswordHash   string         // hash from openssl passwd -1 '<pw>'
+	OperatorPubkey string         // operator's SSH pubkey (single line); installed to /home/ubuntu/.ssh/authorized_keys on the DPU at flash time
+	DPUMtu         int            // network.dpu_mtu
+	Hostname       string         // dpu.hostname (DPU OS hostname)
+	TmfifoIP       string         // dpu.tmfifo_ip CIDR (e.g. 192.168.100.2/30)
+	DNSServers     string         // space-separated for resolved.conf
+	DNSDomains     string
+	NTPServers     string
+	VLANs          []RenderedVLAN
 }
 
 type RenderedVLAN struct {
@@ -114,6 +115,11 @@ func buildInputs(p *poc.PoC, h *poc.Host, d *poc.DPU, repoDir string) (RenderInp
 		return RenderInputs{}, err
 	}
 
+	pubkey, err := readOperatorPubkey(repoDir, p, h)
+	if err != nil {
+		return RenderInputs{}, err
+	}
+
 	vlans := make([]RenderedVLAN, len(d.VLANs))
 	for i, v := range d.VLANs {
 		vlans[i] = RenderedVLAN{
@@ -126,15 +132,56 @@ func buildInputs(p *poc.PoC, h *poc.Host, d *poc.DPU, repoDir string) (RenderInp
 	}
 
 	return RenderInputs{
-		PasswordHash: hash,
-		DPUMtu:       p.Network.DPUMTU,
-		Hostname:     d.Hostname,
-		TmfifoIP:     d.TmfifoIP,
-		DNSServers:   strings.Join(p.Provisioning.DPUDNS, " "),
-		DNSDomains:   strings.Join(p.Provisioning.DPUDNSDomains, " "),
-		NTPServers:   strings.Join(p.Provisioning.DPUNTP, " "),
-		VLANs:        vlans,
+		PasswordHash:   hash,
+		OperatorPubkey: pubkey,
+		DPUMtu:         p.Network.DPUMTU,
+		Hostname:       d.Hostname,
+		TmfifoIP:       d.TmfifoIP,
+		DNSServers:     strings.Join(p.Provisioning.DPUDNS, " "),
+		DNSDomains:     strings.Join(p.Provisioning.DPUDNSDomains, " "),
+		NTPServers:     strings.Join(p.Provisioning.DPUNTP, " "),
+		VLANs:          vlans,
 	}, nil
+}
+
+// readOperatorPubkey resolves the SSH pubkey to install on the DPU.
+// Lookup order:
+//   1. provisioning.operator_pubkey_ref (explicit; relative to repo)
+//   2. <host.SSH.KeyRef>.pub (e.g. ~/.ssh/id_ed25519 → ~/.ssh/id_ed25519.pub)
+//
+// Returns the single-line pubkey body. The DPU only ever sees this
+// public material; the matching private key never leaves the operator.
+func readOperatorPubkey(repoDir string, p *poc.PoC, h *poc.Host) (string, error) {
+	candidates := []string{}
+	if p.Provisioning.OperatorPubkeyRef != "" {
+		ref := p.Provisioning.OperatorPubkeyRef
+		if !filepath.IsAbs(ref) {
+			ref = filepath.Join(repoDir, ref)
+		}
+		candidates = append(candidates, ref)
+	}
+	if h.SSH.KeyRef != "" {
+		key := h.SSH.KeyRef
+		if !filepath.IsAbs(key) {
+			key = filepath.Join(repoDir, key)
+		}
+		candidates = append(candidates, key+".pub")
+	}
+	for _, c := range candidates {
+		data, err := os.ReadFile(c)
+		if err == nil {
+			line := strings.TrimSpace(string(data))
+			if line == "" {
+				return "", fmt.Errorf("operator pubkey %s is empty", c)
+			}
+			// Sanity-check: must look like an OpenSSH pubkey one-liner.
+			if !strings.HasPrefix(line, "ssh-") && !strings.HasPrefix(line, "ecdsa-") {
+				return "", fmt.Errorf("operator pubkey %s does not start with ssh-/ecdsa- — is this the public key?", c)
+			}
+			return line, nil
+		}
+	}
+	return "", fmt.Errorf("could not find operator SSH pubkey: tried %v — set provisioning.operator_pubkey_ref or place a .pub next to the SSH key", candidates)
 }
 
 // readPasswordHash loads the openssl-passwd-1 hash from the configured

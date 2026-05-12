@@ -33,9 +33,17 @@ func fixturePoC(t *testing.T, lag bool) (*poc.PoC, *poc.Host, *poc.DPU, string) 
 			{Name: "internal0", Tag: 41, IP: "10.10.41.5/24", Uplink: "p1"},
 		},
 	}
+	keyPath := filepath.Join(repo, "keys", "id_test")
+	pubPath := keyPath + ".pub"
+	if err := os.WriteFile(keyPath, []byte("private"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pubPath, []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAATEST test@op\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	h := poc.Host{
 		Name: "worker1",
-		SSH:  poc.SSH{Address: "192.168.68.66", Port: 22, User: "ubuntu"},
+		SSH:  poc.SSH{Address: "192.168.68.66", Port: 22, User: "ubuntu", KeyRef: keyPath},
 		DPUs: []poc.DPU{dpu},
 	}
 	p := poc.New("test-poc")
@@ -65,6 +73,8 @@ func TestRender_LAG(t *testing.T) {
 		"tag=40",                                 // VLAN tag substituted
 		"ip route replace default via 10.10.40.1", // default gateway present
 		"LAG_RESOURCE_ALLOCATION=1",              // bfb_post_install
+		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAATEST", // operator pubkey installed
+		"chmod 600 /mnt/home/ubuntu/.ssh/authorized_keys", // perms set
 	}
 	for _, w := range wants {
 		if !strings.Contains(out, w) {

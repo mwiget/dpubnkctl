@@ -21,6 +21,7 @@ func newClusterCmd() *cobra.Command {
 	}
 	cmd.AddCommand(newClusterPlanCmd())
 	cmd.AddCommand(newClusterUpCmd())
+	cmd.AddCommand(newClusterJoinDPUsCmd())
 	cmd.AddCommand(newClusterResetCmd())
 	cmd.AddCommand(&cobra.Command{
 		Use:   "status",

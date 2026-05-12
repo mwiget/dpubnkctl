@@ -41,6 +41,16 @@ network:
 EOFMGMT
     chmod 600 /mnt/etc/netplan/50-mgmt.yaml
 
+    # Install operator's SSH pubkey so dpubnkctl can SSH to the DPU
+    # without sshpass/password handling after first boot.
+    mkdir -p /mnt/home/ubuntu/.ssh
+    cat <<'EOFSSH' > /mnt/home/ubuntu/.ssh/authorized_keys
+{{.OperatorPubkey}}
+EOFSSH
+    chmod 700 /mnt/home/ubuntu/.ssh
+    chmod 600 /mnt/home/ubuntu/.ssh/authorized_keys
+    chown -R 1000:1000 /mnt/home/ubuntu/.ssh
+
     cat << EOFRESOLVE > /mnt/etc/systemd/resolved.conf
 [Resolve]
 DNS={{.DNSServers}}

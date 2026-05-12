@@ -14,13 +14,6 @@ import (
 //   destroy   -> Phase 4 (paired with deploy)
 //   journal   -> Phase 5
 
-func newDeployCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "deploy",
-		Short: "Install BNK platform (FLO, CNEInstance, VLANs, GatewayClass) (Phase 4)",
-		RunE:  notYet("deploy", "Phase 4"),
-	}
-}
 
 func newDestroyCmd() *cobra.Command {
 	return &cobra.Command{

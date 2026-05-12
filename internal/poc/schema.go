@@ -119,6 +119,7 @@ type DPUVLAN struct {
 // flash. Most fields are PoC-wide; per-DPU VLAN/IP details live on DPU.
 type Provisioning struct {
 	DPUPasswordHashRef string   `yaml:"dpu_password_hash_ref"` // path under repo, gitignored — content of `openssl passwd -1 '<password>'`
+	OperatorPubkeyRef  string   `yaml:"operator_pubkey_ref,omitempty"` // operator's SSH pubkey, written to /home/ubuntu/.ssh/authorized_keys on the DPU at flash time. If empty, derived from the per-host SSH key + ".pub".
 	DPUDNS             []string `yaml:"dpu_dns"`
 	DPUDNSDomains      []string `yaml:"dpu_dns_domains,omitempty"`
 	DPUNTP             []string `yaml:"dpu_ntp"`
