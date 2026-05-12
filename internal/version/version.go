@@ -46,4 +46,9 @@ const (
 	// f5-bnk-nvidia-bf3-installations v2.2.0-static.
 	FLOChartRepo = "oci://repo.f5.com/charts"
 	FLOChartName = "oci://repo.f5.com/charts/f5-lifecycle-operator"
+
+	// CNE manifest version — embedded in CNEInstance.spec.manifestVersion.
+	// Drives which BNK component image set FLO pulls. Pinned to match
+	// f5-bnk-nvidia-bf3-installations v2.2.0-static resources/cne-instance.yaml.
+	CNEManifestVersion = "2.2.0-3.2226.0-0.0.385"
 )

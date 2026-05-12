@@ -1,0 +1,22 @@
+{{- range $i, $vlan := .VLANs}}
+{{- if $i}}
+---
+{{end -}}
+apiVersion: "k8s.f5net.com/v1"
+kind: F5SPKVlan
+metadata:
+  name: {{$vlan.Name}}
+  namespace: f5-operators
+spec:
+  name: {{$vlan.Name}}
+  mtu: {{$vlan.MTU}}
+  tag: {{$vlan.Tag}}
+  interfaces:
+    - "{{$vlan.Interface}}"
+  selfip_v4s:
+{{- range $vlan.SelfIPv4s}}
+    - {{.}}
+{{- end}}
+  prefixlen_v4: {{$vlan.PrefixV4}}
+  auto_lasthop: "AUTO_LASTHOP_ENABLED"
+{{- end}}

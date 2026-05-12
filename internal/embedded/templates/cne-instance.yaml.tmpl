@@ -1,0 +1,60 @@
+apiVersion: k8s.f5.com/v1
+kind: CNEInstance
+metadata:
+  name: {{.InstanceName}}
+  namespace: f5-operators
+spec:
+  product:
+    gatewayAPI: true
+    type: BNK
+  manifestVersion: "{{.ManifestVersion}}"
+  wholeCluster: true
+  storageClassName: {{.StorageClass}}
+  dpu:
+    enabled: {{.DPUEnabled}}
+  telemetry:
+    loggingSubsystem:
+      enabled: false
+    metricSubsystem:
+      enabled: true
+  certificate:
+    clusterIssuer: bnk-ca-cluster-issuer
+  deploymentSize: "{{.DeploymentSize}}"
+  registry:
+    uri: repo.f5.com
+    imagePullSecrets:
+    - name: far-secret
+    imagePullPolicy: Always
+  networkAttachments:
+{{- range .NetworkAttachments}}
+  - {{.}}
+{{- end}}
+  pseudoCNI:
+    enabled: true
+  dynamicRouting:
+    enabled: true
+  coreCollection:
+    enabled: false
+  firewallACL:
+    enabled: true
+  advanced:
+    demoMode:
+      enabled: false
+    maintenanceMode:
+      enabled: false
+    envDiscovery:
+      enabled: false
+      stopOnFail: true
+      runAfterSuccess: true
+    cneController:
+      env:
+      - name: "TMM_DEFAULT_MTU"
+        value: "{{.DPUMtu}}"
+    tmm:
+      env:
+      - name: "TMM_CALICO_ROUTER"
+        value: "default"
+      - name: "TMM_DEFAULT_MTU"
+        value: "{{.DPUMtu}}"
+      - name: "ZEBOS_STATE"
+        value: legacy

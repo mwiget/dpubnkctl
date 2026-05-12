@@ -23,11 +23,7 @@ func newDeployCmd() *cobra.Command {
 	}
 	cmd.AddCommand(newDeployPrereqsCmd())
 	cmd.AddCommand(newDeployFLOCmd())
-	cmd.AddCommand(&cobra.Command{
-		Use:   "cne",
-		Short: "Apply CNEInstance + F5SPKVlan + GatewayClass (Phase 4b.2, next iteration)",
-		RunE:  notYet("deploy cne", "Phase 4b.2"),
-	})
+	cmd.AddCommand(newDeployCNECmd())
 	return cmd
 }
 
