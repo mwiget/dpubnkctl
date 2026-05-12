@@ -1,0 +1,20 @@
+# Binary
+/bin/
+/dpubnkctl
+
+# Go build artifacts
+*.test
+*.out
+coverage.txt
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+
+# Local PoC working dirs (created by `dpubnkctl init`)
+# Each PoC repo has its own .gitignore for keys/JWT/FAR.

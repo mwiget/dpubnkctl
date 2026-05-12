@@ -1,0 +1,44 @@
+package cli
+
+import (
+	"github.com/spf13/cobra"
+
+	"github.com/mwiget/dpubnkctl/internal/version"
+)
+
+// NewRootCmd assembles the cobra command tree.
+func NewRootCmd() *cobra.Command {
+	root := &cobra.Command{
+		Use:   "dpubnkctl",
+		Short: "Deploy F5 BIG-IP Next for Kubernetes (BNK) on bare-metal hosts with NVIDIA BlueField DPUs",
+		Long: `dpubnkctl provisions a BNK ` + version.BNKVersion + ` deployment end-to-end:
+
+  discover  -> probe hosts/DPUs over SSH+Redfish, build inventory
+  provision -> flash DPUs (BFB ` + version.DOCAVersion + `), set NIC mode, configure networking
+  cluster   -> bring up the Kubernetes control plane and join DPU workers
+  deploy    -> install BNK platform (FLO, CNEInstance, VLANs, GatewayClass)
+
+Each PoC lives in its own local git repo (see "init"). The repo holds full
+declarative state so you can tear down and redeploy without re-prompting.
+
+Two operating modes:
+  - Human:    run subcommands directly with --interactive prompts
+  - Agentic:  point your favorite agentic CLI at the PoC repo's AGENTS.md
+              (see "dpubnkctl agent --help")`,
+		SilenceUsage: true,
+	}
+
+	root.AddCommand(
+		newInitCmd(),
+		newDiscoverCmd(),
+		newProvisionCmd(),
+		newClusterCmd(),
+		newDeployCmd(),
+		newDestroyCmd(),
+		newJournalCmd(),
+		newAgentCmd(),
+		newVersionCmd(),
+	)
+
+	return root
+}

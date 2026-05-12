@@ -1,0 +1,18 @@
+# Secrets — never commit
+keys/
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+*.tgz
+.jwt
+*-jwt.txt
+*.kubeconfig
+kubeconfig
+
+# Discovery output that may contain creds
+inventory/secrets/
+
+# OS
+.DS_Store
+*.swp
