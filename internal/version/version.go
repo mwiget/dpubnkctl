@@ -16,8 +16,10 @@ const (
 	BFBBaseURL     = "https://content.mellanox.com/BlueField/BFBs/Ubuntu22.04"
 	FLOChartVer    = "v2.9.27-0.2.10"
 	FLOChartRef    = "oci://repo.f5.com/charts/f5-lifecycle-operator"
-	K8sVersion       = "1.29"
-	K8sVersionPinned = "v1.29.0" // kubespray expects "v" prefix
+	K8sVersion       = "1.32"
+	// K8sVersionPinned matches kubespray v2.28.1's default (which only
+	// supports 1.30/1.31/1.32). No leading "v" — kubespray rejects it.
+	K8sVersionPinned = "1.32.8"
 	RuncVersion      = "1.2.1"
 	ContainerdVer    = "1.7.23"
 	PauseImageTag    = "3.10"

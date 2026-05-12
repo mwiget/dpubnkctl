@@ -1,0 +1,293 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/mwiget/dpubnkctl/internal/cluster"
+	"github.com/mwiget/dpubnkctl/internal/poc"
+	"github.com/mwiget/dpubnkctl/internal/ssh"
+)
+
+type clusterUpFlags struct {
+	pocDir         string
+	yolo           bool
+	confirmCluster string
+	pull           bool
+	skipFetch      bool
+	timeout        time.Duration
+	playbook       string
+}
+
+func newClusterUpCmd() *cobra.Command {
+	f := &clusterUpFlags{}
+	cmd := &cobra.Command{
+		Use:   "up",
+		Short: "Run kubespray cluster.yml against the hosts (DESTRUCTIVE — gated by --yolo)",
+		Long: `Drive the full Kubernetes cluster bring-up via kubespray (Docker):
+
+  1. Validate the plan (same as 'cluster plan')
+  2. Regenerate the kubespray inventory under artifacts/kubespray-inventory
+  3. Verify Docker is up and (optionally) pull the kubespray image
+  4. Run cluster.yml with the operator's ~/.ssh mounted read-only
+  5. Fetch /etc/kubernetes/admin.conf from the first control plane,
+     localize the server URL, save as artifacts/kubeconfig (mode 0600)
+  6. Update poc.yaml.status.cluster + journal entry
+
+This typically takes 30–90 minutes for a 2-host PoC. Output streams to
+the terminal AND to artifacts/cluster-up.log unprefixed.
+
+Required gates:
+  --yolo                   acknowledge that this is destructive
+  --confirm-cluster NAME   must equal poc.yaml.metadata.name (typo guard)`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runClusterUp(cmd.Context(), cmd.OutOrStdout(), f)
+		},
+	}
+	cmd.Flags().StringVar(&f.pocDir, "poc", "", "PoC repo path (default: current directory)")
+	cmd.Flags().BoolVar(&f.yolo, "yolo", false, "Acknowledge that this command is destructive")
+	cmd.Flags().StringVar(&f.confirmCluster, "confirm-cluster", "", "Must equal poc.yaml.metadata.name (typo guard)")
+	cmd.Flags().BoolVar(&f.pull, "pull", true, "Run `docker pull` for the kubespray image before cluster.yml")
+	cmd.Flags().BoolVar(&f.skipFetch, "skip-fetch-kubeconfig", false, "Don't pull /etc/kubernetes/admin.conf back to artifacts/kubeconfig")
+	cmd.Flags().DurationVar(&f.timeout, "timeout", 90*time.Minute, "Wall-clock timeout for the kubespray run")
+	cmd.Flags().StringVar(&f.playbook, "playbook", "cluster.yml", "Playbook to run (use reset.yml for tear-down)")
+	return cmd
+}
+
+func runClusterUp(ctx context.Context, out io.Writer, f *clusterUpFlags) error {
+	repo, err := resolvePoCDir(f.pocDir)
+	if err != nil {
+		return err
+	}
+	p, err := poc.Load(repo)
+	if err != nil {
+		return fmt.Errorf("not a PoC repo (%s): %w", repo, err)
+	}
+
+	if !f.yolo {
+		return errors.New("refusing destructive cluster bring-up without --yolo")
+	}
+	if f.confirmCluster != p.Metadata.Name {
+		return fmt.Errorf("--confirm-cluster must equal poc.yaml.metadata.name (%q), got %q", p.Metadata.Name, f.confirmCluster)
+	}
+
+	plan := cluster.BuildPlan(p)
+	if !plan.Valid() {
+		fmt.Fprintln(out, "=== plan errors ===")
+		for _, e := range plan.Errors {
+			fmt.Fprintln(out, "  ✗", e)
+		}
+		return fmt.Errorf("plan is not valid")
+	}
+
+	fmt.Fprintf(out, "PoC:        %s   (BNK %s, k8s %s, kubespray %s)\n",
+		p.Metadata.Name, p.Metadata.BNKVersion, "v"+p.Versions.K8s, cluster.KubesprayPinForCLI())
+	fmt.Fprintf(out, "Plan:       cp=%v  node=%v  etcd=%v\n\n", plan.ControlPlane, plan.Workers, plan.Etcd)
+
+	// 1. Docker preflight.
+	fmt.Fprintln(out, "[1/5] Docker preflight ...")
+	if err := cluster.CheckDocker(ctx); err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "      ok")
+
+	// 2. Regenerate inventory + stage SSH keys into the inventory tree
+	//    (kubespray container reads them from /inventory/keys/<host>.pem).
+	fmt.Fprintln(out, "[2/5] Regenerating kubespray inventory ...")
+	files, err := cluster.Render(p, plan)
+	if err != nil {
+		return err
+	}
+	invDir := filepath.Join(repo, "artifacts", "kubespray-inventory")
+	for name, content := range files {
+		full := filepath.Join(invDir, name)
+		_ = os.MkdirAll(filepath.Dir(full), 0o755)
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			return err
+		}
+	}
+	keysDir := filepath.Join(invDir, "keys")
+	if err := os.MkdirAll(keysDir, 0o700); err != nil {
+		return err
+	}
+	for hostName, h := range plan.HostByName {
+		src := h.SSH.KeyRef
+		if !filepath.IsAbs(src) {
+			src = filepath.Join(repo, src)
+		}
+		data, err := os.ReadFile(src)
+		if err != nil {
+			return fmt.Errorf("read ssh key for %s (%s): %w", hostName, src, err)
+		}
+		dst := filepath.Join(keysDir, hostName+".pem")
+		if err := os.WriteFile(dst, data, 0o600); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(out, "      wrote %d files + %d ssh keys under %s\n", len(files), len(plan.HostByName), invDir)
+
+	// 3. Pull kubespray image.
+	if f.pull {
+		fmt.Fprintln(out, "[3/5] Pulling kubespray image ...")
+		if err := cluster.PullKubespray(ctx, prefixWriter{w: out, prefix: "      | "}); err != nil {
+			return fmt.Errorf("docker pull: %w", err)
+		}
+		fmt.Fprintln(out, "      ok")
+	} else {
+		fmt.Fprintln(out, "[3/5] (--pull=false; skipping image pull)")
+	}
+
+	// 3.5 Pre-create /etc/kubernetes on every host. Kubespray's `download`
+	// role templates kubeadm-images.yaml into kube_config_dir before the
+	// preinstall role gets a chance to create it, and `cluster reset`
+	// wipes the dir entirely. Pre-create it ourselves to dodge the race.
+	fmt.Fprintln(out, "      Pre-creating /etc/kubernetes on every host ...")
+	if err := preCreateKubeDir(ctx, repo, plan); err != nil {
+		return fmt.Errorf("pre-create /etc/kubernetes: %w", err)
+	}
+
+	// 4. Run cluster.yml. Stream to terminal + log file.
+	fmt.Fprintf(out, "[4/5] Running kubespray %s (this typically takes 30–90 minutes) ...\n", f.playbook)
+	logPath := filepath.Join(repo, "artifacts", "cluster-up.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
+
+	tee := io.MultiWriter(prefixWriter{w: out, prefix: "      | "}, logFile)
+
+	exit, runErr := cluster.RunKubespray(ctx, cluster.RunOptions{
+		InventoryDir: invDir,
+		Out:          tee,
+		Timeout:      f.timeout,
+		Playbook:     f.playbook,
+	})
+	if runErr != nil {
+		appendClusterJournal(repo, p.Metadata.Name, "FAILED (transport)", logPath, runErr.Error())
+		return fmt.Errorf("kubespray: %w", runErr)
+	}
+	if exit != 0 {
+		appendClusterJournal(repo, p.Metadata.Name, fmt.Sprintf("FAILED (exit %d)", exit), logPath, "")
+		return fmt.Errorf("kubespray exited %d — see %s", exit, logPath)
+	}
+	fmt.Fprintf(out, "      kubespray completed — log at %s\n", logPath)
+
+	// 5. Fetch + localize kubeconfig from first control plane.
+	if f.skipFetch {
+		fmt.Fprintln(out, "[5/5] (--skip-fetch-kubeconfig)")
+	} else {
+		fmt.Fprintln(out, "[5/5] Fetching kubeconfig from first control plane ...")
+		cpName := plan.ControlPlane[0]
+		cpHost := plan.HostByName[cpName]
+		kcPath := filepath.Join(repo, "artifacts", "kubeconfig")
+		if err := fetchKubeconfig(ctx, repo, cpHost, kcPath); err != nil {
+			fmt.Fprintf(out, "      WARN: kubeconfig fetch failed (cluster is up, fetch manually): %v\n", err)
+		} else {
+			fmt.Fprintf(out, "      saved %s (kubectl --kubeconfig=%s get nodes)\n", kcPath, kcPath)
+		}
+	}
+
+	// 6. Update poc.yaml + journal.
+	p.Status.Cluster = "completed"
+	p.Status.LastPhaseAt = time.Now().UTC()
+	if err := p.Save(repo); err != nil {
+		return err
+	}
+	appendClusterJournal(repo, p.Metadata.Name, "SUCCESS", logPath, "")
+
+	fmt.Fprintln(out, "\nDONE.")
+	return nil
+}
+
+// preCreateKubeDir SSHes to every host (in parallel) and ensures
+// /etc/kubernetes exists. Aggregates errors.
+func preCreateKubeDir(ctx context.Context, repo string, plan cluster.Plan) error {
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		failures []string
+	)
+	for name, h := range plan.HostByName {
+		name, h := name, h
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cfg, err := sshConfigForHost(repo, h, 15*time.Second)
+			if err != nil {
+				mu.Lock()
+				failures = append(failures, fmt.Sprintf("%s: %v", name, err))
+				mu.Unlock()
+				return
+			}
+			dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			c, err := ssh.Dial(dialCtx, cfg)
+			cancel()
+			if err != nil {
+				mu.Lock()
+				failures = append(failures, fmt.Sprintf("%s: ssh dial: %v", name, err))
+				mu.Unlock()
+				return
+			}
+			defer c.Close()
+			if r := c.Run(ctx, "sudo -n mkdir -p /etc/kubernetes"); !r.OK() {
+				mu.Lock()
+				failures = append(failures, fmt.Sprintf("%s: mkdir: %s", name, strings.TrimSpace(r.Stderr+r.Stdout)))
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if len(failures) > 0 {
+		return fmt.Errorf("%d host(s) failed: %s", len(failures), strings.Join(failures, "; "))
+	}
+	return nil
+}
+
+func fetchKubeconfig(ctx context.Context, repo string, host *poc.Host, dst string) error {
+	cfg, err := sshConfigForHost(repo, host, 30*time.Second)
+	if err != nil {
+		return err
+	}
+	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	c, err := ssh.Dial(dialCtx, cfg)
+	if err != nil {
+		return fmt.Errorf("ssh dial %s: %w", host.SSH.Address, err)
+	}
+	defer c.Close()
+	r := c.Run(ctx, "sudo -n cat /etc/kubernetes/admin.conf")
+	if !r.OK() {
+		return fmt.Errorf("read admin.conf: exit=%d stderr=%s", r.ExitCode, strings.TrimSpace(r.Stderr))
+	}
+	localized := cluster.LocalizeKubeconfig(r.Stdout, host.SSH.Address)
+	return cluster.SaveKubeconfig(dst, localized)
+}
+
+func appendClusterJournal(repo, pocName, status, logPath, errMsg string) {
+	date := time.Now().UTC().Format("2006-01-02")
+	path := filepath.Join(repo, "journal", date+"-cluster.md")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "## lab-tech: cluster up — %s\n", status)
+	fmt.Fprintf(f, "- Time: %s\n", time.Now().UTC().Format(time.RFC3339))
+	fmt.Fprintf(f, "- PoC:  %s\n", pocName)
+	fmt.Fprintf(f, "- kubespray log: %s\n", strings.TrimPrefix(logPath, repo+string(filepath.Separator)))
+	if errMsg != "" {
+		fmt.Fprintf(f, "- Error: %s\n", errMsg)
+	}
+	fmt.Fprintln(f, "- Next: pre-sales SE confirms `kubectl --kubeconfig=artifacts/kubeconfig get nodes` returns Ready")
+	fmt.Fprintln(f)
+}

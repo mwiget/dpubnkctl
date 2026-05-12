@@ -126,14 +126,19 @@ func Render(p *poc.PoC, plan Plan) (map[string]string, error) {
 
 // renderHostsYAML emits the kubespray inventory in YAML form. We use
 // gopkg.in/yaml.v3 to get correct quoting and indentation.
+//
+// SSH keys are referenced via a per-inventory keys/ dir mounted at
+// /inventory/keys inside the kubespray container — see runClusterUp,
+// which copies each host's KeyRef there before invoking docker.
 func renderHostsYAML(p *poc.PoC, plan Plan) (string, error) {
 	hostsBlock := map[string]any{}
 	for _, name := range allHostNames(plan) {
 		h := plan.HostByName[name]
 		entry := map[string]any{
-			"ansible_host": h.SSH.Address,
-			"ansible_user": h.SSH.User,
-			"ip":           h.SSH.Address, // east-west IP — we only have one per host today
+			"ansible_host":                 h.SSH.Address,
+			"ansible_user":                 h.SSH.User,
+			"ip":                           h.SSH.Address, // east-west IP — we only have one per host today
+			"ansible_ssh_private_key_file": "/inventory/keys/" + name + ".pem",
 		}
 		if h.SSH.Port != 0 && h.SSH.Port != 22 {
 			entry["ansible_port"] = h.SSH.Port
@@ -182,6 +187,11 @@ func renderGroupVarsAll(p *poc.PoC) string {
 ansible_become: true
 ansible_become_method: sudo
 
+# Skip TOFU host-key prompts inside the kubespray container; the operator
+# trusts the lab/PoC network here. For production add a populated
+# /inventory/known_hosts and flip this back on.
+ansible_host_key_checking: false
+
 # Disable upgrade prompts that block ansible runs.
 upgrade_cluster_setup: false
 `
@@ -198,6 +208,14 @@ kube_network_plugin: calico
 kube_pods_subnet: 10.233.64.0/18
 kube_service_addresses: 10.233.0.0/18
 calico_mtu: %[4]d
+
+# kube_proxy_mode: iptables (not the kubespray default 'ipvs').
+# Kubespray v2.28.1 + Ubuntu 22.04 kernel 5.15+ trips on a broken
+# modprobe loop for the no-longer-existent nf_conntrack_ipv4 module
+# when kube_proxy_mode == ipvs. iptables sidesteps the bug entirely and
+# is the kubeadm default. Override here if your kernel pre-loads the
+# legacy modules.
+kube_proxy_mode: iptables
 
 # Container runtime
 container_manager: containerd

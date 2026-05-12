@@ -20,11 +20,8 @@ func newClusterCmd() *cobra.Command {
 		Short: "Generate the kubespray inventory and bring up the Kubernetes cluster",
 	}
 	cmd.AddCommand(newClusterPlanCmd())
-	cmd.AddCommand(&cobra.Command{
-		Use:   "up",
-		Short: "Run kubespray cluster.yml against the hosts (DESTRUCTIVE — gated by --yolo)",
-		RunE:  notYet("cluster up", "the next iteration of Phase 3"),
-	})
+	cmd.AddCommand(newClusterUpCmd())
+	cmd.AddCommand(newClusterResetCmd())
 	cmd.AddCommand(&cobra.Command{
 		Use:   "status",
 		Short: "Show cluster + node readiness",
@@ -32,8 +29,8 @@ func newClusterCmd() *cobra.Command {
 	})
 	cmd.AddCommand(&cobra.Command{
 		Use:   "down",
-		Short: "Tear down the cluster",
-		RunE:  notYet("cluster down", "after `cluster up` lands"),
+		Short: "Tear down the cluster (alias for `cluster reset`)",
+		RunE:  notYet("cluster down", "use `dpubnkctl cluster reset` for now"),
 	})
 	return cmd
 }
