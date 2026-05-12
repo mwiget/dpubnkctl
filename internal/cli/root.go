@@ -32,6 +32,7 @@ Two operating modes:
 		newInitCmd(),
 		newDiscoverCmd(),
 		newProvisionCmd(),
+		newHostCmd(),
 		newClusterCmd(),
 		newDeployCmd(),
 		newDestroyCmd(),

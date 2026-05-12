@@ -86,14 +86,14 @@ func RenderF5SPKVlans(p *poc.PoC) (string, error) {
 	for _, h := range p.Hosts {
 		for _, d := range h.DPUs {
 			for _, v := range d.VLANs {
-				key := aggKey{name: v.Name}
+				key := aggKey{name: v.PortName()}
 				if _, exists := agg[key]; !exists {
 					agg[key] = &aggVal{tag: v.Tag}
 					order = append(order, key)
 				}
 				ip, ipnet, err := net.ParseCIDR(v.IP)
 				if err != nil {
-					return "", fmt.Errorf("bad ip %q on %s/%s: %w", v.IP, h.Name, v.Name, err)
+					return "", fmt.Errorf("bad ip %q on %s/%s: %w", v.IP, h.Name, v.PortName(), err)
 				}
 				agg[key].ipsByHost = append(agg[key].ipsByHost, ip.String())
 				ones, _ := ipnet.Mask.Size()
@@ -158,7 +158,7 @@ func allHostsVLANCount(p *poc.PoC) int {
 	for _, h := range p.Hosts {
 		for _, d := range h.DPUs {
 			for _, v := range d.VLANs {
-				seen[v.Name] = true
+				seen[v.PortName()] = true
 			}
 		}
 	}

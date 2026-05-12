@@ -4,7 +4,10 @@
 // file. Anything not captured here is not part of the PoC.
 package poc
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 const (
 	APIVersion = "dpubnkctl.f5.com/v1alpha1"
@@ -62,6 +65,80 @@ type Network struct {
 	VLANs        []VLAN `yaml:"vlans"`
 	NFSServer    string `yaml:"nfs_server,omitempty"`
 	NFSPath      string `yaml:"nfs_path,omitempty"`
+
+	// ClusterAPIServerAddress is the address apiserver advertises and
+	// every node uses in its kubeconfig. Set to a routable IP/VIP on
+	// the data-plane network (e.g. "10.10.41.66"). When set, kubespray
+	// is configured with loadbalancer_apiserver_localhost=false and
+	// loadbalancer_apiserver pointing here — eliminates the
+	// 127.0.0.1 nginx-proxy hack and lets externally-joined DPUs talk
+	// to the apiserver without extra plumbing.
+	ClusterAPIServerAddress string `yaml:"cluster_apiserver_address,omitempty"`
+
+	// NodeIPRole names the VLAN role that provides each node's
+	// kubelet --node-ip. Hosts pick host.data_plane.vlans[role==X];
+	// DPUs pick dpu.vlans[role==X]. When unset, hosts fall back to
+	// ssh.address and DPUs let kubelet auto-detect. Typically set to
+	// the same role used for ClusterAPIServerAddress (e.g. "internal").
+	NodeIPRole string `yaml:"node_ip_role,omitempty"`
+}
+
+// HostDataPlane describes the host's data-plane VLAN sub-interfaces.
+// dpubnkctl writes a netplan that adds one VLAN sub-interface per entry
+// onto the host's single data-plane PF (ParentIface). VLAN sub-if names
+// follow <Role><Tag> (e.g. "external40", "internal41") and align with
+// the OVS port names on the DPU side so the same VLAN is identifiable
+// end-to-end. No bond on the host — bonding is handled by the DPU when
+// the DPU runs in LAG mode.
+type HostDataPlane struct {
+	ParentIface string              `yaml:"parent_iface"` // e.g. "ens16f0np0"
+	MTU         int                 `yaml:"mtu,omitempty"` // default for sub-ifs; falls back to network.dpu_mtu
+	VLANs       []HostDataPlaneVLAN `yaml:"vlans"`         // one entry per VLAN this host needs an IP on
+}
+
+// HostDataPlaneVLAN is one VLAN sub-interface on the host.
+// Sub-interface name is derived as Role+Tag (e.g. "internal41",
+// "storage50"). Role is a short lowercase identifier; well-known values
+// include external, internal, storage, mgmt, replication — but any
+// matching `^[a-z][a-z0-9]{0,9}$` is accepted as long as Role+Tag fits
+// the Linux 15-char interface-name limit.
+type HostDataPlaneVLAN struct {
+	Role string `yaml:"role"` // e.g. external, internal, storage
+	Tag  int    `yaml:"tag"`  // 802.1q VLAN id
+	IP   string `yaml:"ip"`   // CIDR, e.g. "10.10.41.66/24"
+	MTU  int    `yaml:"mtu,omitempty"`
+}
+
+// PortName returns the netplan VLAN sub-interface name (e.g. "internal41").
+func (v HostDataPlaneVLAN) PortName() string {
+	return fmt.Sprintf("%s%d", v.Role, v.Tag)
+}
+
+// VLANByRole returns the host's data-plane VLAN with the given role,
+// or nil if no data_plane block is present or no VLAN matches.
+func (h *Host) VLANByRole(role string) *HostDataPlaneVLAN {
+	if h == nil || h.DataPlane == nil || role == "" {
+		return nil
+	}
+	for i := range h.DataPlane.VLANs {
+		if h.DataPlane.VLANs[i].Role == role {
+			return &h.DataPlane.VLANs[i]
+		}
+	}
+	return nil
+}
+
+// VLANByRole returns the DPU's VLAN with the given role, or nil if none.
+func (d *DPU) VLANByRole(role string) *DPUVLAN {
+	if d == nil || role == "" {
+		return nil
+	}
+	for i := range d.VLANs {
+		if d.VLANs[i].Role == role {
+			return &d.VLANs[i]
+		}
+	}
+	return nil
 }
 
 type VLAN struct {
@@ -71,11 +148,12 @@ type VLAN struct {
 }
 
 type Host struct {
-	Name string `yaml:"name"`
-	Role string `yaml:"role"` // control-plane | worker | both
-	SSH  SSH    `yaml:"ssh"`
-	BMC  *BMC   `yaml:"bmc,omitempty"`
-	DPUs []DPU  `yaml:"dpus,omitempty"`
+	Name      string         `yaml:"name"`
+	Role      string         `yaml:"role"` // control-plane | worker | both
+	SSH       SSH            `yaml:"ssh"`
+	BMC       *BMC           `yaml:"bmc,omitempty"`
+	DataPlane *HostDataPlane `yaml:"data_plane,omitempty"`
+	DPUs      []DPU          `yaml:"dpus,omitempty"`
 }
 
 type SSH struct {
@@ -102,17 +180,28 @@ type DPU struct {
 	Hostname string    `yaml:"hostname,omitempty"`     // DPU OS hostname (set before flash)
 	TmfifoIP string    `yaml:"tmfifo_ip,omitempty"`    // tmfifo_net0 CIDR, e.g. 192.168.100.2/30
 	VLANs    []DPUVLAN `yaml:"vlans,omitempty"`        // per-DPU VLAN interfaces
+
 }
 
 // DPUVLAN describes one OVS internal VLAN interface created on the DPU
 // after flash. For LAG mode all VLANs hang off br-lag; for non-LAG the
 // uplink decides which bridge (sf-external for p0, sf-internal for p1).
+//
+// The OVS port name is derived as Role+Tag (e.g. "external40",
+// "internal41", "storage50") so the same VLAN is identifiable on both
+// DPU and host. Role is any short lowercase identifier; common values
+// are external, internal, storage, mgmt, replication.
 type DPUVLAN struct {
-	Name           string `yaml:"name"`            // interface name on DPU, e.g. external0
-	Tag            int    `yaml:"tag"`             // 802.1q VLAN id
-	IP             string `yaml:"ip"`              // CIDR, e.g. 10.10.40.5/24
+	Role           string `yaml:"role"`           // e.g. external, internal, storage
+	Tag            int    `yaml:"tag"`            // 802.1q VLAN id
+	IP             string `yaml:"ip"`             // CIDR, e.g. 10.10.40.5/24
 	DefaultGateway string `yaml:"default_gateway,omitempty"`
 	Uplink         string `yaml:"uplink,omitempty"` // p0 | p1 — non-LAG only
+}
+
+// PortName returns the OVS port name (e.g. "external40").
+func (v DPUVLAN) PortName() string {
+	return fmt.Sprintf("%s%d", v.Role, v.Tag)
 }
 
 // Provisioning holds inputs needed to render bf.conf and execute the

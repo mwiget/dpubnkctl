@@ -29,8 +29,8 @@ func fixturePoC(t *testing.T, lag bool) (*poc.PoC, *poc.Host, *poc.DPU, string) 
 		Hostname: "worker1-bf3",
 		TmfifoIP: "192.168.100.2/30",
 		VLANs: []poc.DPUVLAN{
-			{Name: "external0", Tag: 40, IP: "10.10.40.5/24", DefaultGateway: "10.10.40.1", Uplink: "p0"},
-			{Name: "internal0", Tag: 41, IP: "10.10.41.5/24", Uplink: "p1"},
+			{Role: "external", Tag: 40, IP: "10.10.40.5/24", DefaultGateway: "10.10.40.1", Uplink: "p0"},
+			{Role: "internal", Tag: 41, IP: "10.10.41.5/24", Uplink: "p1"},
 		},
 	}
 	keyPath := filepath.Join(repo, "keys", "id_test")
@@ -69,7 +69,8 @@ func TestRender_LAG(t *testing.T) {
 		"DNS=8.8.8.8",                            // DNS
 		"NTP=pool.ntp.org",                       // NTP
 		"OVS_BRIDGE1=\"br-lag\"",                // LAG bridge
-		"add-port br-lag external0",             // VLAN goes onto br-lag
+		"add-port br-lag external40",            // VLAN goes onto br-lag w/ Role+Tag name
+		"add-port br-lag internal41",            // second VLAN
 		"tag=40",                                 // VLAN tag substituted
 		"ip route replace default via 10.10.40.1", // default gateway present
 		"LAG_RESOURCE_ALLOCATION=1",              // bfb_post_install
@@ -96,8 +97,8 @@ func TestRender_NonLAG_BridgePerUplink(t *testing.T) {
 	wants := []string{
 		"OVS_BRIDGE1=\"sf-external\"",
 		"OVS_BRIDGE2=\"sf-internal\"",
-		"add-port sf-external external0", // VLAN external0 (uplink p0) goes to sf-external
-		"add-port sf-internal internal0", // VLAN internal0 (uplink p1) goes to sf-internal
+		"add-port sf-external external40", // external/40 (uplink p0) goes to sf-external
+		"add-port sf-internal internal41", // internal/41 (uplink p1) goes to sf-internal
 		"LAG_RESOURCE_ALLOCATION=DEVICE_DEFAULT",
 	}
 	for _, w := range wants {

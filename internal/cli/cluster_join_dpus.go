@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -124,10 +125,17 @@ func runClusterJoinDPUs(ctx context.Context, out io.Writer, f *clusterJoinDPUsFl
 		return fmt.Errorf("ssh control-plane: %w", err)
 	}
 	defer cpClient.Close()
-	// Rewrite 127.0.0.1 → the control plane's routable address so the
-	// DPU (which can reach the host but not the host's loopback) joins
-	// against the right endpoint.
-	jc, err := cluster.FetchJoinCommand(ctx, cpClient, cpHost.SSH.Address)
+	// Resolve the apiserver address the DPUs should join against.
+	// Preference: poc.network.cluster_apiserver_address (the data-plane
+	// VIP/IP that all kubelets advertise to). Falls back to the control
+	// plane's SSH address — preserves the previous behavior when the
+	// PoC has no data-plane network.
+	apiserverAddr := p.Network.ClusterAPIServerAddress
+	if apiserverAddr == "" {
+		apiserverAddr = cpHost.SSH.Address
+	}
+	fmt.Fprintf(out, "      apiserver = %s:6443\n", apiserverAddr)
+	jc, err := cluster.FetchJoinCommand(ctx, cpClient, apiserverAddr)
 	if err != nil {
 		return err
 	}
@@ -140,13 +148,22 @@ func runClusterJoinDPUs(ctx context.Context, out io.Writer, f *clusterJoinDPUsFl
 		mu       sync.Mutex
 		failures []string
 	)
+	nodeIPRole := p.Network.NodeIPRole
 	for _, j := range jobs {
 		j := j
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			tag := fmt.Sprintf("[%s]", j.dpu.Hostname)
-			err := joinOneDPU(ctx, repo, j, jc, p.Versions.K8s, f, prefixWriter{w: out, prefix: tag + " "})
+			nodeIP, err := resolveDPUNodeIP(j.dpu, nodeIPRole)
+			if err != nil {
+				mu.Lock()
+				failures = append(failures, fmt.Sprintf("%s: %v", j.dpu.Hostname, err))
+				mu.Unlock()
+				fmt.Fprintf(out, "%s ERR: %v\n", tag, err)
+				return
+			}
+			err = joinOneDPU(ctx, repo, j, jc, nodeIP, p.Versions.K8s, f, prefixWriter{w: out, prefix: tag + " "})
 			if err != nil {
 				mu.Lock()
 				failures = append(failures, fmt.Sprintf("%s: %v", j.dpu.Hostname, err))
@@ -184,7 +201,26 @@ func runClusterJoinDPUs(ctx context.Context, out io.Writer, f *clusterJoinDPUsFl
 	return nil
 }
 
-func joinOneDPU(ctx context.Context, repo string, j dpuJob, jc *cluster.JoinCommand, k8sMinor string, f *clusterJoinDPUsFlags, w io.Writer) error {
+// resolveDPUNodeIP picks the kubelet --node-ip for a DPU. When
+// network.node_ip_role is set, returns the bare IP from the matching
+// dpu.vlans entry; when unset, returns "" so kubeadm/kubelet auto-detect
+// (legacy behavior — yields the oob_net0/mgmt IP).
+func resolveDPUNodeIP(d *poc.DPU, role string) (string, error) {
+	if role == "" {
+		return "", nil
+	}
+	v := d.VLANByRole(role)
+	if v == nil {
+		return "", fmt.Errorf("dpu %s has no vlan with role=%q (network.node_ip_role)", d.Hostname, role)
+	}
+	ip, _, err := net.ParseCIDR(v.IP)
+	if err != nil {
+		return "", fmt.Errorf("dpu %s vlan %s ip %q: %w", d.Hostname, v.PortName(), v.IP, err)
+	}
+	return ip.String(), nil
+}
+
+func joinOneDPU(ctx context.Context, repo string, j dpuJob, jc *cluster.JoinCommand, nodeIP, k8sMinor string, f *clusterJoinDPUsFlags, w io.Writer) error {
 	dpuIP := strings.SplitN(j.dpu.TmfifoIP, "/", 2)[0]
 
 	hostKey := j.host.SSH.KeyRef
@@ -233,8 +269,12 @@ func joinOneDPU(ctx context.Context, repo string, j dpuJob, jc *cluster.JoinComm
 		fmt.Fprintln(w, "install ok")
 	}
 
-	fmt.Fprintln(w, "running kubeadm join ...")
-	if err := cluster.JoinDPU(ctx, c, jc, j.dpu.Hostname); err != nil {
+	if nodeIP != "" {
+		fmt.Fprintf(w, "running kubeadm join (--node-ip %s) ...\n", nodeIP)
+	} else {
+		fmt.Fprintln(w, "running kubeadm join ...")
+	}
+	if err := cluster.JoinDPU(ctx, c, jc, j.dpu.Hostname, nodeIP); err != nil {
 		return err
 	}
 	return nil

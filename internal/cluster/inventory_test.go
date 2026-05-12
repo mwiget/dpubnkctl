@@ -116,6 +116,62 @@ func TestRender_Files(t *testing.T) {
 	}
 }
 
+func TestRender_DataPlaneNodeIP(t *testing.T) {
+	p := fixture("both", "both")
+	p.Network.NodeIPRole = "internal"
+	p.Network.ClusterAPIServerAddress = "10.10.41.66"
+	for i := range p.Hosts {
+		p.Hosts[i].DataPlane = &poc.HostDataPlane{
+			ParentIface: "ens16f0np0",
+			VLANs: []poc.HostDataPlaneVLAN{
+				{Role: "external", Tag: 40, IP: fmt.Sprintf("10.10.40.%d/24", 66+i)},
+				{Role: "internal", Tag: 41, IP: fmt.Sprintf("10.10.41.%d/24", 66+i)},
+			},
+		}
+	}
+	plan := BuildPlan(p)
+	files, err := Render(p, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hosts := files["hosts.yml"]
+	for _, want := range []string{
+		"ip: 10.10.41.66",          // h1 nodeIP from internal/41
+		"ip: 10.10.41.67",          // h2 nodeIP from internal/41
+		"access_ip: 10.0.0.10",     // h1 keeps mgmt as access_ip
+		"access_ip: 10.0.0.11",     // h2 keeps mgmt as access_ip
+	} {
+		if !strings.Contains(hosts, want) {
+			t.Errorf("hosts.yml missing %q\n%s", want, hosts)
+		}
+	}
+	all := files["group_vars/all/all.yml"]
+	for _, want := range []string{
+		"loadbalancer_apiserver_localhost: false",
+		"address: 10.10.41.66",
+		"port: 6443",
+		"apiserver_loadbalancer_domain_name: 10.10.41.66",
+		"supplementary_addresses_in_ssl_keys",
+		"- 10.10.41.66",
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("all.yml missing %q\n%s", want, all)
+		}
+	}
+}
+
+func TestRender_NodeIPRoleMissing(t *testing.T) {
+	p := fixture("both")
+	p.Network.NodeIPRole = "internal"
+	// h1 has NO data_plane block — render must error clearly.
+	plan := BuildPlan(p)
+	if _, err := Render(p, plan); err == nil {
+		t.Fatal("expected error when node_ip_role set but host lacks data_plane")
+	} else if !strings.Contains(err.Error(), `role="internal"`) {
+		t.Errorf("error should mention the missing role: %v", err)
+	}
+}
+
 func TestRender_RefusesInvalidPlan(t *testing.T) {
 	p := fixture("worker", "worker") // no control plane
 	plan := BuildPlan(p)

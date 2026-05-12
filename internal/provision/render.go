@@ -9,12 +9,20 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"text/template"
 
 	"github.com/mwiget/dpubnkctl/internal/embedded"
 	"github.com/mwiget/dpubnkctl/internal/poc"
 )
+
+// roleRe enforces that a VLAN role yields a valid Linux interface name
+// when concatenated with the VLAN tag. Lowercase letter to start, then
+// lowercase letters / digits — no separators (the digits of the tag
+// follow directly). Common roles: external, internal, storage, mgmt,
+// replication, ...
+var roleRe = regexp.MustCompile(`^[a-z][a-z0-9]{0,9}$`)
 
 // RenderInputs is the flat view passed to the bf.conf templates. Built
 // from PoC + Host + DPU by Render().
@@ -94,14 +102,21 @@ func buildInputs(p *poc.PoC, h *poc.Host, d *poc.DPU, repoDir string) (RenderInp
 		}
 	}
 	for i, v := range d.VLANs {
-		if v.Name == "" {
-			missing = append(missing, fmt.Sprintf("hosts[%s].dpus[%s].vlans[%d].name", h.Name, d.PCI, i))
+		if !roleRe.MatchString(v.Role) {
+			missing = append(missing, fmt.Sprintf("hosts[%s].dpus[%s].vlans[%d].role %q must match %s (e.g. external, internal, storage)", h.Name, d.PCI, i, v.Role, roleRe.String()))
+		}
+		if v.Tag <= 0 || v.Tag > 4094 {
+			missing = append(missing, fmt.Sprintf("hosts[%s].dpus[%s].vlans[%d].tag (must be 1..4094)", h.Name, d.PCI, i))
 		}
 		if v.IP == "" {
 			missing = append(missing, fmt.Sprintf("hosts[%s].dpus[%s].vlans[%d].ip", h.Name, d.PCI, i))
 		}
 		if _, _, err := net.ParseCIDR(v.IP); v.IP != "" && err != nil {
 			missing = append(missing, fmt.Sprintf("hosts[%s].dpus[%s].vlans[%d].ip is not a valid CIDR (%q)", h.Name, d.PCI, i, v.IP))
+		}
+		// Linux iface name must be ≤ 15 chars (IFNAMSIZ-1).
+		if name := v.PortName(); len(name) > 15 {
+			missing = append(missing, fmt.Sprintf("hosts[%s].dpus[%s].vlans[%d] derived port name %q exceeds 15 chars (Linux IFNAMSIZ); shorten role", h.Name, d.PCI, i, name))
 		}
 	}
 
@@ -123,7 +138,7 @@ func buildInputs(p *poc.PoC, h *poc.Host, d *poc.DPU, repoDir string) (RenderInp
 	vlans := make([]RenderedVLAN, len(d.VLANs))
 	for i, v := range d.VLANs {
 		vlans[i] = RenderedVLAN{
-			Name:           v.Name,
+			Name:           v.PortName(), // e.g. "external40"
 			Tag:            v.Tag,
 			IP:             v.IP,
 			DefaultGateway: v.DefaultGateway,

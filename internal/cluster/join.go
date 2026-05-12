@@ -87,12 +87,22 @@ func InstallKubeBinaries(ctx context.Context, dpu *ssh.Client, k8sMinor string) 
 
 // JoinDPU runs the kubeadm-supplied join command on the DPU, with our
 // node name override. Containerd is the default CRI (set up by bf.conf).
-func JoinDPU(ctx context.Context, dpu *ssh.Client, jc *JoinCommand, dpuHostname string) error {
+//
+// nodeIP, when non-empty, is passed as kubeadm's --node-ip so kubelet
+// registers with that address. Calico tunnel endpoints + kubectl
+// get nodes -o wide INTERNAL-IP both pick this up — required when the
+// cluster's east-west fabric is on a different subnet than the DPU's
+// management (oob_net0) IP.
+func JoinDPU(ctx context.Context, dpu *ssh.Client, jc *JoinCommand, dpuHostname, nodeIP string) error {
 	// Append --node-name so the DPU registers under the friendly name we
 	// chose at flash time (worker1-bf3, worker2-bf3) rather than its
 	// kernel hostname. Containerd default cri-socket also explicit.
-	cmd := fmt.Sprintf("sudo -n %s --node-name %s --cri-socket unix:///run/containerd/containerd.sock 2>&1",
-		jc.Raw, dpuHostname)
+	extra := ""
+	if nodeIP != "" {
+		extra = " --node-ip " + nodeIP
+	}
+	cmd := fmt.Sprintf("sudo -n %s --node-name %s --cri-socket unix:///run/containerd/containerd.sock%s 2>&1",
+		jc.Raw, dpuHostname, extra)
 	// Long timeout — TLS bootstrap + initial pull can take a few minutes.
 	joinCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()

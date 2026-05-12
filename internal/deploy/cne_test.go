@@ -18,8 +18,8 @@ func cneFixture() *poc.PoC {
 				Hostname: "worker1-bf3",
 				LAG:      true,
 				VLANs: []poc.DPUVLAN{
-					{Name: "external0", Tag: 40, IP: "10.10.40.5/24"},
-					{Name: "internal0", Tag: 41, IP: "10.10.41.5/24"},
+					{Role: "external", Tag: 40, IP: "10.10.40.5/24"},
+					{Role: "internal", Tag: 41, IP: "10.10.41.5/24"},
 				},
 			}},
 		},
@@ -30,8 +30,8 @@ func cneFixture() *poc.PoC {
 				Hostname: "worker2-bf3",
 				LAG:      true,
 				VLANs: []poc.DPUVLAN{
-					{Name: "external0", Tag: 40, IP: "10.10.40.6/24"},
-					{Name: "internal0", Tag: 41, IP: "10.10.41.6/24"},
+					{Role: "external", Tag: 40, IP: "10.10.40.6/24"},
+					{Role: "internal", Tag: 41, IP: "10.10.41.6/24"},
 				},
 			}},
 		},
@@ -69,12 +69,12 @@ func TestRenderF5SPKVlans_AggregatesByName(t *testing.T) {
 	}
 	for _, want := range []string{
 		"kind: F5SPKVlan",
-		"name: external0",
-		"name: internal0",
+		"name: external40",
+		"name: internal41",
 		"tag: 40",
 		"tag: 41",
-		`- "1.1"`, // external0 → 1.1
-		`- "1.2"`, // internal0 → 1.2
+		`- "1.1"`, // external40 → 1.1
+		`- "1.2"`, // internal41 → 1.2
 		"- 10.10.40.5", // worker1's external IP
 		"- 10.10.40.6", // worker2's external IP
 		"- 10.10.41.5",
