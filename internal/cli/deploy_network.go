@@ -63,7 +63,10 @@ Required gates:
 }
 
 // applyOrder is the f5-bnk-tested sequence — multus first (provides
-// NAD CRD), then plugins, then SR-IOV, then NADs last.
+// NAD CRD), then plugins, then SR-IOV, then NADs last. local-path
+// provisioner appended so BNK control-plane PVCs (DSSM, observer,
+// downloader, CWC, ...) bind on a fresh cluster — kubespray doesn't
+// install any storage class by default.
 var applyOrder = []string{
 	"multus.yaml",
 	"cni-plugins.yaml",
@@ -71,6 +74,7 @@ var applyOrder = []string{
 	"sriov-cni-daemonset.yaml",
 	"sriovdp-daemonset.yaml",
 	"nad-sf.yaml",
+	"local-path-provisioner.yaml",
 }
 
 func runDeployNetwork(ctx context.Context, out io.Writer, f *deployNetworkFlags) error {
@@ -163,6 +167,15 @@ func runDeployNetwork(ctx context.Context, out io.Writer, f *deployNetworkFlags)
 		} else {
 			fmt.Fprintf(out, "      %s pods Ready.\n", ro.friendly)
 		}
+	}
+
+	// Make local-path the default storage class so PVCs without an
+	// explicit storageClassName still bind. CNEInstance template uses
+	// `storageClassName: local-path` explicitly so this is belt-
+	// and-suspenders, but the cluster also benefits from a default.
+	if err := r.Kubectl(ctx, "annotate", "sc", "local-path",
+		"storageclass.kubernetes.io/is-default-class=true", "--overwrite"); err != nil {
+		fmt.Fprintf(out, "      WARN: could not mark local-path default: %v\n", err)
 	}
 
 	appendDeployJournal(repo, p.Metadata.Name, "", "NETWORK INSTALLED", "")

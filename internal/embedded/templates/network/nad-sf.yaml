@@ -2,6 +2,7 @@ apiVersion: "k8s.cni.cncf.io/v1"
 kind: NetworkAttachmentDefinition
 metadata:
   name: sf-external
+  namespace: f5-operators
   annotations:
     k8s.v1.cni.cncf.io/resourceName: nvidia.com/bf3_p0_sf1
 spec:
@@ -18,6 +19,7 @@ apiVersion: "k8s.cni.cncf.io/v1"
 kind: NetworkAttachmentDefinition
 metadata:
   name: sf-internal
+  namespace: f5-operators
   annotations:
    k8s.v1.cni.cncf.io/resourceName: nvidia.com/bf3_p1_sf1
 spec:
