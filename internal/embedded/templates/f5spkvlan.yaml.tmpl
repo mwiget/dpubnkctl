@@ -6,7 +6,7 @@ apiVersion: "k8s.f5net.com/v1"
 kind: F5SPKVlan
 metadata:
   name: {{$vlan.Name}}
-  namespace: f5-operators
+  namespace: default
 spec:
   name: {{$vlan.Name}}
   mtu: {{$vlan.MTU}}

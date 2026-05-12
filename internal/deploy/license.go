@@ -65,6 +65,16 @@ func InspectJWT(jwtPath string) (*JWTInfo, error) {
 	if kid, ok := hdr["kid"].(string); ok && strings.Contains(strings.ToLower(kid), "tst") {
 		info.Type = "tst"
 	}
+	// Strongest TST indicators (these were the misses on the lake1 JWT,
+	// which had iss="F5 Inc." and kid="v1" but was clearly TST):
+	//   - jku header URL points at product-tst.apis.f5networks.net
+	//   - sub claim starts with "TST-"
+	if jku, ok := hdr["jku"].(string); ok && strings.Contains(strings.ToLower(jku), "tst") {
+		info.Type = "tst"
+	}
+	if sub, ok := claims["sub"].(string); ok && strings.HasPrefix(strings.ToUpper(sub), "TST-") {
+		info.Type = "tst"
+	}
 
 	return info, nil
 }
