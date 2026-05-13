@@ -6,6 +6,12 @@
 
 **Result:** 2 ok, 0 failed, 6 skipped
 
+## Versions
+
+- **dpubnkctl:** 300fe8e  (targets BNK 2.2.0)
+- **FLO chart:** v2.9.27-0.2.10
+- **CNE manifest:** 2.2.0-3.2226.0-0.0.385
+
 ## Topology
 
 ```

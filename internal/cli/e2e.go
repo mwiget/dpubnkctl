@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/mwiget/dpubnkctl/internal/poc"
+	"github.com/mwiget/dpubnkctl/internal/version"
 )
 
 // e2ePhase is one orchestrated step in the autonomous deploy sequence.
@@ -494,6 +495,15 @@ func renderRunMarkdown(r runReport, p *poc.PoC) string {
 		}
 	}
 	fmt.Fprintf(&b, "**Result:** %d ok, %d failed, %d skipped\n\n", ok, failed, skipped)
+
+	// Pinned versions from this dpubnkctl release. Cluster status pulls
+	// the live deployed values; for an e2e report the binary-pinned
+	// versions are what actually got applied, so they're what we record.
+	fmt.Fprintln(&b, "## Versions")
+	fmt.Fprintln(&b)
+	fmt.Fprintf(&b, "- **dpubnkctl:** %s  (targets BNK %s)\n", version.Version, version.BNKVersion)
+	fmt.Fprintf(&b, "- **FLO chart:** %s\n", version.FLOChartVer)
+	fmt.Fprintf(&b, "- **CNE manifest:** %s\n\n", version.CNEManifestVersion)
 
 	// Embed the topology diagrams so any markdown reader (or grep) sees
 	// the cluster shape inline with the results. Wrap in a fenced code
