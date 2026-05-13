@@ -169,17 +169,28 @@ func runDiscoverWizard(ctx context.Context, out io.Writer, in io.Reader, pocDir 
 		return fmt.Errorf("no reachable hosts — nothing to merge")
 	}
 
-	// 7. Per-host role assignment (the SE call).
+	// 7. Per-host role assignment (the SE call). Pre-compute the count
+	// of DPU-free reachable hosts; suggestRole uses it to propose
+	// "control-plane" for DPU-free hosts and "worker" for DPU-bearing
+	// hosts when enough dedicated CP candidates exist.
+	noDPUHosts := 0
+	for _, h := range found {
+		if len(h.result.DPUs) == 0 {
+			noDPUHosts++
+		}
+	}
 	fmt.Fprintln(out, "Now assign each reachable host a cluster role.")
 	fmt.Fprintln(out, "  control-plane = k8s control plane only")
 	fmt.Fprintln(out, "  worker        = k8s worker only")
 	fmt.Fprintln(out, "  both          = control plane AND worker (typical 2-node PoC)")
 	fmt.Fprintln(out, "")
 	for i := range found {
-		def := suggestRole(len(found))
+		dpuCount := len(found[i].result.DPUs)
+		def, rationale := suggestRole(dpuCount, len(found), noDPUHosts)
+		fmt.Fprintf(out, "  → suggested %s for %s — %s\n", def, found[i].hostname, rationale)
 		choice := askChoice(out, r,
 			fmt.Sprintf("Role for %s (%s, %d DPU(s))",
-				found[i].hostname, found[i].ip, len(found[i].result.DPUs)),
+				found[i].hostname, found[i].ip, dpuCount),
 			[]string{"both", "control-plane", "worker", "skip"}, def)
 		if choice == "skip" {
 			fmt.Fprintf(out, "  → skipping %s (won't appear in poc.yaml)\n", found[i].hostname)
@@ -239,15 +250,40 @@ func runDiscoverWizard(ctx context.Context, out io.Writer, in io.Reader, pocDir 
 	return nil
 }
 
-// suggestRole picks the default role offered for the per-host prompt.
-// 2 reachable hosts → both is the most common BNK PoC topology.
-// 3+ → control-plane (operator usually wants 3 CPs + workers).
-// 1 → both (single-node lab).
-func suggestRole(n int) string {
-	if n >= 3 {
-		return "control-plane"
+// suggestRole picks the default role offered for the per-host prompt
+// and a short rationale string the wizard prints alongside, so the
+// operator (or an agentic SE persona reading the same output) sees the
+// *reason* the default was suggested, not just the label.
+//
+// Inputs: this host's DPU count, total reachable hosts, count of
+// DPU-free hosts among the reachable set.
+//
+//   - Host without DPU       → control-plane  (no data plane to host)
+//   - Host with DPU(s) and
+//     ≥3 DPU-free hosts      → worker         (dedicated CPs available
+//                                              for HA quorum)
+//   - Host with DPU(s) and
+//     <3 DPU-free hosts and
+//     totalReachable == 1    → both           (single-host lab)
+//   - Host with DPU(s) and
+//     <3 DPU-free hosts      → both           (DPU host must also serve
+//                                              as CP since no DPU-free
+//                                              host can carry the CP role
+//                                              alone for HA)
+//
+// Operators can override per host — the suggestion just biases the
+// default and explains why.
+func suggestRole(dpuCount, totalReachable, noDPUHosts int) (role, rationale string) {
+	if dpuCount == 0 {
+		return "control-plane", "no DPU → no data-plane role; ideal CP-only candidate"
 	}
-	return "both"
+	if noDPUHosts >= 3 {
+		return "worker", fmt.Sprintf("has DPU(s); %d DPU-free hosts available for CPs → this host is worker only", noDPUHosts)
+	}
+	if totalReachable == 1 {
+		return "both", "single-host lab — must be control plane and worker"
+	}
+	return "both", fmt.Sprintf("has DPU(s) and only %d DPU-free host(s) — too few for a dedicated CP quorum, so this host doubles as CP", noDPUHosts)
 }
 
 // ask prints "label [hint] (default): " and reads a line. Empty input

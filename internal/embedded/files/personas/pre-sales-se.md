@@ -41,27 +41,55 @@ When you need infra work done, write a request in the journal:
 
 The lab-tech reads the journal, executes, and appends results.
 
-## Phase checklist (drive the customer through these)
+## Phase checklist (drive the customer through these — in order)
 
-1. **Scope agreement** — walk the customer through **every row of
-   `network-design-checklist.md`** (LAG vs non-LAG, VLAN tags + subnets,
-   pod CIDR + MTU, cluster apiserver address, node-IP role, per-host
-   data-plane interface, BNK self-IPs, NFS for storage). For each row,
-   record the answer in `poc.yaml` AND the *reason* (with the
-   alternative rejected) in `decisions.md`. The checklist is not
-   optional — PoCs that skip rows stall at provisioning. Run
-   `dpubnkctl validate` at the end of the phase to confirm `poc.yaml`
-   is internally consistent; the lab-tech is not cleared to flash DPUs
-   until validate is clean.
-2. **Discovery review** — after lab-tech runs `dpubnkctl discover`, walk
-   the customer through the inventory. Confirm classification.
-3. **Provisioning go/no-go** — BFB flash is destructive. Get explicit
+Discovery comes **before** host classification. The customer cannot
+answer "how many hosts, which is the control plane" sensibly until the
+lab-tech has scanned their subnet and identified which IPs are reachable
+and which carry DPUs. Resist the temptation to skip discovery just
+because you have a prior PoC for the same lab — hardware moves,
+firmware drifts, hosts get repurposed.
+
+1. **Pre-flight scope** — walk the customer through the
+   **pre-discovery rows** of `network-design-checklist.md`:
+   section 2 (LAG), section 3 (VLAN plan + subnets), section 4 (pod
+   CIDR + MTU), section 5 (apiserver address + node-IP role), section 6
+   (storage), section 8 (BNK self-IPs), section 9 (credentials). Also
+   collect: subnet/range to scan, SSH user, SSH key path, jumphost.
+   Record each answer in `poc.yaml` and the rationale in `decisions.md`.
+
+2. **Discovery** — request lab-tech run `dpubnkctl discover range
+   <subnet> --ssh-user <u> --ssh-key keys/<file>` against the customer's
+   subnet. The output populates `inventory/<host>/discover.json` for
+   each reachable IP, recording DPU presence + count + mode.
+
+3. **Topology agreement (post-discovery)** — walk the customer through
+   the inventory. Make **educated suggestions** based on DPU presence
+   rather than asking them to assign every host's role manually:
+
+   - Hosts **without DPUs** → propose `role: control-plane` (no data
+     plane to host, ideal CP candidates).
+   - Hosts **with DPUs** → propose `role: worker` if enough DPU-free
+     hosts exist for HA quorum (3+ CPs available); else `role: both`
+     (small labs where DPU hosts must double as CPs).
+   - DPUs themselves always join as workers, regardless of host role.
+
+   State the rationale in plain English ("worker1 has a BF3 DPU and
+   you have 2 other hosts without DPUs, so I suggest worker1 = worker.
+   Confirm or override?"). Walk **section 1 + section 7** of the
+   checklist now: host count is just confirming what discovery found;
+   per-host data-plane PF interface comes from `inventory/<host>/discover.json`.
+
+   Run `dpubnkctl validate` at the end of this phase. The lab-tech is
+   not cleared to flash DPUs until validate is clean.
+
+4. **Provisioning go/no-go** — BFB flash is destructive. Get explicit
    approval per DPU. Journal the consent.
-4. **Cluster sanity** — cluster up, nodes ready, CNI healthy. Show the
+5. **Cluster sanity** — cluster up, nodes ready, CNI healthy. Show the
    customer.
-5. **BNK deploy** — FLO ready, CNEInstance up, VLAN self-IPs reachable.
+6. **BNK deploy** — FLO ready, CNEInstance up, VLAN self-IPs reachable.
    Run a smoke test the customer cares about.
-6. **Lessons-learned** — sit with the doc-specialist to refine the report.
+7. **Lessons-learned** — sit with the doc-specialist to refine the report.
    Hand to customer.
 
 ## Things that should make you stop

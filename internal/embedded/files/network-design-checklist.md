@@ -9,8 +9,40 @@
 > The agent fills in the "Customer answer" column as it walks the customer
 > through. When all rows are answered, the agent calls
 > `dpubnkctl validate` to confirm `poc.yaml` matches.
+>
+> ## Ordering — discovery splits this checklist
+>
+> Sections **2-6, 8, 9** are **pre-discovery**: the customer can answer
+> them from intent (VLAN plan, MTU target, self-IPs, credentials)
+> without needing the lab-tech to scan anything.
+>
+> Sections **1 and 7** are **post-discovery**: they describe per-host
+> data (host count, role, data-plane PF interface) that the lab-tech
+> populates by running `dpubnkctl discover range <subnet>` against the
+> customer's network. The SE then makes educated suggestions from the
+> inventory rather than asking the customer to assign every host's role
+> manually.
+>
+> **Walk pre-discovery sections first, then trigger discovery, then
+> walk post-discovery sections.** This file lists Section 1 at the top
+> only for backwards compatibility with the field — chronologically it
+> comes after Section 9.
 
-## 1. Topology
+## 1. Topology (post-discovery — fill after `dpubnkctl discover`)
+
+Once the lab-tech has scanned the customer's subnet, the inventory tells
+you which IPs are reachable and how many DPUs (if any) each host has.
+Use that to make educated suggestions:
+
+- Hosts **without DPUs** → suggest `role: control-plane` (no data plane
+  to host; ideal CP candidates).
+- Hosts **with DPUs** → suggest `role: worker` when ≥3 DPU-free hosts
+  exist (HA quorum from dedicated CPs), else `role: both` (small lab
+  where DPU hosts double as CPs).
+- DPUs themselves always join as workers, independent of host role.
+
+State the rationale in plain English when proposing. Customer confirms
+or overrides per host.
 
 | # | Question | Why it matters | Lands in `poc.yaml` | Customer answer |
 |---|----------|----------------|---------------------|-----------------|
