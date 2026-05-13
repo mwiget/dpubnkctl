@@ -63,13 +63,19 @@ func parseIPAddrJSON(s string) []Interface {
 // lspciDPULine matches one line of `lspci -nn -d 15b3:`.
 //
 //	03:00.0 Ethernet controller [0200]: Mellanox Technologies MT43244 BlueField-3 ... [15b3:a2dc] (rev 01)
-var lspciDPULine = regexp.MustCompile(`^([0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f])\s+[^:]+:\s+(.+?)\s+\[([0-9a-f]{4}:[0-9a-f]{4})\]`)
+//
+// Capture groups: 1=PCI 2=device-class-hex 3=description 4=vendor:device.
+var lspciDPULine = regexp.MustCompile(`^([0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f])\s+[^[]+\[([0-9a-f]{4})\]:\s+(.+?)\s+\[([0-9a-f]{4}:[0-9a-f]{4})\]`)
 
 // parseLspciDPUs returns one DPUDetail per Mellanox/NVIDIA function.
 // BlueField devices expose multiple functions per card (PF0/PF1); we keep
 // every function and let downstream merge by PCI domain:bus.
-func parseLspciDPUs(s string) []DPUDetail {
-	var out []DPUDetail
+//
+// looksLikeDPUOS returns true when any captured function is a PCI bridge
+// (class 0604). Servers with a BF3 attached only see Ethernet controllers
+// (class 0200); the SoC's own OS sees its internal PCIe bridges plus its
+// Ethernet functions, so a bridge in the 15b3:* set is the give-away.
+func parseLspciDPUs(s string) (dpus []DPUDetail, looksLikeDPUOS bool) {
 	scan := bufio.NewScanner(strings.NewReader(s))
 	for scan.Scan() {
 		line := strings.TrimSpace(scan.Text())
@@ -77,13 +83,19 @@ func parseLspciDPUs(s string) []DPUDetail {
 		if m == nil {
 			continue
 		}
-		out = append(out, DPUDetail{
+		if m[2] == "0604" {
+			looksLikeDPUOS = true
+			// Don't add the bridge itself to dpus[] — bridges are not
+			// real DPU functions.
+			continue
+		}
+		dpus = append(dpus, DPUDetail{
 			PCI:         m[1],
-			Description: m[2],
-			DeviceID:    m[3],
+			Description: m[3],
+			DeviceID:    m[4],
 		})
 	}
-	return out
+	return dpus, looksLikeDPUOS
 }
 
 // ipmitoolLanLine matches "Key  : Value" pairs in ipmitool lan print output.

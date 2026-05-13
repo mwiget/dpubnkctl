@@ -12,8 +12,17 @@ type Result struct {
 	Host         HostInfo    `json:"host"`
 	BMC          *BMCInfo    `json:"bmc,omitempty"`
 	DPUs         []DPUDetail `json:"dpus"`
-	Warnings     []string    `json:"warnings,omitempty"`
-	Errors       []string    `json:"errors,omitempty"`
+	// IsDPU is true when this address answered SSH but the lspci probe
+	// indicates we landed on the BlueField SoC's own OS instead of a
+	// server hosting the DPU. The give-away: PCI bridges (class 0604)
+	// appear among the 15b3:* devices on the DPU OS, but never on a
+	// server (where the BF3 SoC presents as Ethernet controllers, class
+	// 0200, only). Range scans set this to exclude DPU IPs from the
+	// host-candidate list since DPUs belong to a server's `dpus[]` block,
+	// not as top-level hosts in `poc.yaml`.
+	IsDPU    bool     `json:"is_dpu,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
+	Errors   []string `json:"errors,omitempty"`
 }
 
 type HostInfo struct {

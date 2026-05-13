@@ -29,8 +29,9 @@ func DiscoverHost(ctx context.Context, opts HostOptions) (*Result, error) {
 	// Operators can still record a known BMC IP via `discover host
 	// --bmc-address` on a per-host basis.
 
-	dpus, dpuWarn := probeDPUs(ctx, opts.Runner, host.Tools)
+	dpus, isDPU, dpuWarn := probeDPUs(ctx, opts.Runner, host.Tools)
 	r.DPUs = dpus
+	r.IsDPU = isDPU
 	r.Warnings = append(r.Warnings, dpuWarn...)
 
 	return r, nil
@@ -39,6 +40,8 @@ func DiscoverHost(ctx context.Context, opts HostOptions) (*Result, error) {
 // Classification is a one-line summary the CLI prints after discovery.
 func (r *Result) Classification() string {
 	switch {
+	case r.IsDPU:
+		return "DPU OS (not a host candidate)"
 	case len(r.DPUs) == 0:
 		return "host without DPU"
 	case len(r.DPUs) == 1:

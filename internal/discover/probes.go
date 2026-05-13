@@ -90,16 +90,26 @@ func probeRshim(ctx context.Context, c Runner) RshimState {
 }
 
 // probeDPUs lists all Mellanox/NVIDIA functions, then for each unique card
-// (PCI domain:bus) attempts mlxconfig + rshim queries.
-func probeDPUs(ctx context.Context, c Runner, tools Tools) ([]DPUDetail, []string) {
+// (PCI domain:bus) attempts mlxconfig + rshim queries. The bool return is
+// true when this host is itself a BlueField SoC running the DPU OS, not a
+// server with a DPU attached — detected by PCI bridges in the 15b3:* set
+// (see parseLspciDPUs).
+func probeDPUs(ctx context.Context, c Runner, tools Tools) ([]DPUDetail, bool, []string) {
 	var warnings []string
 
 	r := c.Run(ctx, "lspci -nn -d 15b3: 2>/dev/null || true")
 	if !r.OK() || strings.TrimSpace(r.Stdout) == "" {
-		return nil, []string{"no Mellanox/NVIDIA devices on PCIe (lspci 15b3:* empty)"}
+		return nil, false, []string{"no Mellanox/NVIDIA devices on PCIe (lspci 15b3:* empty)"}
 	}
 
-	functions := parseLspciDPUs(r.Stdout)
+	functions, looksLikeDPUOS := parseLspciDPUs(r.Stdout)
+	if looksLikeDPUOS {
+		// Don't run mlxconfig / rshim probes — the BF3's own OS doesn't
+		// have those tools wired the same way as a server-side BSP.
+		// Callers (range scan / wizard) use the IsDPU flag to exclude
+		// this address from the host-candidate list.
+		return functions, true, []string{"this host appears to be a BlueField DPU OS (PCI bridges in 15b3:*); skipping mlxconfig/rshim probes"}
+	}
 	dpus := mergeFunctionsByCard(functions)
 
 	if tools.Mlxconfig == "" {
@@ -133,7 +143,7 @@ func probeDPUs(ctx context.Context, c Runner, tools Tools) ([]DPUDetail, []strin
 		dpus[0].RshimMisc = misc
 	}
 
-	return dpus, warnings
+	return dpus, false, warnings
 }
 
 func tryMlxconfig(ctx context.Context, c Runner, pci, prefix string) *DPUMlxconfig {

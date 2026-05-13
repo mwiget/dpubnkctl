@@ -143,7 +143,7 @@ func runDiscoverWizard(ctx context.Context, out io.Writer, in io.Reader, pocDir 
 		result   *discover.Result
 	}
 	var found []reachable
-	var skipped int
+	var skipped, dpuOSes int
 	for item := range results {
 		if !item.Reachable {
 			fmt.Fprintf(out, "  [skip] %-15s  %s\n", item.IP.String(), item.Reason)
@@ -158,12 +158,23 @@ func runDiscoverWizard(ctx context.Context, out io.Writer, in io.Reader, pocDir 
 		if hostname == "" {
 			hostname = sanitizeHostKey(item.IP.String())
 		}
+		// A reachable IP that's actually a BlueField DPU OS (PCI bridges
+		// in 15b3:*) must NOT enter the host-candidate list. It belongs
+		// as a child of its server's dpus[] block, populated later by
+		// the per-host discover under the parent server's identity.
+		if item.Result.IsDPU {
+			fmt.Fprintf(out, "  [dpu]  %-15s  %s — DPU OS detected; excluded from host list\n",
+				item.IP.String(), hostname)
+			dpuOSes++
+			continue
+		}
 		fmt.Fprintf(out, "  [ok]   %-15s  %s — %s, %d DPU(s)\n",
 			item.IP.String(), hostname, orDash(item.Result.Host.OS.PrettyName), len(item.Result.DPUs))
 		found = append(found, reachable{ip: item.IP.String(), hostname: hostname, result: item.Result})
 	}
 	sort.Slice(found, func(i, j int) bool { return found[i].ip < found[j].ip })
-	fmt.Fprintf(out, "\nReachable: %d   Skipped: %d\n\n", len(found), skipped)
+	fmt.Fprintf(out, "\nReachable hosts: %d   DPU OS detected: %d   Unreachable: %d\n\n",
+		len(found), dpuOSes, skipped)
 
 	if len(found) == 0 {
 		return fmt.Errorf("no reachable hosts — nothing to merge")

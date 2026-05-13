@@ -85,7 +85,10 @@ func TestProbeDPUs_WithMlxconfig(t *testing.T) {
 		"cat /dev/rshim0/misc": {ExitCode: 0}, // empty
 	}}
 	tools := Tools{Mlxconfig: "/usr/bin/mlxconfig"}
-	dpus, _ := probeDPUs(context.Background(), f, tools)
+	dpus, isDPU, _ := probeDPUs(context.Background(), f, tools)
+	if isDPU {
+		t.Errorf("expected server-host classification, got isDPU=true")
+	}
 	if len(dpus) != 1 {
 		t.Fatalf("expected 1 merged card, got %d", len(dpus))
 	}
@@ -105,7 +108,10 @@ func TestProbeDPUs_WithoutMlxconfig(t *testing.T) {
 		"lspci -nn -d 15b3:": ok("03:00.0 Ethernet controller [0200]: Mellanox Technologies BlueField-3 [15b3:a2dc] (rev 01)\n"),
 	}}
 	tools := Tools{} // no mlxconfig
-	dpus, warnings := probeDPUs(context.Background(), f, tools)
+	dpus, isDPU, warnings := probeDPUs(context.Background(), f, tools)
+	if isDPU {
+		t.Errorf("expected server-host classification, got isDPU=true")
+	}
 	if len(dpus) != 1 {
 		t.Fatalf("got %d, want 1", len(dpus))
 	}

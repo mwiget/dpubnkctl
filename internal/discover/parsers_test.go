@@ -25,7 +25,10 @@ func TestParseLspciDPUs(t *testing.T) {
 17:00.0 Ethernet controller [0200]: Mellanox Technologies MT43244 BlueField-3 integrated ConnectX-7 network controller [15b3:a2dc] (rev 01)
 unrelated noise
 `
-	got := parseLspciDPUs(in)
+	got, isDPU := parseLspciDPUs(in)
+	if isDPU {
+		t.Errorf("server-host lspci wrongly classified as DPU OS")
+	}
 	if len(got) != 3 {
 		t.Fatalf("got %d entries, want 3 raw functions", len(got))
 	}
@@ -36,6 +39,25 @@ unrelated noise
 	merged := mergeFunctionsByCard(got)
 	if len(merged) != 2 {
 		t.Errorf("merged: got %d cards, want 2 (03:00 and 17:00)", len(merged))
+	}
+}
+
+// On the BlueField SoC's own OS, lspci -nn -d 15b3: shows internal PCI
+// bridges (class 0604) alongside its Ethernet functions. Bridges in the
+// 15b3:* set are the give-away — a real server never sees them.
+func TestParseLspciDPUs_DPUOS(t *testing.T) {
+	in := `00:00.0 PCI bridge [0604]: Mellanox Technologies MT43244 BlueField-3 SoC PCIe bridge [15b3:c2d3]
+01:00.0 PCI bridge [0604]: Mellanox Technologies MT43244 BlueField-3 SoC PCIe bridge [15b3:c2d3]
+03:00.0 Ethernet controller [0200]: Mellanox Technologies MT43244 BlueField-3 integrated ConnectX-7 network controller [15b3:a2dc]
+`
+	got, isDPU := parseLspciDPUs(in)
+	if !isDPU {
+		t.Errorf("DPU OS lspci wrongly classified as server host (expected isDPU=true)")
+	}
+	// Bridges should NOT pollute the dpus[] list — only the real Ethernet
+	// function survives.
+	if len(got) != 1 {
+		t.Errorf("got %d non-bridge functions, want 1 (the Ethernet controller)", len(got))
 	}
 }
 
