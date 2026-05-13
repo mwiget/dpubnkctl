@@ -176,6 +176,17 @@ ip addr replace {{$vlan.IP}} dev {{$vlan.Name}}
 ip route replace default via {{$vlan.DefaultGateway}} dev {{$vlan.Name}}
 {{- end}}
 {{end}}
+
+# Trunk the host PCIe representor (pf0hpf) for every VLAN the host
+# needs to talk on. Without this OVS treats pf0hpf as an access port
+# on the untagged default VLAN, drops tagged frames coming from the
+# host's `<role><tag>@ens16f0np0` sub-interfaces, and strips tags off
+# anything going back to the host — so kubespray's host-to-host
+# kubeadm join over the data-plane fails with "no route to host"
+# and the host's VLAN sub-interfaces stay LOWERLAYERDOWN. Setting
+# trunks=… makes pf0hpf a transparent trunk for the configured VLANs.
+# In LAG mode all VLANs ride bond0 through pf0hpf.
+ovs-vsctl set port pf0hpf trunks={{.PF0TrunkTags}}
 EOS
 
 chmod 755 /mnt/usr/local/sbin/ovs-vlan-init.sh

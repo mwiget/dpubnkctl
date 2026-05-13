@@ -36,6 +36,20 @@ type RenderInputs struct {
 	DNSDomains     string
 	NTPServers     string
 	VLANs          []RenderedVLAN
+	// PF0TrunkTags / PF1TrunkTags are pre-formatted comma-separated VLAN
+	// tag lists for `ovs-vsctl set port pf0hpf trunks=<list>`. Without
+	// this trunk config the host's VLAN sub-interfaces (e.g.
+	// internal41@ens16f0np0 on the host) stay LOWERLAYERDOWN because
+	// pf0hpf defaults to OVS access-mode-untagged, which drops tagged
+	// frames from the host PCIe path.
+	//
+	// LAG mode: PF0TrunkTags has every VLAN tag (all VLANs ride bond0
+	// through pf0hpf); PF1TrunkTags is empty.
+	//
+	// Non-LAG: each pfXhpf trunks only the VLANs whose Uplink routes
+	// through its bridge (sf-external↔p0↔pf0hpf, sf-internal↔p1↔pf1hpf).
+	PF0TrunkTags string
+	PF1TrunkTags string
 }
 
 type RenderedVLAN struct {
@@ -146,6 +160,25 @@ func buildInputs(p *poc.PoC, h *poc.Host, d *poc.DPU, repoDir string) (RenderInp
 		}
 	}
 
+	// Build the pf0hpf / pf1hpf trunk lists. In LAG mode all VLANs ride
+	// bond0 through pf0hpf; in non-LAG, each VLAN routes through whichever
+	// pfXhpf matches its uplink (p0 → pf0hpf, p1 → pf1hpf). An empty
+	// uplink is treated as p0 since that's the default-uplink bridge in
+	// the non-LAG template.
+	var pf0Tags, pf1Tags []string
+	for _, v := range d.VLANs {
+		tag := fmt.Sprintf("%d", v.Tag)
+		if d.LAG {
+			pf0Tags = append(pf0Tags, tag)
+			continue
+		}
+		if v.Uplink == "p1" {
+			pf1Tags = append(pf1Tags, tag)
+		} else {
+			pf0Tags = append(pf0Tags, tag)
+		}
+	}
+
 	return RenderInputs{
 		PasswordHash:   hash,
 		OperatorPubkey: pubkey,
@@ -156,6 +189,8 @@ func buildInputs(p *poc.PoC, h *poc.Host, d *poc.DPU, repoDir string) (RenderInp
 		DNSDomains:     strings.Join(p.Provisioning.DPUDNSDomains, " "),
 		NTPServers:     strings.Join(p.Provisioning.DPUNTP, " "),
 		VLANs:          vlans,
+		PF0TrunkTags:   strings.Join(pf0Tags, ","),
+		PF1TrunkTags:   strings.Join(pf1Tags, ","),
 	}, nil
 }
 
