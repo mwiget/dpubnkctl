@@ -94,6 +94,36 @@ through F5's normal channels — never via this binary:
 Drop those into `keys/` of the PoC repo `init` creates. Everything else
 is in the binary.
 
+## Requirements
+
+On the operator workstation (where you run `dpubnkctl`):
+
+| Tool / resource | Why | Notes |
+|---|---|---|
+| **Docker Engine** | Runs the pinned `kubespray:v2.28.1` and `alpine/k8s:1.32.8` containers — used by `cluster up`, `cluster reset`, `cluster join-dpus`, `deploy *`, `destroy *` | Daemon must be reachable; `docker version` works. Install: https://docs.docker.com/engine/install/ |
+| **git** | `dpubnkctl init` git-inits the PoC repo (skippable with `--no-git`) | Any recent version |
+| **Mgmt network** with outbound to: `content.mellanox.com`, `github.com`, `quay.io`, `repo.f5.com`, `registry-1.docker.io` | BFB image, cert-manager manifests, kubespray + alpine/k8s images, FLO Helm chart and BNK container images | Pulled at runtime; not embedded. The mgmt network typically has internet; the data-plane usually doesn't (AGENTS.md #23). |
+| **SSH access** to every host and DPU BMC | All probes, flash, and config are SSH/Redfish-driven; no `ssh` binary needed (Go stdlib) | Operator's private key referenced from `keys/` in the PoC repo |
+
+Verify everything with one command after install:
+
+```bash
+dpubnkctl doctor              # host tools + network reachability + (if poc.yaml) keys
+dpubnkctl doctor --strict     # also fail on warnings (CI / unattended use)
+dpubnkctl doctor --skip-network  # offline-friendly
+```
+
+You do **not** need to install kubectl, helm, ansible, python, rshim, or
+mlxconfig on the operator workstation. Cluster-side tools run inside
+containers; DPU-side tools live on the DPU OS after the BFB flash.
+
+What customers supply themselves, dropped into `keys/` of the PoC repo
+(delivered through F5's normal channels — not via this binary):
+
+- FAR tarball — image-pull credentials for `repo.f5.com`
+- JWT — TEEM activation token
+- SSH private key for the lab hosts
+
 ## Build
 
 ```bash
