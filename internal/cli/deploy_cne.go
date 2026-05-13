@@ -107,8 +107,20 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 	//    by Role+Tag so a single VLAN spanning both DPUs gets one
 	//    F5SPKVlan with both selfip_v4s. Skip if the PoC has no DPU
 	//    VLANs declared (single-host or NIC-mode topologies).
+	//
+	//    The F5SPKVlan CRD is installed by FLO's reconciliation of the
+	//    CNEInstance we applied in step 2. That reconciliation isn't
+	//    instant — without a wait, `kubectl apply` here loses a race
+	//    with "no matches for kind F5SPKVlan in version k8s.f5net.com/v1
+	//    ensure CRDs are installed first" (caught dogfooding e2e on
+	//    lake1). Wait until the CRD is Established.
 	fmt.Fprintln(out, "[3/5] Rendering + applying F5SPKVlan(s) ...")
 	if vlanCount := dpuVLANCount(p); vlanCount > 0 {
+		fmt.Fprintln(out, "      Waiting for FLO to install F5SPKVlan CRD ...")
+		if err := r.Wait(ctx, "", "Established",
+			"crd/f5-spk-vlans.k8s.f5net.com", 5*time.Minute); err != nil {
+			return fmt.Errorf("F5SPKVlan CRD did not become Established: %w", err)
+		}
 		vlans, err := deploy.RenderF5SPKVlans(p)
 		if err != nil {
 			return err
