@@ -50,6 +50,7 @@ before driving a PoC.`,
 		newAgentCmd(),
 		newDoctorCmd(),
 		newValidateCmd(),
+		newE2ECmd(),
 		newTopologiesCmd(),
 		newVersionCmd(),
 	)
