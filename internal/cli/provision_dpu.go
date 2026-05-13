@@ -315,19 +315,27 @@ func flashOneJob(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j fl
 	}
 	fmt.Fprintf(w, "      bfb-install completed — log at %s\n", logPath)
 
-	// 5. Wait for first DPU boot.
+	// 5. Wait for first DPU boot. Identify the DPU by hostname in
+	//    progress output — the tmfifo IP is host-local and identical
+	//    across every DPU, so reporting it confuses the operator (and
+	//    any agent relaying messages). The transport is implicitly
+	//    "tmfifo" since that's the only path until oob_net0 comes up.
 	dpuIP := tmfifoHostPart(j.dpu.TmfifoIP)
+	dpuName := j.dpu.Hostname
+	if dpuName == "" {
+		dpuName = "DPU"
+	}
 	if f.skipDPUWait || dpuIP == "" {
 		fmt.Fprintln(w, "[5/7] (skipping DPU SSH wait)")
 	} else {
-		fmt.Fprintf(w, "[5/7] Waiting for first DPU boot (SSH at %s) ...\n", dpuIP)
+		fmt.Fprintf(w, "[5/7] Waiting for %s first boot (via tmfifo) ...\n", dpuName)
 		waitCtx, waitCancel := context.WithTimeout(ctx, f.dpuWaitTimeout)
 		err := waitForDPUSSH(waitCtx, client, dpuIP)
 		waitCancel()
 		if err != nil {
 			fmt.Fprintf(w, "      WARN: first boot wait timed out (%v) — continuing anyway\n", err)
 		} else {
-			fmt.Fprintln(w, "      DPU is reachable.")
+			fmt.Fprintf(w, "      %s is reachable.\n", dpuName)
 		}
 	}
 
@@ -346,7 +354,7 @@ func flashOneJob(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j fl
 
 	// 7. Wait for second DPU boot (after the soft-reset).
 	if !f.skipPostFlashReboot && !f.skipDPUWait && dpuIP != "" {
-		fmt.Fprintf(w, "[7/7] Waiting for second DPU boot (SSH at %s) ...\n", dpuIP)
+		fmt.Fprintf(w, "[7/7] Waiting for %s second boot (via tmfifo) ...\n", dpuName)
 		// Give the reset a moment to actually start before polling.
 		time.Sleep(8 * time.Second)
 		waitCtx, waitCancel := context.WithTimeout(ctx, f.dpuWaitTimeout)
@@ -355,7 +363,7 @@ func flashOneJob(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j fl
 		if err != nil {
 			fmt.Fprintf(w, "      WARN: second boot wait timed out (%v) — verify manually\n", err)
 		} else {
-			fmt.Fprintln(w, "      DPU is reachable after reboot.")
+			fmt.Fprintf(w, "      %s is reachable after reboot.\n", dpuName)
 		}
 	} else {
 		fmt.Fprintln(w, "[7/7] (no second boot wait)")

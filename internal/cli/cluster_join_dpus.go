@@ -269,7 +269,7 @@ func joinOneDPU(ctx context.Context, repo string, j dpuJob, jc *cluster.JoinComm
 		},
 	}
 
-	fmt.Fprintf(w, "ssh ubuntu@%s via %s ...\n", dpuIP, j.host.SSH.Address)
+	fmt.Fprintf(w, "ssh %s (tmfifo via %s) ...\n", j.dpu.Hostname, j.host.Name)
 	dialCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	c, err := ssh.Dial(dialCtx, cfg)
 	cancel()
