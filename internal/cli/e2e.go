@@ -124,6 +124,7 @@ type e2eFlags struct {
 	dryRun            bool
 	continueOnFailure bool
 	skipValidate      bool
+	noResume          bool
 }
 
 func newE2ECmd() *cobra.Command {
@@ -168,7 +169,49 @@ Prerequisites:
 	cmd.Flags().BoolVar(&f.dryRun, "dry-run", false, "Print the plan, run nothing")
 	cmd.Flags().BoolVar(&f.continueOnFailure, "continue-on-failure", false, "Keep running phases after a failure")
 	cmd.Flags().BoolVar(&f.skipValidate, "skip-validate", false, "Skip the validate precheck (not recommended)")
+	cmd.Flags().BoolVar(&f.noResume, "no-resume", false, "Ignore artifacts/e2e-state.json and re-run every phase from scratch")
 	return cmd
+}
+
+// e2eState persists per-phase completion across e2e runs so an
+// interrupted (or partially-failed-with-continue) pipeline can resume
+// without re-running phases that already succeeded. Lives at
+// <poc>/artifacts/e2e-state.json. validate is intentionally NOT
+// recorded — it's cheap and re-running it is the right default.
+type e2eState struct {
+	Phases map[string]e2ePhaseState `json:"phases"`
+}
+
+type e2ePhaseState struct {
+	Status      string    `json:"status"` // ok | failed
+	CompletedAt time.Time `json:"completed_at"`
+	Duration    string    `json:"duration,omitempty"`
+}
+
+func loadE2EState(repo string) e2eState {
+	s := e2eState{Phases: map[string]e2ePhaseState{}}
+	path := filepath.Join(repo, "artifacts", "e2e-state.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return s
+	}
+	_ = json.Unmarshal(data, &s)
+	if s.Phases == nil {
+		s.Phases = map[string]e2ePhaseState{}
+	}
+	return s
+}
+
+func saveE2EState(repo string, s e2eState) error {
+	dir := filepath.Join(repo, "artifacts")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "e2e-state.json"), data, 0o644)
 }
 
 func runE2E(ctx context.Context, out io.Writer, f *e2eFlags) error {
@@ -215,15 +258,36 @@ func runE2E(ctx context.Context, out io.Writer, f *e2eFlags) error {
 		Phases:    nil,
 	}
 
+	state := loadE2EState(repo)
+	if f.noResume {
+		state = e2eState{Phases: map[string]e2ePhaseState{}}
+	}
+
 	for i, ph := range selected {
 		idx := i + 1
 		stepName := fmt.Sprintf("%02d-%s", idx, ph.name)
+
+		// preFlight skip (e.g. "no hosts with DPUs") trumps everything.
 		if reason, skip := phaseSkip(p, ph); skip {
 			fmt.Fprintf(out, "[%d/%d] %-22s  SKIPPED — %s\n", idx, len(selected), ph.name, reason)
 			report.Phases = append(report.Phases, phaseReport{
 				Phase: ph.name, Status: "skipped", Summary: reason, Index: idx,
 			})
 			continue
+		}
+
+		// Resume skip — previously-completed phase, no --no-resume override.
+		// validate is intentionally always re-run (cheap, catches drift).
+		if !f.dryRun && ph.name != "validate" {
+			if prev, ok := state.Phases[ph.name]; ok && prev.Status == "ok" {
+				reason := fmt.Sprintf("resumed: previously completed at %s (--no-resume to re-run)",
+					prev.CompletedAt.Format(time.RFC3339))
+				fmt.Fprintf(out, "[%d/%d] %-22s  SKIPPED — %s\n", idx, len(selected), ph.name, reason)
+				report.Phases = append(report.Phases, phaseReport{
+					Phase: ph.name, Status: "skipped", Summary: reason, Index: idx,
+				})
+				continue
+			}
 		}
 
 		args := buildArgs(p, repo, ph)
@@ -263,6 +327,21 @@ func runE2E(ctx context.Context, out io.Writer, f *e2eFlags) error {
 		}
 		fmt.Fprintf(out, "      %s  (%s, %s)\n\n", strings.ToUpper(rep.Status), rep.Duration, rep.LogPath)
 		report.Phases = append(report.Phases, rep)
+
+		// Persist per-phase state so the next run can resume past this
+		// point. validate skipped (always re-run); failed phases are
+		// recorded too so the operator can see what flipped to failed.
+		if ph.name != "validate" {
+			state.Phases[ph.name] = e2ePhaseState{
+				Status:      rep.Status,
+				CompletedAt: time.Now().UTC(),
+				Duration:    rep.Duration,
+			}
+			if err := saveE2EState(repo, state); err != nil {
+				fmt.Fprintf(out, "      WARN: could not persist e2e state: %v\n", err)
+			}
+		}
+
 		if rep.Status == "failed" && !f.continueOnFailure {
 			break
 		}
