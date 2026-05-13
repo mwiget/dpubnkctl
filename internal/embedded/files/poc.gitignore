@@ -13,6 +13,11 @@ kubeconfig
 # Discovery output that may contain creds
 inventory/secrets/
 
+# Rendered Helm values for FLO contain the raw JWT (mode 0600 on disk
+# but operator may `git add` broadly — keep it out)
+artifacts/flo-values-rendered.yaml
+artifacts/flo-values-tst-rendered.yaml
+
 # OS
 .DS_Store
 *.swp

@@ -145,15 +145,23 @@ func (r *Runner) HelmUpgradeOCI(ctx context.Context, auth OCIAuth, release, ociC
 	upgradeArgs = append(upgradeArgs, extraArgs...)
 
 	// Compose: login (password from stdin) && upgrade.
-	// quoting matters here — the password JSON has no embedded single
-	// quotes (GCP SA JSON uses only double quotes), so single-quote it.
+	//
+	// We feed the registry password through the docker container's stdin
+	// — NOT into the script body — so it never appears on the host's
+	// argv list (visible via `ps`/`auditd`/Falco). Inside the container,
+	// `read -r PW` is a shell builtin (no fork), and `echo "$PW"` is
+	// also a builtin, so the password stays inside the sh process and
+	// pipes directly to helm's `--password-stdin`. The script template
+	// itself only contains registry host, username, and upgrade args
+	// (no secrets).
 	script := fmt.Sprintf(
-		`echo '%s' | helm registry login %s --username %s --password-stdin && %s`,
-		auth.Password, auth.RegistryHost, auth.Username,
+		`read -r PW && printf '%%s' "$PW" | helm registry login %s --username %s --password-stdin && %s`,
+		auth.RegistryHost, auth.Username,
 		strings.Join(upgradeArgs, " "))
 
 	dockerArgs = append(dockerArgs, version.K8sToolsImage, "sh", "-c", script)
 	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
+	cmd.Stdin = strings.NewReader(auth.Password + "\n")
 	var out bytes.Buffer
 	cmd.Stdout = io.MultiWriter(r.Out, &out)
 	cmd.Stderr = cmd.Stdout
