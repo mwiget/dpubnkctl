@@ -74,32 +74,45 @@ where its API endpoint is (cloud vendor, local vLLM, etc.) — set
 Without an argument, lists all supported CLIs.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repo, err := resolvePoCDir(pocDir)
-			if err != nil {
-				return err
-			}
-			p, err := poc.Load(repo)
-			if err != nil {
-				return fmt.Errorf("not a PoC repo (%s): %w", repo, err)
-			}
-
-			endpoint, _ := cmd.Flags().GetString("llm-endpoint")
-			if endpoint == "" {
-				endpoint = p.Agent.LLMEndpoint
-			}
-
 			out := cmd.OutOrStdout()
+			endpoint, _ := cmd.Flags().GetString("llm-endpoint")
+
+			// Resolve PoC + load poc.yaml, but only require it when the
+			// caller is asking us to PRINT an invocation (needs repo path).
+			// The bare listing form is global info — don't fail just
+			// because cwd happens to not be a PoC repo.
+			repo, repoErr := resolvePoCDir(pocDir)
+			var p *poc.PoC
+			if repoErr == nil {
+				if loaded, err := poc.Load(repo); err == nil {
+					p = loaded
+					if endpoint == "" {
+						endpoint = p.Agent.LLMEndpoint
+					}
+				}
+			}
 
 			if len(args) == 0 {
 				fmt.Fprintln(out, "Supported agentic CLIs:")
 				for name := range agentRecipes {
 					fmt.Fprintf(out, "  - %s\n", name)
 				}
-				fmt.Fprintf(out, "\nDefault for this PoC: %s\n", p.Agent.Default)
+				if p != nil {
+					fmt.Fprintf(out, "\nDefault for this PoC: %s\n", p.Agent.Default)
+				} else {
+					fmt.Fprintln(out, "\n(not in a PoC repo — cd into one or pass --poc <dir> to see its default)")
+				}
 				fmt.Fprintln(out, "\nRun:  dpubnkctl agent <name>  to print its invocation.")
 				return nil
 			}
 
+			// Printing an invocation needs the PoC repo path.
+			if repoErr != nil {
+				return repoErr
+			}
+			if p == nil {
+				return fmt.Errorf("not a PoC repo (%s) — cd into a `dpubnkctl init`-created repo or pass --poc", repo)
+			}
 			recipe, ok := agentRecipes[args[0]]
 			if !ok {
 				return fmt.Errorf("unknown agent %q (try: claude, gemini, aider, openai)", args[0])
