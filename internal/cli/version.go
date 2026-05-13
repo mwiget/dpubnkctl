@@ -24,6 +24,8 @@ func newVersionCmd() *cobra.Command {
 			fmt.Fprintf(out, "  containerd     %s\n", version.ContainerdVer)
 			fmt.Fprintf(out, "  runc           %s\n", version.RuncVersion)
 			fmt.Fprintf(out, "  pause image    %s\n", version.PauseImageTag)
+			fmt.Fprintln(out)
+			fmt.Fprintln(out, topologiesShortSummary)
 			return nil
 		},
 	}

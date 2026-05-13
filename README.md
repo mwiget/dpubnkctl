@@ -5,8 +5,9 @@ hosts with NVIDIA BlueField DPUs.
 
 > **Status: end-to-end pipeline implemented and validated on the lake1
 > lab through `deploy cne`.** Recurring failure modes captured in
-> [AGENTS.md](AGENTS.md) (23 numbered gotchas). Only `journal` and
-> `cluster status` remain stubs.
+> [AGENTS.md](AGENTS.md) (23 numbered gotchas). `journal list/add/report`,
+> `validate`, `doctor`, and `topologies` are wired; only `cluster status`
+> remains a stub.
 
 ## What this tool does
 
@@ -31,6 +32,26 @@ Symmetric **`destroy`** tears the same stack down — `bnk` (workload
 
 Each PoC lives in its own local git repo so you can tear down and redeploy
 from `poc.yaml` alone.
+
+## Supported topologies
+
+| Topology | Hosts | Control planes | Workers | HA-safe? | Use case |
+|---|---|---|---|---|---|
+| Single-node lab | 1 | 1 (role: both) | 1 (role: both) | No | Smoke test, demo on a laptop |
+| Minimum multi-node | 2 | 1 | 1 host + DPUs | No | First customer PoC |
+| Two control planes | 2 | 2 (role: both) | DPUs (and CPs) | No\* | Validated on lake1 |
+| Production HA | 3+ | 3 | DPUs + opt. hosts | Yes | Long-running deployments |
+
+\* 2 control planes keeps etcd quorum on a single failure but a 3rd host is needed for true HA. `dpubnkctl validate` warns on this.
+
+Per topology:
+
+- **DPUs always join externally** (not via kubespray). Each host has 1+ DPUs declared in `poc.yaml.hosts[*].dpus`. `dpubnkctl cluster join-dpus` joins them after the kubespray run.
+- **Each host can be control-plane, worker, or both** via `host.role`. "Both" is the typical lab shape — control-plane scheduling is enabled on those nodes.
+- **Each DPU runs LAG or non-LAG.** LAG bonds p0+p1 into one fabric uplink (single VLAN trunk on the switch side); non-LAG uses p0 + p1 as two independent uplinks with `vlans[].uplink: p0|p1`.
+- **No fixed upper bound on hosts/DPUs.** The binary is validated end-to-end on the lake1 lab (2 hosts × 1 DPU). Larger clusters are syntactically supported but un-soaked.
+
+Pinned to BNK 2.2.0 / Kubernetes 1.32.8 / DOCA 2.9.2 / FLO v2.9.27-0.2.10. A different BNK release ships a different `dpubnkctl` build.
 
 ## Two operating modes
 
@@ -149,8 +170,17 @@ dpubnkctl discover wizard          # interactive — prompts for subnet, etc.
 # or:
 dpubnkctl discover range 192.168.68.0/24 --ssh-user ubuntu --ssh-key keys/customer-x
 
+# 2c. Walk network-design-checklist.md with the customer (LAG vs non-LAG,
+#     VLAN tags + IP subnets, MTU, cluster_apiserver_address, self-IPs).
+#     Record answers in poc.yaml, rationale in decisions.md.
+$EDITOR network-design-checklist.md poc.yaml decisions.md
+
+# 2d. Confirm poc.yaml is internally consistent + all referenced files exist.
+dpubnkctl validate                 # errors + warnings; non-zero exit on errors
+
 # 3. Phase through the deploy. All commands are idempotent + gated by
 #    --yolo + --confirm-cluster <name> for the destructive ones.
+#    `provision dpus` re-runs `validate` as a precheck.
 dpubnkctl provision dpus           # flash BFB, configure networking
 dpubnkctl host network setup       # data-plane VLAN sub-ifs on hosts
 dpubnkctl cluster up               # kubespray cluster.yml (~30 min)

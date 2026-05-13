@@ -49,6 +49,7 @@ before driving a PoC.`,
 		newAgentCmd(),
 		newDoctorCmd(),
 		newValidateCmd(),
+		newTopologiesCmd(),
 		newVersionCmd(),
 	)
 
