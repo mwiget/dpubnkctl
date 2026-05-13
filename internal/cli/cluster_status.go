@@ -122,7 +122,7 @@ func runClusterStatus(ctx context.Context, out io.Writer, pocDir string) error {
 
 	// 7. CNEInstance — exists in user namespace once `deploy cne` runs.
 	fmt.Fprintln(out, "CNEInstance (BNK platform):")
-	if has, _ := k.crdEstablished(ctx, "cneinstances.f5bigip.f5net.com"); has {
+	if has, _ := k.crdEstablished(ctx, "cneinstances.k8s.f5.com"); has {
 		_ = k.runStream(ctx, out, "      | ", "get", "cneinstance", "-A")
 	} else {
 		fmt.Fprintln(out, "      (CNEInstance CRD not installed — `deploy flo` not run yet)")
