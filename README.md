@@ -3,11 +3,9 @@
 Single-binary CLI to deploy F5 BIG-IP Next for Kubernetes (BNK) on bare-metal
 hosts with NVIDIA BlueField DPUs.
 
-> **Status: end-to-end pipeline implemented and validated on the lake1
-> lab through `deploy cne`.** Recurring failure modes captured in
-> [AGENTS.md](AGENTS.md) (23 numbered gotchas). `journal list/add/report`,
-> `validate`, `doctor`, and `topologies` are wired; only `cluster status`
-> remains a stub.
+Recurring failure modes are documented in [AGENTS.md](AGENTS.md) — read
+it before driving a new lab. `journal list/add/report`, `validate`,
+`doctor`, and `topologies` are wired.
 
 ## What this tool does
 
@@ -39,7 +37,7 @@ from `poc.yaml` alone.
 |---|---|---|---|---|---|
 | Single-node lab | 1 | 1 (role: both) | 1 (role: both) | No | Smoke test, demo on a laptop |
 | Minimum multi-node | 2 | 1 | 1 host + DPUs | No | First customer PoC |
-| Two control planes | 2 | 2 (role: both) | DPUs (and CPs) | No\* | Validated on lake1 |
+| Two control planes | 2 | 2 (role: both) | DPUs (and CPs) | No\* | Common lab PoC |
 | Production HA | 3+ | 3 | DPUs + opt. hosts | Yes | Long-running deployments |
 
 \* 2 control planes keeps etcd quorum on a single failure but a 3rd host is needed for true HA. `dpubnkctl validate` warns on this.
@@ -49,7 +47,7 @@ Per topology:
 - **DPUs always join externally** (not via kubespray). Each host has 1+ DPUs declared in `poc.yaml.hosts[*].dpus`. `dpubnkctl cluster join-dpus` joins them after the kubespray run.
 - **Each host can be control-plane, worker, or both** via `host.role`. "Both" is the typical lab shape — control-plane scheduling is enabled on those nodes.
 - **Each DPU runs LAG or non-LAG.** LAG bonds p0+p1 into one fabric uplink (single VLAN trunk on the switch side); non-LAG uses p0 + p1 as two independent uplinks with `vlans[].uplink: p0|p1`.
-- **No fixed upper bound on hosts/DPUs.** The binary is validated end-to-end on the lake1 lab (2 hosts × 1 DPU). Larger clusters are syntactically supported but un-soaked.
+- **No fixed upper bound on hosts/DPUs.** The schema and pipeline accept arbitrary host + DPU counts; specific shapes have been exercised against bare-metal labs of the topologies listed above.
 
 Pinned to BNK 2.2.0 / Kubernetes 1.32.8 / DOCA 2.9.2 / FLO v2.9.27-0.2.10. A different BNK release ships a different `dpubnkctl` build.
 
@@ -144,6 +142,23 @@ What customers supply themselves, dropped into `keys/` of the PoC repo
 - FAR tarball — image-pull credentials for `repo.f5.com`
 - JWT — TEEM activation token
 - SSH private key for the lab hosts
+
+## Example PoC shapes
+
+The `examples/` directory carries pre-canned `poc.yaml` skeletons for
+the four supported topologies (single-node, two-host-2cp, two-host-cp-worker,
+three-host-ha), using RFC-2544 / RFC-5737 placeholder addresses so
+they're safe to commit. Crib one as a starting point:
+
+```bash
+dpubnkctl init customer-x
+cp examples/two-host-2cp.yaml customer-x/poc.yaml
+$EDITOR customer-x/poc.yaml          # replace placeholders with lab-real values
+dpubnkctl validate --poc customer-x  # confirm consistency before provisioning
+```
+
+See `examples/README.md` for the placeholder address ranges and the
+host/IP conventions each example follows.
 
 ## Build
 

@@ -66,7 +66,7 @@ No fancy tooling — stdlib + cobra + yaml.v3 + golang.org/x/crypto/ssh + sftp.
 
 ### DPU provisioning + join
 
-7. **`mlnx-sf.conf` may silently fail to create one of the SFs at first boot** (lake1: worker1-bf3 missing p0 SF). The bf.conf-rendered config has both lines, only one runs. Always `sudo mlnx-sf -a show` after first DPU boot to confirm both p0 + p1 SFs exist; recreate manually if not:
+7. **`mlnx-sf.conf` may silently fail to create one of the SFs at first boot.** The bf.conf-rendered config has both lines, only one runs. Always `sudo mlnx-sf -a show` after first DPU boot to confirm both p0 + p1 SFs exist; recreate manually if not:
    ```
    sudo mlnx-sf --action create --device 0000:03:00.0 --sfnum 1 --enable-trust --hwaddr <mac>
    ```
@@ -90,9 +90,9 @@ No fancy tooling — stdlib + cobra + yaml.v3 + golang.org/x/crypto/ssh + sftp.
 
 ### License JWT
 
-15. **The JWT's `jku` URL is the authoritative signal for prod vs tst.** Lake1's JWT has `iss="F5 Inc."` + `kid="v1"` (the same `iss`/`kid` are used in *both* prod and tst tokens), so substring-matching "tst" in those is useless. What the JWT actually tells you is in `header.jku` — e.g. `https://product-tst.apis.f5networks.net/ee/v1/keys/jwks` for tst, `https://product.apis.f5.com/ee/v1/keys/jwks` for prod. That URL must match the `teemCertUrl` / `teemEntitlementUrl` / `teemInitialConfigUrl` block and the `modulus` / `x5c` chain baked into the FLO values, because each environment uses its own RSA signing key. Wrong template → "Unverifiable JWT: token signature is invalid: crypto/rsa". `claims.sub` starting with `TST-` is a strong secondary signal. The classifier (`internal/deploy/license.go::InspectJWT`) keys on `jku` first, `sub` second.
+15. **The JWT's `jku` URL is the authoritative signal for prod vs tst.** Real-world TST JWTs ship with `iss="F5 Inc."` + `kid="v1"` (the same `iss`/`kid` appear in *both* prod and tst tokens), so substring-matching "tst" in those is useless. What the JWT actually tells you is in `header.jku` — e.g. `https://product-tst.apis.f5networks.net/ee/v1/keys/jwks` for tst, `https://product.apis.f5.com/ee/v1/keys/jwks` for prod. That URL must match the `teemCertUrl` / `teemEntitlementUrl` / `teemInitialConfigUrl` block and the `modulus` / `x5c` chain baked into the FLO values, because each environment uses its own RSA signing key. Wrong template → "Unverifiable JWT: token signature is invalid: crypto/rsa". `claims.sub` starting with `TST-` is a strong secondary signal. The classifier (`internal/deploy/license.go::InspectJWT`) keys on `jku` first, `sub` second.
 
-16. **JWT timestamps (`iat`, `f5_sat`) do NOT determine token validity.** Token validity is entirely server-side (revocation lists at the licensing endpoint). The lake1 JWT has `iat=1731196857` (2024-11-09) and `f5_sat=1746748857` (2025-05-08) — both in the past — yet activates successfully because the server still honors it. Do not debug "expired token" theories based on claim timestamps; the only thing that fails locally is RSA signature verification, which is determined by `jku` (see #15). If signature verification fails, the answer is almost always wrong-template, not expired-token.
+16. **JWT timestamps (`iat`, `f5_sat`) do NOT determine token validity.** Token validity is entirely server-side (revocation lists at the licensing endpoint). Observed example: a JWT with `iat` two years past and `f5_sat` a year past still activates successfully because the server still honors it. Do not debug "expired token" theories based on claim timestamps; the only thing that fails locally is RSA signature verification, which is determined by `jku` (see #15). If signature verification fails, the answer is almost always wrong-template, not expired-token.
 
 ### BNK deploy / TMM readiness
 
@@ -132,8 +132,10 @@ No fancy tooling — stdlib + cobra + yaml.v3 + golang.org/x/crypto/ssh + sftp.
 
 ---
 
-## Tested topologies
+## Lab notes
 
-- **lake1**: 2 hosts (worker1, worker2) × 1 DPU each (worker1-bf3, worker2-bf3) = 4-node cluster, both hosts as control planes (1 etcd for HA-safety), data-plane VLAN 41 with MTU 9000, mgmt 192.168.68.x. End-to-end deploy through `deploy cne` complete; TMM gates blocked only by expired JWT.
-
-If you add a new lab topology, document its quirks here so future agents know what's normal vs novel.
+When you exercise a new bare-metal topology, document its quirks here
+(non-default switch settings, kernel-renamed PFs, BMC oddities, firmware
+versions that needed special handling). Anything that's "obvious in
+hindsight but cost a half-day to figure out" belongs here. See
+`examples/` for pre-canned `poc.yaml` shapes that mirror common labs.

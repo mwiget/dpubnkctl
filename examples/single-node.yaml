@@ -1,0 +1,91 @@
+# Single-node PoC — one bare-metal host running both control plane and
+# worker, with one BlueField-3 DPU joining as an extra worker. Smallest
+# topology dpubnkctl can drive end-to-end; fits a laptop demo or a single
+# rack server in a customer lab.
+#
+# Replace every 192.0.2.* / 203.0.113.* / 198.51.100.* address with values
+# from the customer's network plan before running `dpubnkctl validate`.
+
+apiVersion: dpubnkctl.f5.com/v1alpha1
+kind: PoC
+metadata:
+    name: single-node
+    customer: REPLACE-ME
+    bnk_version: 2.2.0
+versions:
+    doca: 2.9.2
+    bfb_image: bf-bundle-2.9.2-32_25.02_ubuntu-22.04_prod.bfb
+    flo_chart: v2.9.27-0.2.10
+    k8s: "1.32"
+    containerd: 1.7.23
+    runc: 1.2.1
+    pause_tag: "3.10"
+topology:
+    mode: single-node
+    lag: true
+    control_plane_count: 1
+    expected_hosts: 1
+    expected_dpus_per_host: 1
+network:
+    internal_cidr: 198.18.100.0/24
+    pod_mtu: 8900
+    dpu_mtu: 9000
+    vlans:
+        - name: external
+          id: 40
+          subnet: 203.0.113.0/24
+        - name: internal
+          id: 41
+          subnet: 198.51.100.0/24
+    cluster_apiserver_address: 198.51.100.10
+    node_ip_role: internal
+provisioning:
+    dpu_password_hash_ref: keys/dpu_password.hash
+    dpu_dns:
+        - 8.8.8.8
+        - 1.1.1.1
+    dpu_ntp:
+        - pool.ntp.org
+    bfb_cache_dir: ~/.cache/dpubnkctl/bfb
+hosts:
+    - name: host1
+      role: both
+      ssh:
+        address: 192.0.2.10
+        port: 22
+        user: ubuntu
+        key_ref: keys/host1
+      data_plane:
+        parent_iface: ens16f0np0
+        vlans:
+            - role: external
+              tag: 40
+              ip: 203.0.113.10/24
+            - role: internal
+              tag: 41
+              ip: 198.51.100.10/24
+      dpus:
+        - pci: "0000:03:00.0"
+          mode: dpu
+          lag: true
+          hostname: host1-bf3
+          tmfifo_ip: 192.168.100.2/30
+          vlans:
+            - role: external
+              tag: 40
+              ip: 203.0.113.5/24
+            - role: internal
+              tag: 41
+              ip: 198.51.100.5/24
+bnk:
+    far_key_ref: keys/f5-far-auth-key.tgz
+    jwt_ref: keys/.jwt
+    external_selfip: 203.0.113.100
+    internal_selfip: 198.51.100.100
+status:
+    discover: pending
+    provision: pending
+    cluster: pending
+    deploy: pending
+agent:
+    default: claude

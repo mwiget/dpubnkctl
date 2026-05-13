@@ -1,0 +1,122 @@
+# Two-host PoC, both hosts running control-plane AND worker (`role: both`).
+# Each host has one BlueField-3 DPU; the DPUs join as additional workers
+# externally. Most common BNK lab shape. Not HA-safe (etcd quorum survives
+# one failure, but a 3rd host is needed for full HA) — `dpubnkctl validate`
+# warns on this. Acceptable for any lab where the lab is a single failure
+# domain anyway.
+#
+# Replace every 192.0.2.* / 203.0.113.* / 198.51.100.* address with values
+# from the customer's network plan before running `dpubnkctl validate`.
+
+apiVersion: dpubnkctl.f5.com/v1alpha1
+kind: PoC
+metadata:
+    name: two-host-2cp
+    customer: REPLACE-ME
+    bnk_version: 2.2.0
+versions:
+    doca: 2.9.2
+    bfb_image: bf-bundle-2.9.2-32_25.02_ubuntu-22.04_prod.bfb
+    flo_chart: v2.9.27-0.2.10
+    k8s: "1.32"
+    containerd: 1.7.23
+    runc: 1.2.1
+    pause_tag: "3.10"
+topology:
+    mode: multi-node
+    lag: true
+    control_plane_count: 2
+    expected_hosts: 2
+    expected_dpus_per_host: 1
+network:
+    internal_cidr: 198.18.100.0/24
+    pod_mtu: 8900
+    dpu_mtu: 9000
+    vlans:
+        - name: external
+          id: 40
+          subnet: 203.0.113.0/24
+        - name: internal
+          id: 41
+          subnet: 198.51.100.0/24
+    cluster_apiserver_address: 198.51.100.66
+    node_ip_role: internal
+provisioning:
+    dpu_password_hash_ref: keys/dpu_password.hash
+    dpu_dns:
+        - 8.8.8.8
+        - 1.1.1.1
+    dpu_ntp:
+        - pool.ntp.org
+    bfb_cache_dir: ~/.cache/dpubnkctl/bfb
+hosts:
+    - name: host1
+      role: both
+      ssh:
+        address: 192.0.2.66
+        port: 22
+        user: ubuntu
+        key_ref: keys/host1
+      data_plane:
+        parent_iface: ens16f0np0
+        vlans:
+            - role: external
+              tag: 40
+              ip: 203.0.113.66/24
+            - role: internal
+              tag: 41
+              ip: 198.51.100.66/24
+      dpus:
+        - pci: "0000:03:00.0"
+          mode: dpu
+          lag: true
+          hostname: host1-bf3
+          tmfifo_ip: 192.168.100.2/30
+          vlans:
+            - role: external
+              tag: 40
+              ip: 203.0.113.5/24
+            - role: internal
+              tag: 41
+              ip: 198.51.100.5/24
+    - name: host2
+      role: both
+      ssh:
+        address: 192.0.2.71
+        port: 22
+        user: ubuntu
+        key_ref: keys/host2
+      data_plane:
+        parent_iface: ens16f0np0
+        vlans:
+            - role: external
+              tag: 40
+              ip: 203.0.113.71/24
+            - role: internal
+              tag: 41
+              ip: 198.51.100.71/24
+      dpus:
+        - pci: "0000:03:00.0"
+          mode: dpu
+          lag: true
+          hostname: host2-bf3
+          tmfifo_ip: 192.168.100.2/30
+          vlans:
+            - role: external
+              tag: 40
+              ip: 203.0.113.6/24
+            - role: internal
+              tag: 41
+              ip: 198.51.100.6/24
+bnk:
+    far_key_ref: keys/f5-far-auth-key.tgz
+    jwt_ref: keys/.jwt
+    external_selfip: 203.0.113.100
+    internal_selfip: 198.51.100.100
+status:
+    discover: pending
+    provision: pending
+    cluster: pending
+    deploy: pending
+agent:
+    default: claude

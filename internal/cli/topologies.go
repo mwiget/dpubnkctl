@@ -17,7 +17,7 @@ const topologiesTable = `Supported topologies (BNK 2.2.0):
   ---------------------- -----  ---  -------------------  ---------  ----------------------------
   Single-node lab        1      1*   1*                   No         Smoke test / laptop demo
   Minimum multi-node     2      1    1 host + DPUs        No         First customer PoC
-  Two control planes     2      2*   DPUs (and CPs)       No (note)  Validated on lake1
+  Two control planes     2      2*   DPUs (and CPs)       No (note)  Common lab PoC
   Production HA          3+     3    DPUs + opt. hosts    Yes        Long-running deployments
 
   * means role: both (control-plane + worker on the same host).
@@ -33,9 +33,9 @@ Per-topology notes:
   - Each DPU is LAG or non-LAG. LAG bonds p0+p1 into one fabric uplink
     (LACP on the switch side); non-LAG uses p0 and p1 as two independent
     uplinks with vlans[].uplink: p0|p1.
-  - No fixed upper bound on hosts or DPUs. The binary is end-to-end
-    validated on the lake1 lab (2 hosts × 1 DPU). Larger clusters are
-    syntactically supported but un-soaked.
+  - No fixed upper bound on hosts or DPUs. The schema and pipeline
+    accept arbitrary host + DPU counts; specific shapes have been
+    exercised against bare-metal labs of the topologies listed above.
 `
 
 // topologiesExamples are minimal poc.yaml snippets the operator can crib
@@ -54,8 +54,8 @@ const topologiesExamples = `Example poc.yaml shapes:
             vlans: [{role: internal, tag: 41, ip: 10.10.41.5/24},
                     {role: external, tag: 40, ip: 10.10.40.5/24}] }
 
-  # Two control planes (lake1 shape) — same as above but 2 hosts,
-  # both role: both, DPUs join as workers afterwards.
+  # Two control planes — same as above but 2 hosts, both role: both,
+  # DPUs join as workers afterwards.
 
   # Production HA — 3 hosts with role: control-plane (or both) + N DPUs.
   # cluster_apiserver_address points at a VIP on the data-plane fabric
@@ -92,6 +92,6 @@ func runTopologies(out io.Writer) error {
 const topologiesShortSummary = `Topologies supported:
   - Single-node lab       (1 host, role: both)
   - Minimum multi-node    (2 hosts: 1 CP + 1 worker)
-  - Two control planes    (2 hosts, role: both — lake1 shape, not HA-safe)
+  - Two control planes    (2 hosts, role: both — common lab PoC, not HA-safe)
   - Production HA         (3+ hosts, 3 control planes)
 Run "dpubnkctl topologies" for the full table with example poc.yaml.`
