@@ -187,16 +187,22 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 	}
 	fmt.Fprintln(out, "      applied.")
 
-	// 5. Wait for CNEInstance Ready. The CNEInstance lives in `default`
+	// 5. Wait for CNEInstance Available. The CNEInstance reports its
+	//    overall readiness via the `Available` condition (NOT `Ready`
+	//    — that condition name does not exist on CNEInstance). Available
+	//    flips True when every component condition (F5Tmm, NodeLabeler,
+	//    CRDInstaller, CNEController, Afm, Downloader, DSSM, Rabbitmq,
+	//    CRDConversion, Cwc, IPAMController, Observer, OtelCollector,
+	//    CSRC, …) reaches True. The CNEInstance lives in `default`
 	//    (cne-instance.yaml.tmpl namespace), not f5-operators.
-	fmt.Fprintln(out, "[5/5] Waiting for CNEInstance Ready ...")
+	fmt.Fprintln(out, "[5/5] Waiting for CNEInstance Available ...")
 	fmt.Fprintln(out, "      Requires Multus CNI + NADs in default (sf-external, sf-internal — installed by `deploy network`).")
 	fmt.Fprintln(out, "      If TMM gates stay False, check license: kubectl -n f5-operators get secret activationstatus -o jsonpath='{.data.activationstatus}' | base64 -d")
-	if err := r.Wait(ctx, "default", "Ready",
+	if err := r.Wait(ctx, "default", "Available",
 		"cneinstance/bnk-instance", f.cneReadyTimeout); err != nil {
-		fmt.Fprintf(out, "      WARN: CNEInstance not Ready within %s — check `kubectl get cneinstance -A` + `kubectl -n default get pods` (%v)\n", f.cneReadyTimeout, err)
+		fmt.Fprintf(out, "      WARN: CNEInstance not Available within %s — check `kubectl get cneinstance -A` + `kubectl -n default get pods` (%v)\n", f.cneReadyTimeout, err)
 	} else {
-		fmt.Fprintln(out, "      CNEInstance Ready.")
+		fmt.Fprintln(out, "      CNEInstance Available.")
 	}
 
 	p.Status.Deploy = "completed"
