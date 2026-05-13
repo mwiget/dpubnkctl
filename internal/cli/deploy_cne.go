@@ -121,6 +121,23 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 			"crd/f5-spk-vlans.k8s.f5net.com", 5*time.Minute); err != nil {
 			return fmt.Errorf("F5SPKVlan CRD did not become Established: %w", err)
 		}
+		// FLO also reconciles a `f5-cne-controller` Deployment (in the
+		// CNEInstance's namespace, `default`) that hosts the validating
+		// admission webhook `f5validate.f5net.com` at
+		// f5-validation-svc:3340/f5-validator. F5SPKVlan creates go
+		// through that webhook — if the backing pod isn't Ready yet,
+		// kubectl apply fails with "failed calling webhook ... dial tcp
+		// ...: connect: connection refused". Wait for both the
+		// deployment to exist AND become Available before applying.
+		fmt.Fprintln(out, "      Waiting for f5-cne-controller deployment (hosts the admission webhook) ...")
+		if err := r.Kubectl(ctx, "wait", "-n", "default", "--for=create",
+			"deployment/f5-cne-controller", "--timeout=3m"); err != nil {
+			return fmt.Errorf("f5-cne-controller deployment was not created: %w", err)
+		}
+		if err := r.Wait(ctx, "default", "Available",
+			"deployment/f5-cne-controller", 5*time.Minute); err != nil {
+			return fmt.Errorf("f5-cne-controller deployment did not become Available: %w", err)
+		}
 		vlans, err := deploy.RenderF5SPKVlans(p)
 		if err != nil {
 			return err
