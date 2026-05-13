@@ -148,14 +148,15 @@ func (r *Runner) HelmUpgradeOCI(ctx context.Context, auth OCIAuth, release, ociC
 	//
 	// We feed the registry password through the docker container's stdin
 	// — NOT into the script body — so it never appears on the host's
-	// argv list (visible via `ps`/`auditd`/Falco). Inside the container,
-	// `read -r PW` is a shell builtin (no fork), and `echo "$PW"` is
-	// also a builtin, so the password stays inside the sh process and
-	// pipes directly to helm's `--password-stdin`. The script template
-	// itself only contains registry host, username, and upgrade args
-	// (no secrets).
+	// argv list (visible via `ps`/`auditd`/Falco). The script reads
+	// stdin with `cat` (NOT `read -r`, which truncates multi-line input
+	// to the first line — a GCP service account JSON is pretty-printed
+	// multi-line, so `read -r PW` reduced the password to literally `{`
+	// and helm got a 401), pipes the full body to helm's
+	// `--password-stdin`. The script template itself only contains
+	// registry host, username, and upgrade args (no secrets).
 	script := fmt.Sprintf(
-		`read -r PW && printf '%%s' "$PW" | helm registry login %s --username %s --password-stdin && %s`,
+		`cat | helm registry login %s --username %s --password-stdin && %s`,
 		auth.RegistryHost, auth.Username,
 		strings.Join(upgradeArgs, " "))
 
