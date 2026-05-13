@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -142,8 +143,28 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 		if err != nil {
 			return err
 		}
-		if err := saveAndApply(ctx, r, repo, "artifacts/f5spkvlans-rendered.yaml", vlans); err != nil {
-			return err
+		// Even after deployment/f5-cne-controller is Available, the
+		// validating-webhook server inside the pod may take a few
+		// seconds more to bind to port 3340 (the deployment's readiness
+		// probe doesn't actually probe the webhook listener). First
+		// applies tend to hit "failed calling webhook ... connection
+		// refused". Retry with a short backoff specifically on that
+		// error; surface any other failure immediately.
+		var applyErr error
+		for attempt := 1; attempt <= 30; attempt++ {
+			applyErr = saveAndApply(ctx, r, repo, "artifacts/f5spkvlans-rendered.yaml", vlans)
+			if applyErr == nil {
+				break
+			}
+			msg := applyErr.Error()
+			if !strings.Contains(msg, "f5validate.f5net.com") || !strings.Contains(msg, "connection refused") {
+				return applyErr
+			}
+			fmt.Fprintf(out, "      webhook not bound yet, retrying in 5s (attempt %d/30) ...\n", attempt)
+			time.Sleep(5 * time.Second)
+		}
+		if applyErr != nil {
+			return fmt.Errorf("F5SPKVlan apply: webhook never came up: %w", applyErr)
 		}
 		fmt.Fprintf(out, "      applied %d aggregated F5SPKVlan(s).\n", vlanCount)
 	} else {
