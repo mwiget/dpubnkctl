@@ -46,6 +46,17 @@ EOFSSH
     chmod 600 /mnt/home/ubuntu/.ssh/authorized_keys
     chown -R 1000:1000 /mnt/home/ubuntu/.ssh
 
+    # Generate sshd host keys at flash time. The BFB image ships with
+    # /var/lib/cloud/instances/nocloud/ pre-populated from NVIDIA's
+    # image build, so cloud-init's cc_ssh module sees "Instance link
+    # already exists, not recreating it" and skips key generation
+    # on first boot. The fallback (ssh-keygen.service / sshd-internal
+    # auto-regen) is racy and not all BSP boots fire it — sometimes
+    # sshd starts and exits with "no hostkeys available -- exiting"
+    # in a tight restart loop. Baking the keys at install time
+    # eliminates the race. ssh-keygen -A is idempotent.
+    chroot /mnt /usr/bin/ssh-keygen -A
+
     cat << EOFRESOLVE > /mnt/etc/systemd/resolved.conf
 [Resolve]
 DNS={{.DNSServers}}

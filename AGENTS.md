@@ -66,6 +66,8 @@ No fancy tooling — stdlib + cobra + yaml.v3 + golang.org/x/crypto/ssh + sftp.
 
 ### DPU provisioning + join
 
+7a. **DPU first-boot may come up with no sshd host keys.** The BFB image ships `/var/lib/cloud/instances/nocloud/` pre-stamped from NVIDIA's image build, so cloud-init's `cc_ssh` module sees "Instance link already exists, not recreating it" and skips host-key generation. The fallback (Ubuntu's `ssh-keygen.service` or sshd's internal auto-regen) is racy — sometimes fires, sometimes doesn't, depending on first-boot ordering. When it doesn't, ssh.service restart-loops with `no hostkeys available -- exiting`. Symptom: dpubnkctl provision dpu's `[7/7] Waiting for second DPU boot` times out because sshd never starts. Fixed by `bfb_modify_os` running `chroot /mnt /usr/bin/ssh-keygen -A` so keys are baked into eMMC at flash time (commit `f9d3a59` or similar). Pre-fix DPUs: run `ssh-keygen -A` via rshim serial console (login as ubuntu, password at `keys/dpu_password.txt`).
+
 7. **`mlnx-sf.conf` may silently fail to create one of the SFs at first boot.** The bf.conf-rendered config has both lines, only one runs. Always `sudo mlnx-sf -a show` after first DPU boot to confirm both p0 + p1 SFs exist; recreate manually if not:
    ```
    sudo mlnx-sf --action create --device 0000:03:00.0 --sfnum 1 --enable-trust --hwaddr <mac>
