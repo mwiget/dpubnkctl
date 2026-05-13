@@ -18,11 +18,11 @@ func makeJWT(t *testing.T, header, claims string) string {
 	return enc(header) + "." + enc(claims) + ".sig-not-checked"
 }
 
-func TestInspectJWT_Prod(t *testing.T) {
+func TestInspectJWT_ProdByJKU(t *testing.T) {
 	tmp := filepath.Join(t.TempDir(), ".jwt")
 	jwt := makeJWT(t,
-		`{"alg":"RS256","kid":"prod-2024-01"}`,
-		`{"iss":"https://license.f5.com","sub":"customer-x"}`)
+		`{"alg":"RS512","kid":"v1","jku":"https://product.apis.f5.com/ee/v1/keys/jwks"}`,
+		`{"iss":"F5 Inc.","sub":"CUSTOMER-X"}`)
 	if err := os.WriteFile(tmp, []byte(jwt), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -33,29 +33,66 @@ func TestInspectJWT_Prod(t *testing.T) {
 	if info.Type != "prod" {
 		t.Errorf("Type = %q, want prod", info.Type)
 	}
+	if info.JKU == "" {
+		t.Errorf("JKU not surfaced from header")
+	}
 }
 
+// Real-world lake1 shape: iss="F5 Inc.", kid="v1" (same in both prod
+// and tst). Only jku + sub distinguish — must classify as tst.
+func TestInspectJWT_TstByJKU_LakeOneShape(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), ".jwt")
+	jwt := makeJWT(t,
+		`{"alg":"RS512","typ":"JWT","kid":"v1","jku":"https://product-tst.apis.f5networks.net/ee/v1/keys/jwks"}`,
+		`{"iss":"F5 Inc.","sub":"TST-EE4C16F4-7B16-463E-B050-0026A6E837E4","iat":1731196857,"f5_sat":1746748857}`)
+	_ = os.WriteFile(tmp, []byte(jwt), 0o600)
+	info, _ := InspectJWT(tmp)
+	if info.Type != "tst" {
+		t.Errorf("Type = %q, want tst (jku product-tst)", info.Type)
+	}
+	if info.Sub != "TST-EE4C16F4-7B16-463E-B050-0026A6E837E4" {
+		t.Errorf("Sub = %q, want lake1 sub", info.Sub)
+	}
+}
+
+// Hand-crafted token with no jku — must fall back to sub TST- prefix.
+func TestInspectJWT_TstBySubPrefix(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), ".jwt")
+	jwt := makeJWT(t,
+		`{"alg":"RS256"}`,
+		`{"sub":"TST-1234"}`)
+	_ = os.WriteFile(tmp, []byte(jwt), 0o600)
+	info, _ := InspectJWT(tmp)
+	if info.Type != "tst" {
+		t.Errorf("Type = %q, want tst (sub TST-* prefix)", info.Type)
+	}
+}
+
+// Synthetic `tst` claim — fallback path used by older test fixtures.
 func TestInspectJWT_TstByClaim(t *testing.T) {
 	tmp := filepath.Join(t.TempDir(), ".jwt")
 	jwt := makeJWT(t,
 		`{"alg":"RS256"}`,
-		`{"iss":"https://license.f5.com","tst":true}`)
+		`{"iss":"F5 Inc.","tst":true}`)
 	_ = os.WriteFile(tmp, []byte(jwt), 0o600)
 	info, _ := InspectJWT(tmp)
 	if info.Type != "tst" {
-		t.Errorf("Type = %q, want tst (claim)", info.Type)
+		t.Errorf("Type = %q, want tst (synthetic claim)", info.Type)
 	}
 }
 
-func TestInspectJWT_TstByIssuer(t *testing.T) {
+// iss="F5 Inc." + kid="v1" appear in BOTH prod and tst tokens, so a
+// substring "tst" match on either would be wrong. Token with no jku and
+// no TST- sub must default to prod, not be tricked by iss/kid strings.
+func TestInspectJWT_IssAndKidAreNotSignals(t *testing.T) {
 	tmp := filepath.Join(t.TempDir(), ".jwt")
 	jwt := makeJWT(t,
-		`{"alg":"RS256"}`,
-		`{"iss":"https://tst.license.f5.com"}`)
+		`{"alg":"RS512","kid":"v1"}`,
+		`{"iss":"F5 Inc.","sub":"PROD-1234"}`)
 	_ = os.WriteFile(tmp, []byte(jwt), 0o600)
 	info, _ := InspectJWT(tmp)
-	if info.Type != "tst" {
-		t.Errorf("Type = %q, want tst (issuer)", info.Type)
+	if info.Type != "prod" {
+		t.Errorf("Type = %q, want prod (no jku/sub-tst signal)", info.Type)
 	}
 }
 

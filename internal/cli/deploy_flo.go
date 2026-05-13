@@ -114,7 +114,10 @@ func runDeployFLO(ctx context.Context, out io.Writer, f *deployFLOFlags) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "      type=%s  iss=%v\n", info.Type, info.Claims["iss"])
+	fmt.Fprintf(out, "      type=%s  jku=%s  sub=%s\n", info.Type, info.JKU, info.Sub)
+	if info.JKU == "" {
+		fmt.Fprintln(out, "      WARN: JWT has no `jku` header — falling back to sub/claim heuristics. See AGENTS.md #15.")
+	}
 
 	// 3. Ensure prereq namespaces exist (cert-manager + f5-operators).
 	// `default` is created by kubespray; the others aren't.

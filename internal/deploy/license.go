@@ -13,18 +13,37 @@ import (
 
 // JWTInfo describes the parsed JWT we use to pick prod vs tst FLO values.
 type JWTInfo struct {
-	Type   string // "prod" | "tst" — from the token's `tst` claim or other heuristic
+	Type   string // "prod" | "tst"
+	JKU    string // header.jku — the JWKS URL that signed this token; primary detection signal
+	Sub    string // claims.sub — TST-* prefix is secondary detection signal
 	Header map[string]any
 	Claims map[string]any
 }
 
-// InspectJWT base64-decodes the JWT header + claims and classifies it.
-// We do NOT verify the signature — this is a content sniff, not auth.
+// InspectJWT base64-decodes the JWT header + claims and classifies it
+// as prod or tst so the right FLO values template (with matching TEEM
+// URLs + RSA modulus + x5c chain) is selected.
 //
-// Heuristic for prod vs tst (matches the f5-bnk repo's convention):
-//   - if claims contain "tst": true → tst
-//   - if header.kid contains "tst" or claims.iss contains "tst" → tst
-//   - otherwise → prod
+// We do NOT verify the signature — this is a content sniff, not auth.
+// Server-side revocation is the real validity check (see AGENTS.md #16).
+//
+// Detection priority (see AGENTS.md #15):
+//
+//  1. header.jku — the JWKS URL the token was signed against. This is
+//     authoritative because each environment (prod / tst / future stg)
+//     publishes its own keys and only verifies tokens signed by them.
+//     Substring matches on the hostname:
+//       product-tst.apis.f5networks.net → tst
+//       product.apis.f5.com             → prod
+//
+//  2. claims.sub prefix — "TST-*" is a strong secondary signal when
+//     jku is missing or unrecognized (e.g. hand-crafted test tokens).
+//
+//  3. claims.tst (bool / "true") — synthetic fallback only.
+//
+// We deliberately do NOT match on `iss` or `kid` substring. Real tst
+// tokens carry iss="F5 Inc." and kid="v1" (identical to prod), so those
+// heuristics fire wrong both ways.
 func InspectJWT(jwtPath string) (*JWTInfo, error) {
 	data, err := os.ReadFile(jwtPath)
 	if err != nil {
@@ -46,37 +65,51 @@ func InspectJWT(jwtPath string) (*JWTInfo, error) {
 	}
 
 	info := &JWTInfo{Header: hdr, Claims: claims, Type: "prod"}
+	if jku, ok := hdr["jku"].(string); ok {
+		info.JKU = jku
+	}
+	if sub, ok := claims["sub"].(string); ok {
+		info.Sub = sub
+	}
 
+	info.Type = classifyJWT(info.JKU, info.Sub, claims)
+	return info, nil
+}
+
+// classifyJWT picks "prod" or "tst" from the jku URL (primary), sub
+// prefix (secondary), or a synthetic `tst` claim (fallback). Default
+// when nothing matches: "prod".
+func classifyJWT(jku, sub string, claims map[string]any) string {
+	// Primary: hostname inside jku.
+	jl := strings.ToLower(jku)
+	switch {
+	case strings.Contains(jl, "product-tst.apis.f5networks.net"),
+		strings.Contains(jl, "product-s-tst.apis.f5networks.net"):
+		return "tst"
+	case strings.Contains(jl, "product.apis.f5.com"),
+		strings.Contains(jl, "product-s.apis.f5.com"):
+		return "prod"
+	}
+
+	// Secondary: sub prefix.
+	if strings.HasPrefix(strings.ToUpper(sub), "TST-") {
+		return "tst"
+	}
+
+	// Fallback: synthetic `tst` claim (used by test fixtures).
 	if v, ok := claims["tst"]; ok {
 		switch t := v.(type) {
 		case bool:
 			if t {
-				info.Type = "tst"
+				return "tst"
 			}
 		case string:
 			if strings.EqualFold(t, "true") || strings.EqualFold(t, "tst") {
-				info.Type = "tst"
+				return "tst"
 			}
 		}
 	}
-	if iss, ok := claims["iss"].(string); ok && strings.Contains(strings.ToLower(iss), "tst") {
-		info.Type = "tst"
-	}
-	if kid, ok := hdr["kid"].(string); ok && strings.Contains(strings.ToLower(kid), "tst") {
-		info.Type = "tst"
-	}
-	// Strongest TST indicators (these were the misses on the lake1 JWT,
-	// which had iss="F5 Inc." and kid="v1" but was clearly TST):
-	//   - jku header URL points at product-tst.apis.f5networks.net
-	//   - sub claim starts with "TST-"
-	if jku, ok := hdr["jku"].(string); ok && strings.Contains(strings.ToLower(jku), "tst") {
-		info.Type = "tst"
-	}
-	if sub, ok := claims["sub"].(string); ok && strings.HasPrefix(strings.ToUpper(sub), "TST-") {
-		info.Type = "tst"
-	}
-
-	return info, nil
+	return "prod"
 }
 
 func decodeJWTSegment(s string) (map[string]any, error) {

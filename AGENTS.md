@@ -98,17 +98,9 @@ No fancy tooling — stdlib + cobra + yaml.v3 + golang.org/x/crypto/ssh + sftp.
 
 ### License JWT
 
-15. **JWT type detection (`prod` vs `tst`) cannot rely on `iss` or `kid` alone.** Lake1 JWT has `iss="F5 Inc."` + `kid="v1"` (no "tst" anywhere), but the `jku` URL points at `product-tst.apis.f5networks.net` and `sub` starts with `TST-`. Wrong template → wrong RSA modulus baked in → "Unverifiable JWT: token signature is invalid: crypto/rsa". Classifier now checks `header.jku` and `claims.sub` (commit `f8eaf15`).
+15. **The JWT's `jku` URL is the authoritative signal for prod vs tst.** Lake1's JWT has `iss="F5 Inc."` + `kid="v1"` (the same `iss`/`kid` are used in *both* prod and tst tokens), so substring-matching "tst" in those is useless. What the JWT actually tells you is in `header.jku` — e.g. `https://product-tst.apis.f5networks.net/ee/v1/keys/jwks` for tst, `https://product.apis.f5.com/ee/v1/keys/jwks` for prod. That URL must match the `teemCertUrl` / `teemEntitlementUrl` / `teemInitialConfigUrl` block and the `modulus` / `x5c` chain baked into the FLO values, because each environment uses its own RSA signing key. Wrong template → "Unverifiable JWT: token signature is invalid: crypto/rsa". `claims.sub` starting with `TST-` is a strong secondary signal. The classifier (`internal/deploy/license.go::InspectJWT`) keys on `jku` first, `sub` second.
 
-16. **F5 license activation reports expired tokens as "Unverifiable JWT" / signature errors.** No `exp` claim — the relevant time bound is `f5_sat` in claims (subscription activation). When `f5_sat` is past, activation fails with the misleading signature error. **Verify the JWT is in-date before debugging signature paths**:
-    ```
-    cat keys/.jwt | cut -d. -f2 | base64 -d | python3 -c "import sys,json,datetime; c=json.load(sys.stdin); ts=c['f5_sat']; print('f5_sat=', datetime.datetime.utcfromtimestamp(ts))"
-    ```
-    To independently confirm the RSA signature is genuinely fine:
-    ```python
-    # Fetch JWKS, find the kid, RSA-verify the JWT segments — if VALID,
-    # the "signature" error is really an expiry mislabel.
-    ```
+16. **JWT timestamps (`iat`, `f5_sat`) do NOT determine token validity.** Token validity is entirely server-side (revocation lists at the licensing endpoint). The lake1 JWT has `iat=1731196857` (2024-11-09) and `f5_sat=1746748857` (2025-05-08) — both in the past — yet activates successfully because the server still honors it. Do not debug "expired token" theories based on claim timestamps; the only thing that fails locally is RSA signature verification, which is determined by `jku` (see #15). If signature verification fails, the answer is almost always wrong-template, not expired-token.
 
 ### BNK deploy / TMM readiness
 
