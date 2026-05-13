@@ -57,12 +57,40 @@ export OPENAI_API_BASE=%s
 #   llm --system "$(cat AGENTS.md)" "Act as pre-sales SE; read poc.yaml; confirm scope."
 `, repo, base)
 	},
+	"pi": func(repo, endpoint string) string {
+		// pi auto-discovers and concatenates AGENTS.md (and CLAUDE.md)
+		// from cwd, parent dirs, and ~/.pi/agent/ — so just `cd` + `pi`
+		// is enough. Endpoint isn't a built-in flag; pi reads provider
+		// config from ~/.pi/. Install: curl -fsSL https://pi.dev/install.sh | sh
+		return fmt.Sprintf(`# pi coding agent (https://pi.dev/)
+cd %s && \
+  pi
+# pi auto-loads AGENTS.md from this directory (and parent dirs).
+# To add the persona inline, prefix with --append-system-prompt:
+#   pi --append-system-prompt "$(cat personas/pre-sales-se.md)"
+`, repo)
+	},
+	"opencode": func(repo, endpoint string) string {
+		// opencode (Go-based TUI, https://opencode.ai/) treats AGENTS.md
+		// as its project configuration file by convention. Bare invocation
+		// in the directory is enough — no flag for context loading.
+		// NOTE: Anthropic blocked opencode from Claude models in Jan 2026;
+		// use --model to pick a non-Anthropic provider, or rely on its
+		// auto-detection of OPENAI_API_KEY / OPENROUTER_API_KEY / etc.
+		return fmt.Sprintf(`# OpenCode (https://opencode.ai/)
+cd %s && \
+  opencode
+# AGENTS.md in this dir is opencode's project-config convention — auto-loaded.
+# Pick a model with --model (e.g. --model openrouter/google/gemini-2.5-pro).
+# Anthropic Claude models are blocked for opencode since 2026-01.
+`, repo)
+	},
 }
 
 func newAgentCmd() *cobra.Command {
 	var pocDir string
 	cmd := &cobra.Command{
-		Use:   "agent [claude|gemini|aider|openai]",
+		Use:   "agent [claude|gemini|aider|openai|pi|opencode]",
 		Short: "Print invocation for an agentic CLI driving this PoC repo",
 		Long: `Print the command-line invocation for your preferred agentic CLI,
 configured to load this PoC's AGENTS.md and persona files.
@@ -116,7 +144,7 @@ Without an argument, lists all supported CLIs.`,
 			}
 			recipe, ok := agentRecipes[args[0]]
 			if !ok {
-				return fmt.Errorf("unknown agent %q (try: claude, gemini, aider, openai)", args[0])
+				return fmt.Errorf("unknown agent %q (try: claude, gemini, aider, openai, pi, opencode)", args[0])
 			}
 			fmt.Fprint(out, recipe(repo, endpoint))
 			if p == nil {
