@@ -227,7 +227,11 @@ func copyFile(src, dst string, mode os.FileMode) error {
 // network plan. To force a clean rebuild, delete hosts[] from poc.yaml
 // first.
 func updatePoCWithHost(p *poc.PoC, name, addr string, f *discoverHostFlags, keyRef string, r *discover.Result) (merged bool) {
-	p.Status.Discover = "in_progress" // becomes "completed" once SE confirms
+	// A successful discover probe IS the completed signal for this phase;
+	// downstream review/edit happens via the poc.yaml diff in git, not a
+	// separate status transition. (Previously stuck at in_progress because
+	// no code ever flipped it.)
+	p.Status.Discover = "completed"
 
 	for i := range p.Hosts {
 		if p.Hosts[i].SSH.Address != addr {
