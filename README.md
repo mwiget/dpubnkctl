@@ -71,6 +71,29 @@ This binary is **per-BNK-release.** Building from `main` today targets
 
 A different BNK release ships a different `dpubnkctl` build. Do not mix.
 
+## Self-contained binary
+
+`dpubnkctl` is a single static Go binary. Ship just the binary — nothing
+else. All assets the operator and any agentic CLI need at deploy time are
+embedded inside it via `go:embed`:
+
+- `AGENTS.md`, `CLAUDE.md`, and the three persona files dropped into the
+  PoC repo on `dpubnkctl init`
+- `bf.conf` templates (LAG + non-LAG) for the BFB flash
+- FLO Helm values (prod + tst), CNEInstance, F5SPKVlan, NAD manifests
+- Pinned component versions (BFB image, FLO chart, kubespray, k8s,
+  containerd, runc, pause)
+
+The two things customers supply separately are credentials, delivered
+through F5's normal channels — never via this binary:
+
+- `keys/<name>.tgz` — FAR image-pull key (from F5 license portal)
+- `keys/.jwt`        — TEEM JWT (from F5 license portal)
+- `keys/<name>`      — operator SSH private key for the lab hosts
+
+Drop those into `keys/` of the PoC repo `init` creates. Everything else
+is in the binary.
+
 ## Build
 
 ```bash
