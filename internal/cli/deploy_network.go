@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/mwiget/dpubnkctl/internal/cluster"
 	"github.com/mwiget/dpubnkctl/internal/deploy"
@@ -130,6 +131,21 @@ func runDeployNetwork(ctx context.Context, out io.Writer, f *deployNetworkFlags)
 			return err
 		}
 		fmt.Fprintf(out, "      → %s\n", name)
+		// Pre-create every namespace referenced in this manifest.
+		// `default` always exists, but custom-targeted NADs may reference
+		// f5-operators / cert-manager / etc. before those namespaces
+		// land. kubectl apply against a missing namespace fails with
+		// `Error from server (NotFound): namespaces "X" not found`.
+		// (AGENTS.md #14.) Idempotent — applying an existing Namespace
+		// manifest is a no-op.
+		for _, ns := range extractNamespaces(raw) {
+			if ns == "" || ns == "default" || ns == "kube-system" {
+				continue
+			}
+			if err := r.Apply(ctx, deploy.RenderNamespace(ns)); err != nil {
+				return fmt.Errorf("ensure namespace %s for %s: %w", ns, name, err)
+			}
+		}
 		if err := r.Apply(ctx, string(raw)); err != nil {
 			return fmt.Errorf("apply %s: %w", name, err)
 		}
@@ -273,4 +289,33 @@ func restartContainerdEverywhere(ctx context.Context, repo string, p *poc.PoC, o
 		return fmt.Errorf("%d node(s) failed: %s", len(failures), strings.Join(failures, "; "))
 	}
 	return nil
+}
+
+// extractNamespaces walks a (multi-doc) YAML manifest and returns the
+// unique set of metadata.namespace values referenced. Empty strings
+// (cluster-scoped resources) are filtered out. Order is preserved so
+// the caller sees a deterministic creation order in logs.
+func extractNamespaces(raw []byte) []string {
+	dec := yaml.NewDecoder(strings.NewReader(string(raw)))
+	seen := map[string]bool{}
+	var out []string
+	for {
+		var doc struct {
+			Metadata struct {
+				Namespace string `yaml:"namespace"`
+			} `yaml:"metadata"`
+		}
+		if err := dec.Decode(&doc); err != nil {
+			// io.EOF or malformed YAML — stop and return what we have.
+			// Apply itself will surface a malformed-YAML error if relevant.
+			break
+		}
+		ns := strings.TrimSpace(doc.Metadata.Namespace)
+		if ns == "" || seen[ns] {
+			continue
+		}
+		seen[ns] = true
+		out = append(out, ns)
+	}
+	return out
 }

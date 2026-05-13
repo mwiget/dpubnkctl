@@ -34,6 +34,7 @@ Run "dpubnkctl doctor" once after install to verify host-side requirements
 (container runtime — docker or podman, git, mgmt-network reachability)
 before driving a PoC.`,
 		SilenceUsage:      true,
+		SilenceErrors:     true, // main() prints the error once; without this cobra also prints
 		PersistentPreRunE: rootPreflight,
 	}
 

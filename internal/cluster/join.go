@@ -47,11 +47,20 @@ func FetchJoinCommand(ctx context.Context, cp *ssh.Client, publicAPIServerAddr s
 // re-runs are cheap once apt has the repo.
 func InstallKubeBinaries(ctx context.Context, dpu *ssh.Client, k8sMinor string) error {
 	// pkgs.k8s.io organizes by minor (v1.32, v1.31, ...) — the patch
-	// version comes from the apt resolver. We apt-mark hold so kubelet
-	// doesn't drift on apt-upgrade.
+	// version comes from the apt resolver. We apt-mark hold AFTER install
+	// so kubelet doesn't drift on apt-upgrade. We apt-mark UNHOLD first
+	// because the BlueField BSP pre-holds kubelet at 1.30.14; without
+	// the unhold, `apt-get install` is a no-op against that pinned
+	// version and the DPU joins with a kubelet too old for the cluster.
+	// (AGENTS.md #10.)
 	repoRel := "v" + k8sMinor
 	script := strings.Join([]string{
 		"set -e",
+		// Clear the BSP-applied hold before adding the upstream repo and
+		// installing. `|| true` because on a fresh DPU the packages may
+		// not be present at all (nothing to unhold), and apt-mark errors
+		// when given unknown packages.
+		"sudo -n apt-mark unhold kubelet kubeadm kubectl || true",
 		"sudo -n apt-get update -qq",
 		"sudo -n apt-get install -y -qq apt-transport-https ca-certificates curl gpg",
 		"sudo -n install -m 0755 -d /etc/apt/keyrings",

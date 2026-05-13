@@ -39,7 +39,7 @@ The repo contains:
   .gitignore     excludes all secret material from git
 
 Initializes a git repo unless --no-git.`,
-		Args: cobra.ExactArgs(1),
+		Args: initArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			if !validName(name) {
@@ -134,6 +134,32 @@ host the customer provides.
 	cmd.Flags().StringVar(&customer, "customer", "", "customer name to record in poc.yaml metadata")
 	cmd.Flags().BoolVar(&noGit, "no-git", false, "skip git init")
 	return cmd
+}
+
+// initArgs surfaces a friendlier error than cobra's default
+// "accepts 1 arg(s), received 0" when the operator forgets to name the
+// PoC. The first ask after install is `dpubnkctl init` and a cryptic
+// arity error is a bad first impression.
+func initArgs(cmd *cobra.Command, args []string) error {
+	switch len(args) {
+	case 0:
+		return fmt.Errorf(`PoC name required.
+
+Usage:
+  dpubnkctl init <poc-name>
+
+Examples:
+  dpubnkctl init customer-acme
+  dpubnkctl init customer-acme --customer "Acme Corp"
+  dpubnkctl init lab1 --dir /tmp/lab1
+
+The name must match [a-z0-9-]+ and lands in poc.yaml.metadata.name.
+Run "dpubnkctl init --help" for all flags`)
+	case 1:
+		return nil
+	default:
+		return fmt.Errorf("only one <poc-name> is accepted; got %d arguments", len(args))
+	}
 }
 
 func validName(s string) bool {

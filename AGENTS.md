@@ -60,9 +60,9 @@ No fancy tooling — stdlib + cobra + yaml.v3 + golang.org/x/crypto/ssh + sftp.
 
 4. **kubespray's localhost-nginx-proxy convention breaks externally-joined DPUs.** Default kubespray makes every worker run a localhost nginx-proxy that fans out to control planes; DPUs joined externally (not via kubespray) don't have it. Set `loadbalancer_apiserver_localhost: false` + `loadbalancer_apiserver: {address, port: 6443}` + `apiserver_loadbalancer_domain_name: <addr>` + `supplementary_addresses_in_ssl_keys: [<addr>]` so all nodes share the same routable apiserver address. Driven from `network.cluster_apiserver_address` in poc.yaml.
 
-5. **containerd CRI caches "no CNI" state.** When `install-cni-plugins` lands the CNI binaries + configs *after* containerd has already declared `NetworkPluginNotReady`, containerd doesn't re-scan `/etc/cni/net.d` automatically. Restart containerd (`sudo systemctl restart containerd`) to pick them up — node flips to `Ready` immediately. **Tool gap**: cluster up doesn't do this restart automatically (#68).
+5. **containerd CRI caches "no CNI" state.** When `install-cni-plugins` lands the CNI binaries + configs *after* containerd has already declared `NetworkPluginNotReady`, containerd doesn't re-scan `/etc/cni/net.d` automatically — node stays `NotReady` until containerd is restarted. Now handled automatically: `cluster_up.go::restartContainerdOnHosts` runs at the tail of `cluster up`, and `deploy_network.go::restartContainerdEverywhere` (hosts + DPUs) runs after the multus/sriov DaemonSets land. If you still see `NetworkPluginNotReady`, run `sudo systemctl restart containerd` on the offending node.
 
-6. **kubeconfig localization: server URL stays at the data-plane address.** `cluster.LocalizeKubeconfig` doesn't actually rewrite to the SSH/mgmt address — local kubectl from outside the cluster fabric can't reach data-plane IPs. Workaround: edit `artifacts/kubeconfig` to `server: https://<mgmt>:6443` + `insecure-skip-tls-verify: true` (apiserver cert SAN doesn't include mgmt either, that's a sibling gap).
+6. **Kubeconfig localization rewrites server URL + drops CA data + adds insecure-skip-tls-verify.** `cluster.LocalizeKubeconfig` handles all three so the kubeconfig that lands at `artifacts/kubeconfig` works from outside the cluster fabric. The apiserver cert SAN doesn't include the mgmt address — kubespray's `supplementary_addresses_in_ssl_keys` knob would extend it but isn't wired through poc.yaml yet, hence the `insecure-skip-tls-verify`. If you need a properly-trusted kubeconfig, add the mgmt address to the kubespray inventory's `supplementary_addresses_in_ssl_keys` before `cluster up`.
 
 ### DPU provisioning + join
 
@@ -76,25 +76,17 @@ No fancy tooling — stdlib + cobra + yaml.v3 + golang.org/x/crypto/ssh + sftp.
 
 9. **BlueField host PF kernel VLAN sub-interfaces work, but may need a fresh boot.** First `ip link add link ens16f0np0 type vlan id N` after a bare-metal boot can fail with `ENODEV` due to stale netlink state from earlier failed configurations. The same netplan that fails to apply pre-reboot will come up cleanly post-reboot. **Don't conclude "BF3 in DPU mode rejects VLAN sub-ifs" without rebooting first.**
 
-10. **DPU kubelet binary version drifts to BSP-pinned 1.30.14** even when `cluster join-dpus` installs `kubelet:1.32.x` from `pkgs.k8s.io`. Likely cause: the BSP's `apt-mark hold kubelet` survives the install. Fix: `apt-mark unhold kubelet kubeadm kubectl` before the install in `InstallKubeBinaries`. Within k8s skew policy (kubelet up to 3 minor versions older than apiserver) so usually works, but worth tightening (#68).
+10. **DPU kubelet would drift to BSP-pinned 1.30.14** without the `apt-mark unhold` prelude — the BlueField BSP pre-holds kubelet/kubeadm/kubectl, so `apt-get install` is otherwise a no-op against the BSP version. `cluster.InstallKubeBinaries` now runs `apt-mark unhold kubelet kubeadm kubectl || true` before the install, then re-applies `apt-mark hold` to pin the upstream version. If a DPU comes up at the wrong kubelet minor anyway, check the BSP's apt sources first — newer BSP releases may add additional pins.
 
 ### Image pull / registry
 
-11. **`cne_pull_64.json` from the FAR tarball is *already base64-encoded***. The `_64` suffix is the tell. To build the imagePullSecret `auth` field for `repo.f5.com`:
-    ```
-    AUTH=$(echo -n "_json_key_base64:$(cat cne_pull_64.json)" | base64 -w0)
-    ```
-    The current `internal/deploy/license.go` re-encodes — verify before reuse (#68).
+11. **`cne_pull_64.json` from the FAR tarball is *already base64-encoded***. The `_64` suffix is the tell. The `imagePullSecret` `auth` field for `repo.f5.com` must wrap it as `"_json_key_base64:<contents>"` (NOT re-decoding the contents). `internal/deploy/license.go::buildGARDockerConfig` and `UnwrapGARAuth` round-trip this correctly — bug-for-bug compatible with f5-bnk's auth scheme. If you hit `403 Forbidden — anonymous token` from `repo.f5.com` despite the secret existing, verify the wrapping format first; many similar GAR examples online use the un-suffixed `_json_key:<raw-json>` form which FLO's auth parser rejects.
 
-12. **`deploy flo` doesn't create `far-secret`**. Chart references it as `imagePullSecret`, never created → all FLO/TMM pods `ImagePullBackOff` with `403 Forbidden — anonymous token`. Workaround: hand-create the secret in `f5-operators` AND `default` (TMM lives there). Tool gap (#68).
+12. **`deploy flo` creates `far-secret` in BOTH `f5-operators` AND `default`** (`deploy_flo.go` step 6). The FLO chart references it as `imagePullSecret`, and TMM (which lands in the CNEInstance's namespace — currently `default` — see #17) also needs it. If you still see FLO or TMM pods in `ImagePullBackOff` with `403 Forbidden — anonymous token`, check both namespaces have the secret; the chart's downstream Pod specs reference it by name only.
 
-13. **`deploy flo` doesn't install cert-manager.** It applies ClusterIssuer/Certificate that need cert-manager CRDs. Manual prereq:
-    ```
-    kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.2/cert-manager.yaml
-    kubectl -n cert-manager wait --for=condition=Available --timeout=3m deploy --all
-    ```
+13. **`deploy flo` installs cert-manager from the pinned upstream URL** as step 4 of its sequence — applies `cert-manager.yaml` from `github.com/cert-manager/cert-manager/releases/download/v1.16.2/`, then waits for all cert-manager deployments to become `Available`. The bnk-ca ClusterIssuer chain is applied as step 5, after the CRDs are present.
 
-14. **`deploy network`'s `nad-sf.yaml` requires the target namespace to pre-exist** (`Error from server (NotFound): namespaces "default" not found` on a truly fresh cluster — though `default` always exists, `f5-operators` does not). For any namespace the NADs reference, create it first (#68).
+14. **`deploy network` pre-creates every namespace referenced by the manifests it applies** (`deploy_network.go::extractNamespaces`). Built-in namespaces (`default`, `kube-system`) are skipped; everything else is `kubectl apply`'d as a Namespace stub first. If you customize the embedded NAD templates to target a different namespace, the pre-create still handles it.
 
 ### License JWT
 
@@ -108,7 +100,7 @@ No fancy tooling — stdlib + cobra + yaml.v3 + golang.org/x/crypto/ssh + sftp.
 
 18. **The FLO chart's `crd-installer` Job auto-creates a CNEInstance in `f5-operators`** as a side effect of `helm install` — even before `dpubnkctl deploy cne` runs. If you deploy CNEInstance to `default` with the namespace fix, you'll have **two** CNEInstances and FLO will reconcile both (TMMs in both namespaces). Always check `kubectl get cneinstance -A` before/after deploys; delete the auto-created one if it's not where you want it.
 
-19. **`deploy cne` doesn't apply F5SPKVlan/Gateway resources** — templates exist (`f5spkvlan.yaml.tmpl`, `bnk-gatewayclass.yaml.tmpl`) but are never wired through `RunDeployCNE`. Without F5SPKVlans, TMM's bfd_watcher logs `ERROR: vlan name not found` and readiness gates `RoutingDone`/`ConfigurationDone` stay False forever. Apply manually with the rendered VLAN/SelfIP data from poc.yaml (#68).
+19. **`deploy cne` step 3 renders + applies the F5SPKVlans** aggregated from every DPU's VLAN block — see `deploy.RenderF5SPKVlans` and `deploy_cne.go:122`. The TMM-side interface name and self-IP land in the rendered `F5SPKVlan` CR. If TMM's `bfd_watcher` still logs `ERROR: vlan name not found` and readiness gates `RoutingDone`/`ConfigurationDone` stay False, verify the CRD installed matches the templates' assumption — see #20 (CRD-name drift).
 
 20. **CNEInstance CRD names don't match dpubnkctl's templates.** Live cluster has `f5-spk-vlans.k8s.f5net.com` (kind `F5SPKVlan`), `f5-bnkgateways.k8s.f5net.com` (kind `F5BnkGateway`), and standard `gateway.networking.k8s.io/v1` GatewayClass — not the `BNKGatewayClassConfig` our `bnk-gatewayclass.yaml.tmpl` assumes. Verify against the installed CRD before applying (`kubectl get crd | grep f5`).
 

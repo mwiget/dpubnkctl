@@ -23,11 +23,7 @@ func newClusterCmd() *cobra.Command {
 	cmd.AddCommand(newClusterUpCmd())
 	cmd.AddCommand(newClusterJoinDPUsCmd())
 	cmd.AddCommand(newClusterResetCmd())
-	cmd.AddCommand(&cobra.Command{
-		Use:   "status",
-		Short: "Show cluster + node readiness",
-		RunE:  notYet("cluster status", "after `cluster up` lands"),
-	})
+	cmd.AddCommand(newClusterStatusCmd())
 	cmd.AddCommand(&cobra.Command{
 		Use:   "down",
 		Short: "Tear down the cluster (alias for `cluster reset`)",
