@@ -106,18 +106,23 @@ Without an argument, lists all supported CLIs.`,
 				return nil
 			}
 
-			// Printing an invocation needs the PoC repo path.
+			// Printing an invocation just needs a directory to `cd` into.
+			// Don't insist poc.yaml exists — the recipes work fine against
+			// any directory that has an AGENTS.md (e.g. the dpubnkctl
+			// source tree itself). When poc.yaml IS missing, drop a note
+			// after the recipe so the operator knows.
 			if repoErr != nil {
 				return repoErr
-			}
-			if p == nil {
-				return fmt.Errorf("not a PoC repo (%s) — cd into a `dpubnkctl init`-created repo or pass --poc", repo)
 			}
 			recipe, ok := agentRecipes[args[0]]
 			if !ok {
 				return fmt.Errorf("unknown agent %q (try: claude, gemini, aider, openai)", args[0])
 			}
 			fmt.Fprint(out, recipe(repo, endpoint))
+			if p == nil {
+				fmt.Fprintf(out, "\n# NOTE: %s has no poc.yaml — recipe was templated for this directory anyway.\n", repo)
+				fmt.Fprintln(out, "# To target a PoC, pass --poc <dir> or cd into one created by `dpubnkctl init`.")
+			}
 			return nil
 		},
 	}
