@@ -52,7 +52,12 @@ func runClusterStatus(ctx context.Context, out io.Writer, pocDir string) error {
 		return fmt.Errorf("not a PoC repo (%s): %w", repo, err)
 	}
 
-	fmt.Fprintf(out, "PoC: %s   (BNK %s)\n\n", p.Metadata.Name, p.Metadata.BNKVersion)
+	fmt.Fprintf(out, "PoC: %s   (BNK %s)\n", p.Metadata.Name, p.Metadata.BNKVersion)
+	fmt.Fprintln(out, "Versions (this dpubnkctl release):")
+	fmt.Fprintf(out, "  dpubnkctl   : %s   (targets BNK %s)\n", version.Version, version.BNKVersion)
+	fmt.Fprintf(out, "  FLO chart   : %s\n", version.FLOChartVer)
+	fmt.Fprintf(out, "  CNE manifest: %s\n", version.CNEManifestVersion)
+	fmt.Fprintln(out)
 
 	// 1. Phase tracker from poc.yaml.status.
 	fmt.Fprintln(out, "Phase status (from poc.yaml):")
@@ -111,6 +116,11 @@ func runClusterStatus(ctx context.Context, out io.Writer, pocDir string) error {
 	// 6. FLO controller deployment.
 	fmt.Fprintln(out, "F5 Lifecycle Operator (f5-operators):")
 	if has, _ := k.namespaceExists(ctx, "f5-operators"); has {
+		if img, _ := k.run(ctx,
+			"-n", "f5-operators", "get", "deploy", "flo-f5-lifecycle-operator",
+			"-o", "jsonpath={.spec.template.spec.containers[?(@.name==\"f5-lifecycle-operator\")].image}"); strings.TrimSpace(img) != "" {
+			fmt.Fprintf(out, "      image: %s\n", strings.TrimSpace(img))
+		}
 		_ = k.runStream(ctx, out, "      | ",
 			"-n", "f5-operators", "get", "deploy",
 			"-l", "app.kubernetes.io/name=f5-lifecycle-operator",
@@ -123,6 +133,10 @@ func runClusterStatus(ctx context.Context, out io.Writer, pocDir string) error {
 	// 7. CNEInstance — exists in user namespace once `deploy cne` runs.
 	fmt.Fprintln(out, "CNEInstance (BNK platform):")
 	if has, _ := k.crdEstablished(ctx, "cneinstances.k8s.f5.com"); has {
+		if mv, _ := k.run(ctx, "get", "cneinstance", "-A",
+			"-o", "jsonpath={.items[*].spec.manifestVersion}"); strings.TrimSpace(mv) != "" {
+			fmt.Fprintf(out, "      manifestVersion: %s\n", strings.TrimSpace(mv))
+		}
 		_ = k.runStream(ctx, out, "      | ", "get", "cneinstance", "-A")
 	} else {
 		fmt.Fprintln(out, "      (CNEInstance CRD not installed — `deploy flo` not run yet)")
