@@ -24,6 +24,7 @@ func newDiscoverCmd() *cobra.Command {
 	}
 	cmd.AddCommand(newDiscoverHostCmd())
 	cmd.AddCommand(newDiscoverRangeCmd())
+	cmd.AddCommand(newDiscoverWizardCmd())
 	return cmd
 }
 
