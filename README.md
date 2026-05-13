@@ -171,6 +171,66 @@ decisions.md             running decision log
 .gitignore               excludes secret material
 ```
 
+## What's embedded (and what isn't)
+
+For operators or auditors who want the full inventory of what ships
+inside the binary. Two `go:embed` trees live in `internal/embedded/`:
+
+**`files/` — copied verbatim into a PoC repo on `dpubnkctl init`:**
+
+```
+AGENTS.md                       PoC-operations guide for agentic CLIs
+CLAUDE.md                       one-liner: @AGENTS.md
+poc.gitignore                   excludes keys/, *.tgz, .jwt, kubeconfig
+personas/pre-sales-se.md        solution architect — owns scope + decisions.md
+personas/lab-tech.md            DPU/BMC/rshim/mlxconfig specialist
+personas/doc-specialist.md      journal keeper + final report
+```
+
+**`templates/` — rendered at runtime, never written to the PoC repo:**
+
+```
+bf-lag.conf.tmpl                BFB flash config, LAG mode
+bf-nolag.conf.tmpl              BFB flash config, single-uplink mode
+flo-values.yaml.tmpl            FLO Helm values — PRD (product.apis.f5.com
+                                URLs + PRD RSA modulus + x5c chain)
+flo-values-tst.yaml.tmpl        FLO Helm values — TST (product-tst.apis.
+                                f5networks.net + TST RSA modulus + x5c)
+cne-instance.yaml.tmpl          CNEInstance manifest
+f5spkvlan.yaml.tmpl             F5SPKVlan self-IP manifest
+bnk-gatewayclass.yaml.tmpl      GatewayClass for BNK
+network/multus.yaml             Multus CNI daemonset
+network/sriovdp-daemonset.yaml  SR-IOV device plugin
+network/sriovdp-config.yaml     SR-IOV resource pools
+network/sriov-cni-daemonset.yaml  SR-IOV CNI binary deployer
+network/cni-plugins.yaml        CNI plugin installer
+network/local-path-provisioner.yaml  default storage class
+network/nad-sf.yaml             NetworkAttachmentDefinition for DPU SFs
+```
+
+The FLO classifier picks `flo-values.yaml.tmpl` vs `flo-values-tst.yaml.tmpl`
+from the JWT's `jku` URL — TST tokens are signed against a different JWKS
+and need the matching RSA modulus baked into the template.
+
+**Not embedded — fetched at runtime over the mgmt network:**
+
+- BFB image (`bf-bundle-2.9.2-...bfb`) — downloaded once, cached in
+  `~/.cache/dpubnkctl/bfb/`. Default URL is pinned but overridable in
+  `poc.yaml.provisioning.bfb_url`.
+- `cert-manager.yaml` from `github.com/cert-manager/cert-manager`
+  releases at the pinned version.
+- F5 Lifecycle Operator Helm chart from `oci://repo.f5.com/charts/` —
+  authenticated with the customer's FAR credentials.
+- kubespray — run inside an `alpine/k8s` Docker container at the pinned
+  ref; not vendored.
+
+**Customer-supplied (delivered through F5's normal channels, dropped
+into `keys/` of the PoC repo):**
+
+- FAR tarball (image-pull credentials for `repo.f5.com`)
+- JWT (TEEM activation token)
+- SSH private key for the lab hosts
+
 ## Design references
 
 - [`roksbnkctl`](https://github.com/jgruberf5/roksbnkctl) — sister tool for
