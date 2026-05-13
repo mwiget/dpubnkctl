@@ -484,7 +484,7 @@ func destroyClusterReset(ctx context.Context, repo string, p *poc.PoC, out io.Wr
 	if !plan.Valid() {
 		return fmt.Errorf("plan invalid: %s", strings.Join(plan.Errors, "; "))
 	}
-	if err := cluster.CheckDocker(ctx); err != nil {
+	if _, err := cluster.CheckContainerRuntime(ctx); err != nil {
 		return err
 	}
 	files, err := cluster.Render(p, plan)

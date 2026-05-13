@@ -3,7 +3,6 @@ package cluster
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -14,26 +13,48 @@ import (
 	"github.com/mwiget/dpubnkctl/internal/version"
 )
 
-// CheckDocker returns nil if docker is on PATH and responds. Surfaces a
-// friendly error otherwise — kubespray runs inside the bundled
-// quay.io/kubespray/kubespray image so docker is a hard dependency.
-func CheckDocker(ctx context.Context) error {
-	if _, err := exec.LookPath("docker"); err != nil {
-		return errors.New("docker not found on PATH — install Docker Engine to run kubespray")
+// CheckContainerRuntime probes for docker first, then podman. Returns the
+// runtime name ("docker" or "podman") on success. kubespray's container
+// runs identically under both — `--rm`, `-v`, and `--network=host` are
+// supported by either.
+//
+// docker is preferred because it's been the tested path; podman is the
+// rootless-friendly fallback for hosts where Docker Engine isn't
+// installable (e.g. RHEL workstations, lab gateways without root).
+func CheckContainerRuntime(ctx context.Context) (string, error) {
+	for _, candidate := range []struct {
+		name       string
+		versionCmd []string
+	}{
+		// `docker version --format` returns non-zero when the daemon is
+		// unreachable, which is exactly what we want to detect.
+		{"docker", []string{"version", "--format", "{{.Server.Version}}"}},
+		// podman doesn't need a daemon by default (forked exec model);
+		// `podman version` confirms the binary runs at all.
+		{"podman", []string{"version", "--format", "{{.Server.Version}}"}},
+	} {
+		if _, err := exec.LookPath(candidate.name); err != nil {
+			continue
+		}
+		checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err := exec.CommandContext(checkCtx, candidate.name, candidate.versionCmd...).Run()
+		cancel()
+		if err == nil {
+			return candidate.name, nil
+		}
 	}
-	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if err := exec.CommandContext(checkCtx, "docker", "version", "--format", "{{.Server.Version}}").Run(); err != nil {
-		return fmt.Errorf("docker daemon not responding: %w", err)
-	}
-	return nil
+	return "", errors.New("no container runtime found — install Docker Engine or Podman to run kubespray")
 }
 
-// PullKubespray pulls the pinned kubespray image. Streams docker pull
-// output to w (one line per layer) so the operator sees progress on the
-// first cluster of a session.
+// PullKubespray pulls the pinned kubespray image using the detected
+// runtime. Streams output to w (one line per layer) so the operator sees
+// progress on the first cluster of a session.
 func PullKubespray(ctx context.Context, w io.Writer) error {
-	cmd := exec.CommandContext(ctx, "docker", "pull", version.KubesprayImage)
+	runtime, err := CheckContainerRuntime(ctx)
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, runtime, "pull", version.KubesprayImage)
 	cmd.Stdout = w
 	cmd.Stderr = w
 	return cmd.Run()
@@ -71,6 +92,11 @@ func RunKubespray(ctx context.Context, opts RunOptions) (int, error) {
 		opts.InventoryDir = abs
 	}
 
+	runtime, err := CheckContainerRuntime(ctx)
+	if err != nil {
+		return -1, err
+	}
+
 	args := []string{
 		"run", "--rm",
 		"-v", opts.InventoryDir + ":/inventory:ro",
@@ -88,7 +114,7 @@ func RunKubespray(ctx context.Context, opts RunOptions) (int, error) {
 	runCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, "docker", args...)
+	cmd := exec.CommandContext(runCtx, runtime, args...)
 	cmd.Stdout = opts.Out
 	cmd.Stderr = opts.Out
 

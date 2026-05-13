@@ -93,9 +93,9 @@ func runClusterUp(ctx context.Context, out io.Writer, f *clusterUpFlags) error {
 		p.Metadata.Name, p.Metadata.BNKVersion, "v"+p.Versions.K8s, cluster.KubesprayPinForCLI())
 	fmt.Fprintf(out, "Plan:       cp=%v  node=%v  etcd=%v\n\n", plan.ControlPlane, plan.Workers, plan.Etcd)
 
-	// 1. Docker preflight.
-	fmt.Fprintln(out, "[1/6] Docker preflight ...")
-	if err := cluster.CheckDocker(ctx); err != nil {
+	// 1. Container-runtime preflight (docker or podman).
+	fmt.Fprintln(out, "[1/6] Container-runtime preflight ...")
+	if _, err := cluster.CheckContainerRuntime(ctx); err != nil {
 		return err
 	}
 	fmt.Fprintln(out, "      ok")

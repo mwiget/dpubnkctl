@@ -77,7 +77,7 @@ func runClusterReset(ctx context.Context, out io.Writer, f *clusterResetFlags) e
 
 	fmt.Fprintf(out, "PoC: %s — running kubespray reset.yml against %v\n\n", p.Metadata.Name, allHostsInPlan(plan))
 
-	if err := cluster.CheckDocker(ctx); err != nil {
+	if _, err := cluster.CheckContainerRuntime(ctx); err != nil {
 		return err
 	}
 

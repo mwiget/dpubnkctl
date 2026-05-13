@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/mwiget/dpubnkctl/internal/cluster"
 	"github.com/mwiget/dpubnkctl/internal/poc"
 	"github.com/mwiget/dpubnkctl/internal/version"
 )
@@ -85,13 +86,14 @@ func runDoctor(ctx context.Context, out io.Writer, pocDir string, strict, skipNe
 
 	// --- host tools ---
 	fmt.Fprintln(out, "Host tools")
-	checks = append(checks, runAndPrint(out, checkDockerDaemon(ctx)))
+	rtCheck, runtime := checkContainerRuntime(ctx)
+	checks = append(checks, runAndPrint(out, rtCheck))
 	checks = append(checks, runAndPrint(out, checkGit(ctx)))
 
 	// --- cached container images (informational) ---
 	fmt.Fprintln(out, "\nContainer images (informational — pulled on demand)")
-	checks = append(checks, runAndPrint(out, checkImageCached(ctx, version.KubesprayImage)))
-	checks = append(checks, runAndPrint(out, checkImageCached(ctx, version.K8sToolsImage)))
+	checks = append(checks, runAndPrint(out, checkImageCached(ctx, runtime, version.KubesprayImage)))
+	checks = append(checks, runAndPrint(out, checkImageCached(ctx, runtime, version.K8sToolsImage)))
 
 	// --- network reachability ---
 	if !skipNetwork {
@@ -150,17 +152,25 @@ func runAndPrint(out io.Writer, c check) check {
 
 // --- individual checks ---
 
-func checkDockerDaemon(ctx context.Context) check {
-	if _, err := exec.LookPath("docker"); err != nil {
-		return check{name: "docker", result: checkFail, detail: "not on PATH (install Docker Engine: https://docs.docker.com/engine/install/)"}
+// checkContainerRuntime returns the doctor check + the runtime name
+// detected ("docker", "podman", or ""). Callers downstream (image cache
+// inspection) need the name to invoke the right CLI.
+func checkContainerRuntime(ctx context.Context) (check, string) {
+	runtime, err := cluster.CheckContainerRuntime(ctx)
+	if err != nil {
+		return check{
+			name:   "container runtime",
+			result: checkFail,
+			detail: "neither docker nor podman on PATH (install Docker Engine: https://docs.docker.com/engine/install/ or Podman: https://podman.io/docs/installation)",
+		}, ""
 	}
+	// Grab the server version line for a friendly detail. Best-effort —
+	// the runtime check above already confirmed it works.
 	dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(dctx, "docker", "version", "--format", "{{.Server.Version}}").Output()
-	if err != nil {
-		return check{name: "docker", result: checkFail, detail: "daemon not responding (`docker version` failed) — start the docker service"}
-	}
-	return check{name: "docker", result: checkOK, detail: "server " + strings.TrimSpace(string(out))}
+	out, _ := exec.CommandContext(dctx, runtime, "version", "--format", "{{.Server.Version}}").Output()
+	detail := runtime + " server " + strings.TrimSpace(string(out))
+	return check{name: "container runtime (" + runtime + ")", result: checkOK, detail: detail}, runtime
 }
 
 func checkGit(ctx context.Context) check {
@@ -176,13 +186,15 @@ func checkGit(ctx context.Context) check {
 	return check{name: "git", result: checkOK, detail: strings.TrimSpace(string(out))}
 }
 
-func checkImageCached(ctx context.Context, image string) check {
-	if _, err := exec.LookPath("docker"); err != nil {
-		return check{name: "image " + image, result: checkInfo, detail: "docker missing — skipping"}
+func checkImageCached(ctx context.Context, runtime, image string) check {
+	if runtime == "" {
+		return check{name: "image " + image, result: checkInfo, detail: "no container runtime — skipping"}
 	}
 	dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	err := exec.CommandContext(dctx, "docker", "image", "inspect", image).Run()
+	// Both docker and podman support `image inspect <ref>` with the same
+	// exit-code semantics (zero when cached, non-zero otherwise).
+	err := exec.CommandContext(dctx, runtime, "image", "inspect", image).Run()
 	if err != nil {
 		return check{name: "image " + image, result: checkWarn, detail: "not cached locally — will be pulled on first use"}
 	}

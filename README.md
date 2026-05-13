@@ -100,7 +100,7 @@ On the operator workstation (where you run `dpubnkctl`):
 
 | Tool / resource | Why | Notes |
 |---|---|---|
-| **Docker Engine** | Runs the pinned `kubespray:v2.28.1` and `alpine/k8s:1.32.8` containers — used by `cluster up`, `cluster reset`, `cluster join-dpus`, `deploy *`, `destroy *` | Daemon must be reachable; `docker version` works. Install: https://docs.docker.com/engine/install/ |
+| **Docker Engine** *or* **Podman** | Runs the pinned `kubespray:v2.28.1` and `alpine/k8s:1.32.8` containers — used by `cluster up`, `cluster reset`, `cluster join-dpus`, `deploy *`, `destroy *`. Docker is tried first, then podman. | Daemon (docker) / binary (podman) must respond to `version`. Install: https://docs.docker.com/engine/install/ or https://podman.io/docs/installation |
 | **git** | `dpubnkctl init` git-inits the PoC repo (skippable with `--no-git`) | Any recent version |
 | **Mgmt network** with outbound to: `content.mellanox.com`, `github.com`, `quay.io`, `repo.f5.com`, `registry-1.docker.io` | BFB image, cert-manager manifests, kubespray + alpine/k8s images, FLO Helm chart and BNK container images | Pulled at runtime; not embedded. The mgmt network typically has internet; the data-plane usually doesn't (AGENTS.md #23). |
 | **SSH access** to every host and DPU BMC | All probes, flash, and config are SSH/Redfish-driven; no `ssh` binary needed (Go stdlib) | Operator's private key referenced from `keys/` in the PoC repo |
