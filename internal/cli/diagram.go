@@ -110,8 +110,14 @@ func renderHostColumn(h *poc.Host) []string {
 			lag = "LAG"
 		}
 		body := []string{"DPU worker", "(" + lag + ")"}
-		if mgmt := stripCIDR(d.TmfifoIP); mgmt != "" {
-			body = append(body, "mgmt "+mgmt)
+		// Prefer the DPU's externally-reachable oob_net0 IP. tmfifo_net0
+		// only works from the host that owns the DPU, so it's useless as
+		// "mgmt" in a shared report; show it as "tmfifo" instead when
+		// that's all we have.
+		if oob := strings.TrimSpace(d.OOBIP); oob != "" {
+			body = append(body, "mgmt "+stripCIDR(oob))
+		} else if tm := stripCIDR(d.TmfifoIP); tm != "" {
+			body = append(body, "tmfifo "+tm)
 		}
 		dpus = append(dpus, dpuSpec{title: label, body: body})
 	}

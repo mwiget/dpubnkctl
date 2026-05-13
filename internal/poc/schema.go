@@ -179,6 +179,12 @@ type DPU struct {
 	LAG      bool      `yaml:"lag"`
 	Hostname string    `yaml:"hostname,omitempty"`     // DPU OS hostname (set before flash)
 	TmfifoIP string    `yaml:"tmfifo_ip,omitempty"`    // tmfifo_net0 CIDR, e.g. 192.168.100.2/30
+	// OOBIP is the DPU's oob_net0 (GigE OOB mgmt port) IP, DHCP-assigned at
+	// first boot. Captured after flash so reports and the diagram can show
+	// the externally-reachable mgmt address — tmfifo_ip is only meaningful
+	// from the host that owns the DPU and isn't useful in shared reports.
+	// Bare IP, no CIDR (e.g. "192.168.68.96").
+	OOBIP    string    `yaml:"oob_ip,omitempty"`
 	VLANs    []DPUVLAN `yaml:"vlans,omitempty"`        // per-DPU VLAN interfaces
 
 }

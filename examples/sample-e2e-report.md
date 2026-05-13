@@ -24,7 +24,7 @@ K8s cluster: lake1-test
   |     worker1-bf3      |     |     worker2-bf3      | 
   |      DPU worker      |     |      DPU worker      | 
   |        (LAG)         |     |        (LAG)         | 
-  |  mgmt 192.168.100.2  |     |  mgmt 192.168.100.2  | 
+  |  mgmt 192.168.68.96  |     |  mgmt 192.168.68.79  | 
   +----------------------+     +----------------------+ 
 
   apiserver: 10.10.41.66:6443  (all 4 node(s) connect here)

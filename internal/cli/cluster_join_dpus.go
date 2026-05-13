@@ -201,6 +201,26 @@ func runClusterJoinDPUs(ctx context.Context, out io.Writer, f *clusterJoinDPUsFl
 	return nil
 }
 
+// probeOOBIP returns the DPU's oob_net0 IPv4 address (no CIDR). Best
+// effort — returns "" if the command fails or the output is unparseable.
+// Output of `ip -br -4 addr show oob_net0` looks like:
+//
+//	oob_net0         UP             192.168.68.96/22 metric 100
+func probeOOBIP(ctx context.Context, c *ssh.Client) string {
+	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	r := c.Run(pctx, "ip -br -4 addr show oob_net0 2>/dev/null")
+	if !r.OK() {
+		return ""
+	}
+	for _, f := range strings.Fields(r.Stdout) {
+		if ip, _, err := net.ParseCIDR(f); err == nil && ip.To4() != nil {
+			return ip.String()
+		}
+	}
+	return ""
+}
+
 // resolveDPUNodeIP picks the kubelet --node-ip for a DPU. When
 // network.node_ip_role is set, returns the bare IP from the matching
 // dpu.vlans entry; when unset, returns "" so kubeadm/kubelet auto-detect
@@ -257,6 +277,15 @@ func joinOneDPU(ctx context.Context, repo string, j dpuJob, jc *cluster.JoinComm
 		return fmt.Errorf("ssh dpu: %w", err)
 	}
 	defer c.Close()
+
+	// Capture the DPU's oob_net0 (GigE OOB mgmt) IP — DHCP-assigned at
+	// first boot, so we can only learn it once the DPU is reachable.
+	// tmfifo is host-local; oob_net0 is what shows up in reports and the
+	// diagram. Best-effort: don't fail the join if parsing fails.
+	if ip := probeOOBIP(ctx, c); ip != "" && ip != j.dpu.OOBIP {
+		fmt.Fprintf(w, "oob_net0 = %s\n", ip)
+		j.dpu.OOBIP = ip
+	}
 
 	if !f.skipInstall {
 		fmt.Fprintln(w, "installing kubelet/kubeadm/kubectl ...")
