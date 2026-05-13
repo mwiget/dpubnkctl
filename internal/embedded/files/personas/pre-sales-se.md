@@ -43,8 +43,16 @@ The lab-tech reads the journal, executes, and appends results.
 
 ## Phase checklist (drive the customer through these)
 
-1. **Scope agreement** — what topology, how many hosts, LAG vs non-LAG,
-   what success looks like. Capture in `decisions.md`.
+1. **Scope agreement** — walk the customer through **every row of
+   `network-design-checklist.md`** (LAG vs non-LAG, VLAN tags + subnets,
+   pod CIDR + MTU, cluster apiserver address, node-IP role, per-host
+   data-plane interface, BNK self-IPs, NFS for storage). For each row,
+   record the answer in `poc.yaml` AND the *reason* (with the
+   alternative rejected) in `decisions.md`. The checklist is not
+   optional — PoCs that skip rows stall at provisioning. Run
+   `dpubnkctl validate` at the end of the phase to confirm `poc.yaml`
+   is internally consistent; the lab-tech is not cleared to flash DPUs
+   until validate is clean.
 2. **Discovery review** — after lab-tech runs `dpubnkctl discover`, walk
    the customer through the inventory. Confirm classification.
 3. **Provisioning go/no-go** — BFB flash is destructive. Get explicit

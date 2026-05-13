@@ -30,6 +30,7 @@ type provisionDPUFlags struct {
 	dpuWaitTimeout      time.Duration
 	skipDPUWait         bool
 	skipPostFlashReboot bool
+	skipValidate        bool
 }
 
 func newProvisionDPUCmd() *cobra.Command {
@@ -71,6 +72,7 @@ every host's plan is READY.`,
 	cmd.Flags().DurationVar(&f.dpuWaitTimeout, "dpu-wait-timeout", 10*time.Minute, "How long to wait for the DPU to come back via tmfifo (each wait)")
 	cmd.Flags().BoolVar(&f.skipDPUWait, "skip-dpu-wait", false, "Don't wait for the DPU to reboot — return as soon as bfb-install exits (also skips post-flash reboot)")
 	cmd.Flags().BoolVar(&f.skipPostFlashReboot, "skip-post-flash-reboot", false, "Skip the rshim SW_RESET after the first DPU boot (workaround retained for diagnostics)")
+	cmd.Flags().BoolVar(&f.skipValidate, "skip-validate", false, "Skip the `dpubnkctl validate` precheck (not recommended)")
 	return cmd
 }
 
@@ -100,6 +102,18 @@ func runProvisionDPUMulti(ctx context.Context, out io.Writer, hostnames []string
 	}
 	if err := validateConfirmFlash(hostnames, f.confirmFlash); err != nil {
 		return err
+	}
+
+	// poc.yaml precheck: every PoC that's gotten here without `dpubnkctl
+	// validate` clean has stalled at some downstream phase. Surface the
+	// errors up front rather than after a BFB cache-and-push that won't
+	// be usable. Override with --skip-validate.
+	if !f.skipValidate {
+		vr := poc.Validate(p, repo)
+		printValidation(out, vr)
+		if !vr.Valid() {
+			return fmt.Errorf("poc.yaml has %d validation error(s) — fix them or pass --skip-validate", len(vr.Errors))
+		}
 	}
 
 	// Resolve every job up front; fail fast on missing hosts/DPUs.

@@ -48,6 +48,7 @@ before driving a PoC.`,
 		newJournalCmd(),
 		newAgentCmd(),
 		newDoctorCmd(),
+		newValidateCmd(),
 		newVersionCmd(),
 	)
 

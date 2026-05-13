@@ -189,16 +189,17 @@ AGENTS.md                23 recurring failure modes + style for coding agents
 ## Repo layout (a PoC created by `dpubnkctl init`)
 
 ```
-poc.yaml                 declarative state — source of truth
-AGENTS.md                instructions for any agentic CLI
-CLAUDE.md                @AGENTS.md include
-personas/                pre-sales-se | lab-tech | doc-specialist
-journal/                 append-only markdown log (auto-appended each phase)
-inventory/               populated by `dpubnkctl discover`
-artifacts/               bf.conf renders, kubeconfig, helm values, manifests
-keys/                    gitignored — FAR tgz, JWT, SSH keys
-decisions.md             running decision log
-.gitignore               excludes secret material
+poc.yaml                          declarative state — source of truth
+AGENTS.md                         instructions for any agentic CLI
+CLAUDE.md                         @AGENTS.md include
+network-design-checklist.md       SE-customer scope worksheet (LAG, VLANs, IPs, MTU)
+personas/                         pre-sales-se | lab-tech | doc-specialist
+journal/                          append-only markdown log (auto-appended each phase)
+inventory/                        populated by `dpubnkctl discover`
+artifacts/                        bf.conf renders, kubeconfig, helm values, manifests
+keys/                             gitignored — FAR tgz, JWT, SSH keys
+decisions.md                      running decision log
+.gitignore                        excludes secret material
 ```
 
 ## What's embedded (and what isn't)
