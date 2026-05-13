@@ -94,17 +94,17 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 	r := &deploy.Runner{KubeconfigPath: kubeconfig, Out: prefixWriter{w: out, prefix: "      | "}}
 
 	if !f.skipPull {
-		fmt.Fprintln(out, "[1/5] Tools preflight ...")
+		fmt.Fprintln(out, "[1/4] Tools preflight ...")
 		if err := r.CheckTools(ctx); err != nil {
 			return err
 		}
 	}
 	fmt.Fprintln(out, "      ok")
 
-	// 2. Apply CNEInstance — FLO watches it and (in the bnk-forge
-	//    blueprint) reconciles the downstream BNK CRs. Always renders
-	//    + applies; saved to artifacts for SE review.
-	fmt.Fprintln(out, "[2/3] Rendering + applying CNEInstance ...")
+	// 2. Apply CNEInstance — FLO watches it and reconciles the downstream
+	//    BNK CRs (TMM, dssm, observer, ...). Lands in `default` per the
+	//    cne-instance.yaml.tmpl namespace (commit 0270d78).
+	fmt.Fprintln(out, "[2/4] Rendering + applying CNEInstance ...")
 	cne, err := deploy.RenderCNEInstance(p)
 	if err != nil {
 		return err
@@ -113,27 +113,41 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 		return err
 	}
 
-	// 3. Wait for CNEInstance Ready. NOTE: this needs Multus CNI +
-	//    NetworkAttachmentDefinitions for sf-external/sf-internal to
-	//    actually progress past pending. Installing those is a future
-	//    `dpubnkctl deploy network` step (current FLO logs:
-	//    "no matches for kind NetworkAttachmentDefinition...").
-	fmt.Fprintln(out, "[3/3] Waiting for CNEInstance Ready ...")
-	fmt.Fprintln(out, "      NOTE: requires Multus CNI + NADs (sf-external, sf-internal).")
-	fmt.Fprintln(out, "      If FLO is crashlooping, see `kubectl -n f5-operators logs -l app.kubernetes.io/name=f5-lifecycle-operator`.")
-	if err := r.Wait(ctx, "f5-operators", "Ready",
+	// 3. Apply F5SPKVlan resources. TMM's bfd_watcher needs these to come
+	//    out of "ERROR: vlan name not found" and let the readiness gates
+	//    (RoutingDone / ConfigurationDone) flip to True. Aggregator keys
+	//    by Role+Tag so a single VLAN spanning both DPUs gets one
+	//    F5SPKVlan with both selfip_v4s. Skip if the PoC has no DPU
+	//    VLANs declared (single-host or NIC-mode topologies).
+	fmt.Fprintln(out, "[3/4] Rendering + applying F5SPKVlan(s) ...")
+	if vlanCount := dpuVLANCount(p); vlanCount > 0 {
+		vlans, err := deploy.RenderF5SPKVlans(p)
+		if err != nil {
+			return err
+		}
+		if err := saveAndApply(ctx, r, repo, "artifacts/f5spkvlans-rendered.yaml", vlans); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "      applied %d aggregated F5SPKVlan(s).\n", vlanCount)
+	} else {
+		fmt.Fprintln(out, "      (no DPU VLANs in poc.yaml — skipped)")
+	}
+
+	// 4. Wait for CNEInstance Ready. The CNEInstance lives in `default`
+	//    (cne-instance.yaml.tmpl namespace), not f5-operators.
+	fmt.Fprintln(out, "[4/4] Waiting for CNEInstance Ready ...")
+	fmt.Fprintln(out, "      Requires Multus CNI + NADs in default (sf-external, sf-internal — installed by `deploy network`).")
+	fmt.Fprintln(out, "      If TMM gates stay False, check license: kubectl -n f5-operators get secret activationstatus -o jsonpath='{.data.activationstatus}' | base64 -d")
+	if err := r.Wait(ctx, "default", "Ready",
 		"cneinstance/bnk-instance", f.cneReadyTimeout); err != nil {
-		fmt.Fprintf(out, "      WARN: CNEInstance not Ready within %s — check `kubectl -n f5-operators get cneinstance,pods` (%v)\n", f.cneReadyTimeout, err)
+		fmt.Fprintf(out, "      WARN: CNEInstance not Ready within %s — check `kubectl get cneinstance -A` + `kubectl -n default get pods` (%v)\n", f.cneReadyTimeout, err)
 	} else {
 		fmt.Fprintln(out, "      CNEInstance Ready.")
 	}
 
-	// VLAN + GatewayClass apply intentionally deferred — the FLO v2.9.27
-	// schema differs from the f5-bnk-v2.2.0-static templates (different
-	// API group: k8s.f5.com vs k8s.f5net.com; the BNKGatewayClassConfig
-	// CRD also isn't installed by base FLO). Renderers are kept (with
-	// tests) so the next iteration can use them once the right schema
-	// is confirmed against the running cluster.
+	// GatewayClass apply still deferred — the live cluster's CRD set
+	// has F5BnkGateway (k8s.f5net.com/v1) instead of the template's
+	// BNKGatewayClassConfig. Tracked in #68.
 	_ = tmmReplicas
 
 	p.Status.Deploy = "completed"
@@ -144,6 +158,19 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 	appendDeployJournal(repo, p.Metadata.Name, "", "BNK DEPLOYED", "")
 	fmt.Fprintln(out, "\nDONE. BNK platform deployed. `kubectl get pods -A` to inspect TMM, CNE controller, and FLO.")
 	return nil
+}
+
+// dpuVLANCount counts unique VLAN port names (Role+Tag) across all DPUs.
+func dpuVLANCount(p *poc.PoC) int {
+	seen := map[string]bool{}
+	for _, h := range p.Hosts {
+		for _, d := range h.DPUs {
+			for _, v := range d.VLANs {
+				seen[v.PortName()] = true
+			}
+		}
+	}
+	return len(seen)
 }
 
 func saveAndApply(ctx context.Context, r *deploy.Runner, repo, relPath, manifest string) error {
