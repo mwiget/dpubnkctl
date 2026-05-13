@@ -7,13 +7,17 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/mwiget/dpubnkctl/internal/cluster"
 	"github.com/mwiget/dpubnkctl/internal/deploy"
 	"github.com/mwiget/dpubnkctl/internal/embedded"
 	"github.com/mwiget/dpubnkctl/internal/poc"
+	"github.com/mwiget/dpubnkctl/internal/ssh"
 )
 
 type deployNetworkFlags struct {
@@ -178,7 +182,95 @@ func runDeployNetwork(ctx context.Context, out io.Writer, f *deployNetworkFlags)
 		fmt.Fprintf(out, "      WARN: could not mark local-path default: %v\n", err)
 	}
 
+	// Restart containerd on every node (hosts + DPUs) so its CRI
+	// re-scans /etc/cni/net.d. install-cni-plugins drops new binaries
+	// (multus, calico, sriov) and rewrites configs after containerd
+	// already settled — without restart, kubelet keeps logging
+	// "cni plugin not initialized" until reboot. AGENTS.md #5.
+	fmt.Fprintln(out, "\nRestarting containerd on every node (CRI re-scan) ...")
+	if err := restartContainerdEverywhere(ctx, repo, p, out); err != nil {
+		fmt.Fprintf(out, "      WARN: containerd restart had errors (some nodes may stay NotReady): %v\n", err)
+	}
+
 	appendDeployJournal(repo, p.Metadata.Name, "", "NETWORK INSTALLED", "")
-	fmt.Fprintln(out, "\nDONE.  FLO should now reconcile the CNEInstance — re-check `kubectl -n f5-operators get cneinstance,pods`.")
+	fmt.Fprintln(out, "\nDONE.  FLO should now reconcile the CNEInstance — re-check `kubectl get cneinstance -A` + `kubectl get pods -A`.")
+	return nil
+}
+
+// restartContainerdEverywhere SSHes to every host AND every DPU in
+// poc.yaml (parallel) and restarts containerd. Safe to no-op on hosts
+// where it just bounces a healthy daemon — the cost is ~2s.
+func restartContainerdEverywhere(ctx context.Context, repo string, p *poc.PoC, out io.Writer) error {
+	type job struct {
+		label string
+		cfg   ssh.Config
+	}
+	var jobs []job
+	for i := range p.Hosts {
+		h := &p.Hosts[i]
+		cfg, err := sshConfigForHost(repo, h, 15*time.Second)
+		if err != nil {
+			fmt.Fprintf(out, "      WARN: skip %s (ssh cfg: %v)\n", h.Name, err)
+			continue
+		}
+		jobs = append(jobs, job{label: h.Name, cfg: cfg})
+		// DPUs reached via ProxyJump through their host.
+		hostKey := h.SSH.KeyRef
+		if !filepath.IsAbs(hostKey) {
+			hostKey = filepath.Join(repo, hostKey)
+		}
+		known := filepath.Join(repo, "inventory", "known_hosts")
+		for j := range h.DPUs {
+			d := &h.DPUs[j]
+			if d.TmfifoIP == "" || d.Hostname == "" {
+				continue
+			}
+			dpuIP := strings.SplitN(d.TmfifoIP, "/", 2)[0]
+			jobs = append(jobs, job{
+				label: d.Hostname,
+				cfg: ssh.Config{
+					Address: dpuIP, Port: 22, User: "ubuntu",
+					KeyPath: hostKey, Timeout: 30 * time.Second,
+					Jumphost: &ssh.Config{
+						Address: h.SSH.Address, Port: h.SSH.Port, User: h.SSH.User,
+						KeyPath: hostKey, KnownHosts: known, Timeout: 30 * time.Second,
+					},
+				},
+			})
+		}
+	}
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		failures []string
+	)
+	for _, j := range jobs {
+		j := j
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			c, err := ssh.Dial(dialCtx, j.cfg)
+			cancel()
+			if err != nil {
+				mu.Lock()
+				failures = append(failures, fmt.Sprintf("%s: ssh dial: %v", j.label, err))
+				mu.Unlock()
+				return
+			}
+			defer c.Close()
+			if err := cluster.RestartContainerd(ctx, c); err != nil {
+				mu.Lock()
+				failures = append(failures, fmt.Sprintf("%s: %v", j.label, err))
+				mu.Unlock()
+				return
+			}
+			fmt.Fprintf(out, "      | %s containerd restarted\n", j.label)
+		}()
+	}
+	wg.Wait()
+	if len(failures) > 0 {
+		return fmt.Errorf("%d node(s) failed: %s", len(failures), strings.Join(failures, "; "))
+	}
 	return nil
 }

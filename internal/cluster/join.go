@@ -85,6 +85,18 @@ func InstallKubeBinaries(ctx context.Context, dpu *ssh.Client, k8sMinor string) 
 	return nil
 }
 
+// RestartContainerd runs `systemctl restart containerd` on the given
+// SSH client. Used after kubeadm join + post-CNI install to flush
+// containerd's CRI cache (the "no CNI" status sticks until restart;
+// see AGENTS.md #5).
+func RestartContainerd(ctx context.Context, c *ssh.Client) error {
+	r := c.Run(ctx, "sudo -n systemctl restart containerd")
+	if !r.OK() {
+		return fmt.Errorf("restart containerd: exit=%d %s", r.ExitCode, strings.TrimSpace(r.Stderr+r.Stdout))
+	}
+	return nil
+}
+
 // JoinDPU runs the kubeadm-supplied join command on the DPU, with our
 // node name override. Containerd is the default CRI (set up by bf.conf).
 //

@@ -247,6 +247,16 @@ apiserver_loadbalancer_domain_name: %[1]s
 supplementary_addresses_in_ssl_keys:
   - %[1]s
 `, addr)
+		// Also include each host's management/SSH address in the apiserver
+		// cert SANs so the operator's local kubectl works against the
+		// mgmt path (data-plane usually isn't routable from outside the
+		// lab — see AGENTS.md #23). Without this, kubectl from the
+		// operator host needs --insecure-skip-tls-verify.
+		for i := range p.Hosts {
+			if a := p.Hosts[i].SSH.Address; a != "" && a != addr {
+				fmt.Fprintf(&b, "  - %s\n", a)
+			}
+		}
 	}
 	return b.String()
 }

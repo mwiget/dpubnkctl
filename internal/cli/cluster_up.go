@@ -94,7 +94,7 @@ func runClusterUp(ctx context.Context, out io.Writer, f *clusterUpFlags) error {
 	fmt.Fprintf(out, "Plan:       cp=%v  node=%v  etcd=%v\n\n", plan.ControlPlane, plan.Workers, plan.Etcd)
 
 	// 1. Docker preflight.
-	fmt.Fprintln(out, "[1/5] Docker preflight ...")
+	fmt.Fprintln(out, "[1/6] Docker preflight ...")
 	if err := cluster.CheckDocker(ctx); err != nil {
 		return err
 	}
@@ -102,7 +102,7 @@ func runClusterUp(ctx context.Context, out io.Writer, f *clusterUpFlags) error {
 
 	// 2. Regenerate inventory + stage SSH keys into the inventory tree
 	//    (kubespray container reads them from /inventory/keys/<host>.pem).
-	fmt.Fprintln(out, "[2/5] Regenerating kubespray inventory ...")
+	fmt.Fprintln(out, "[2/6] Regenerating kubespray inventory ...")
 	files, err := cluster.Render(p, plan)
 	if err != nil {
 		return err
@@ -137,13 +137,13 @@ func runClusterUp(ctx context.Context, out io.Writer, f *clusterUpFlags) error {
 
 	// 3. Pull kubespray image.
 	if f.pull {
-		fmt.Fprintln(out, "[3/5] Pulling kubespray image ...")
+		fmt.Fprintln(out, "[3/6] Pulling kubespray image ...")
 		if err := cluster.PullKubespray(ctx, prefixWriter{w: out, prefix: "      | "}); err != nil {
 			return fmt.Errorf("docker pull: %w", err)
 		}
 		fmt.Fprintln(out, "      ok")
 	} else {
-		fmt.Fprintln(out, "[3/5] (--pull=false; skipping image pull)")
+		fmt.Fprintln(out, "[3/6] (--pull=false; skipping image pull)")
 	}
 
 	// 3.5 Pre-create /etc/kubernetes on every host. Kubespray's `download`
@@ -156,7 +156,7 @@ func runClusterUp(ctx context.Context, out io.Writer, f *clusterUpFlags) error {
 	}
 
 	// 4. Run cluster.yml. Stream to terminal + log file.
-	fmt.Fprintf(out, "[4/5] Running kubespray %s (this typically takes 30–90 minutes) ...\n", f.playbook)
+	fmt.Fprintf(out, "[4/6] Running kubespray %s (this typically takes 30–90 minutes) ...\n", f.playbook)
 	logPath := filepath.Join(repo, "artifacts", "cluster-up.log")
 	logFile, err := os.Create(logPath)
 	if err != nil {
@@ -182,11 +182,20 @@ func runClusterUp(ctx context.Context, out io.Writer, f *clusterUpFlags) error {
 	}
 	fmt.Fprintf(out, "      kubespray completed — log at %s\n", logPath)
 
-	// 5. Fetch + localize kubeconfig from first control plane.
+	// 5. Restart containerd on every host. Without this, nodes can stay
+	//    NotReady because containerd's CRI cached "no CNI" before the
+	//    Calico DaemonSet pod wrote /etc/cni/net.d/10-calico.conflist.
+	//    Idempotent + cheap — see AGENTS.md #5.
+	fmt.Fprintln(out, "[5/6] Restarting containerd on every host ...")
+	if err := restartContainerdOnHosts(ctx, repo, plan, out); err != nil {
+		fmt.Fprintf(out, "      WARN: containerd restart failed (nodes may stay NotReady — restart manually): %v\n", err)
+	}
+
+	// 6. Fetch + localize kubeconfig from first control plane.
 	if f.skipFetch {
-		fmt.Fprintln(out, "[5/5] (--skip-fetch-kubeconfig)")
+		fmt.Fprintln(out, "[6/6] (--skip-fetch-kubeconfig)")
 	} else {
-		fmt.Fprintln(out, "[5/5] Fetching kubeconfig from first control plane ...")
+		fmt.Fprintln(out, "[6/6] Fetching kubeconfig from first control plane ...")
 		cpName := plan.ControlPlane[0]
 		cpHost := plan.HostByName[cpName]
 		kcPath := filepath.Join(repo, "artifacts", "kubeconfig")
@@ -197,7 +206,7 @@ func runClusterUp(ctx context.Context, out io.Writer, f *clusterUpFlags) error {
 		}
 	}
 
-	// 6. Update poc.yaml + journal.
+	// 7. Update poc.yaml + journal.
 	p.Status.Cluster = "completed"
 	p.Status.LastPhaseAt = time.Now().UTC()
 	if err := p.Save(repo); err != nil {
@@ -271,6 +280,58 @@ func fetchKubeconfig(ctx context.Context, repo string, host *poc.Host, dst strin
 	}
 	localized := cluster.LocalizeKubeconfig(r.Stdout, host.SSH.Address)
 	return cluster.SaveKubeconfig(dst, localized)
+}
+
+// restartContainerdOnHosts SSHes to every host in the plan and runs
+// `systemctl restart containerd`. We do this at the end of cluster up
+// because containerd's CRI plugin caches its "no CNI" state when the
+// plugin starts before /etc/cni/net.d is populated. Calico writes its
+// conflist via DaemonSet pod and may race with kubelet's first poll —
+// containerd then sits in NetworkPluginNotReady forever until restarted.
+// (Reproduced on lake1 worker2 — restart flips the node to Ready in
+// seconds.) Idempotent + cheap.
+func restartContainerdOnHosts(ctx context.Context, repo string, plan cluster.Plan, out io.Writer) error {
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		failures []string
+	)
+	for name, h := range plan.HostByName {
+		name, h := name, h
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cfg, err := sshConfigForHost(repo, h, 15*time.Second)
+			if err != nil {
+				mu.Lock()
+				failures = append(failures, fmt.Sprintf("%s: ssh cfg: %v", name, err))
+				mu.Unlock()
+				return
+			}
+			dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			c, err := ssh.Dial(dialCtx, cfg)
+			cancel()
+			if err != nil {
+				mu.Lock()
+				failures = append(failures, fmt.Sprintf("%s: ssh dial: %v", name, err))
+				mu.Unlock()
+				return
+			}
+			defer c.Close()
+			if r := c.Run(ctx, "sudo -n systemctl restart containerd"); !r.OK() {
+				mu.Lock()
+				failures = append(failures, fmt.Sprintf("%s: restart containerd: %s", name, strings.TrimSpace(r.Stderr+r.Stdout)))
+				mu.Unlock()
+				return
+			}
+			fmt.Fprintf(out, "      | %s containerd restarted\n", name)
+		}()
+	}
+	wg.Wait()
+	if len(failures) > 0 {
+		return fmt.Errorf("%d host(s) failed containerd restart: %s", len(failures), strings.Join(failures, "; "))
+	}
+	return nil
 }
 
 func appendClusterJournal(repo, pocName, status, logPath, errMsg string) {

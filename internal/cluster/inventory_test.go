@@ -158,10 +158,49 @@ func TestRender_DataPlaneNodeIP(t *testing.T) {
 		"apiserver_loadbalancer_domain_name: 10.10.41.66",
 		"supplementary_addresses_in_ssl_keys",
 		"- 10.10.41.66",
+		"- 10.0.0.10", // h1 mgmt addr also added to cert SAN
+		"- 10.0.0.11", // h2 mgmt addr also added to cert SAN
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("all.yml missing %q\n%s", want, all)
 		}
+	}
+}
+
+func TestLocalizeKubeconfig(t *testing.T) {
+	// kubespray's apiserver_loadbalancer_domain_name path: server points
+	// at the data-plane IP that the operator can't route to.
+	raw := `apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority-data: LS0tLS1CRUdJTi==
+    server: https://10.10.41.66:6443
+  name: cluster.local
+`
+	got := LocalizeKubeconfig(raw, "192.168.68.66")
+	for _, want := range []string{
+		"server: https://192.168.68.66:6443",
+		"insecure-skip-tls-verify: true",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in localized kubeconfig:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "10.10.41.66:6443") {
+		t.Errorf("data-plane URL not rewritten:\n%s", got)
+	}
+	if strings.Contains(got, "certificate-authority-data:") {
+		t.Errorf("CA data should be stripped (replaced by insecure-skip-tls-verify):\n%s", got)
+	}
+
+	// And the legacy 127.0.0.1 path still works.
+	raw2 := `clusters:
+- cluster:
+    server: https://127.0.0.1:6443
+`
+	got2 := LocalizeKubeconfig(raw2, "192.168.68.66")
+	if !strings.Contains(got2, "server: https://192.168.68.66:6443") {
+		t.Errorf("127.0.0.1 path not rewritten:\n%s", got2)
 	}
 }
 

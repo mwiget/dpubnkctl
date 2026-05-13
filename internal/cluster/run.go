@@ -8,7 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
+	"regexp"
 	"time"
 
 	"github.com/mwiget/dpubnkctl/internal/version"
@@ -102,14 +102,44 @@ func RunKubespray(ctx context.Context, opts RunOptions) (int, error) {
 	return 0, nil
 }
 
-// LocalizeKubeconfig rewrites server: https://127.0.0.1:6443 (which
-// kubespray writes for in-cluster use) to point at hostAddress so the
+// LocalizeKubeconfig rewrites the server URL in /etc/kubernetes/admin.conf
+// to point at hostAddress (typically the host's SSH/mgmt address) so the
 // kubeconfig works from the operator laptop.
+//
+// Three paths supported:
+//
+//	server: https://127.0.0.1:6443          (kubespray non-LB default)
+//	server: https://localhost:6443          (variant)
+//	server: https://<any-IP-or-host>:6443   (kubespray LB mode — this
+//	                                         is what apiserver_loadbalancer_
+//	                                         domain_name produces; in our
+//	                                         lake1 case it's the data-plane
+//	                                         IP that the operator can't
+//	                                         route to)
+//
+// Also adds `insecure-skip-tls-verify: true` and strips the cluster's
+// certificate-authority-data because the apiserver cert SAN typically
+// only includes the data-plane address + cluster.local — connecting via
+// mgmt addr fails TLS otherwise. (The supplementary_addresses_in_ssl_keys
+// inventory knob can extend the SAN if you'd rather use proper TLS.)
 func LocalizeKubeconfig(raw, hostAddress string) string {
-	out := strings.ReplaceAll(raw, "https://127.0.0.1:6443", "https://"+hostAddress+":6443")
-	out = strings.ReplaceAll(out, "https://localhost:6443", "https://"+hostAddress+":6443")
+	target := "https://" + hostAddress + ":6443"
+	// Replace any server: line with a 6443 URL.
+	out := serverRe.ReplaceAllString(raw, "    server: "+target)
+	// Drop CA data + insert insecure-skip-tls-verify under the same
+	// cluster: stanza. Both sit at 4-space indent on contiguous lines
+	// in admin.conf.
+	out = caDataRe.ReplaceAllString(out, "    insecure-skip-tls-verify: true")
 	return out
 }
+
+// match `    server: https://...:6443` (any host) — kubespray emits this
+// at exactly 4-space indent under `clusters[].cluster`.
+var serverRe = regexp.MustCompile(`(?m)^    server: https://[^[:space:]]+:6443\s*$`)
+
+// match the single-line CA data field — kubespray emits it base64-blob
+// on one line at 4-space indent.
+var caDataRe = regexp.MustCompile(`(?m)^    certificate-authority-data:.*$`)
 
 // SaveKubeconfig writes content to dst with mode 0600 (sensitive).
 func SaveKubeconfig(dst, content string) error {

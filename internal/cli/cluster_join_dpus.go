@@ -277,6 +277,14 @@ func joinOneDPU(ctx context.Context, repo string, j dpuJob, jc *cluster.JoinComm
 	if err := cluster.JoinDPU(ctx, c, jc, j.dpu.Hostname, nodeIP); err != nil {
 		return err
 	}
+	// Restart containerd so its CRI re-scans /etc/cni/net.d. kubeadm
+	// join only waited for the kubelet TLS bootstrap; it didn't trigger
+	// a CNI re-init. Without this the DPU stays NotReady even after
+	// Calico-node + later Multus daemonsets land their configs.
+	fmt.Fprintln(w, "restarting containerd (CRI re-scan) ...")
+	if err := cluster.RestartContainerd(ctx, c); err != nil {
+		fmt.Fprintf(w, "WARN: containerd restart failed (DPU may stay NotReady): %v\n", err)
+	}
 	return nil
 }
 
