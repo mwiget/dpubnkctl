@@ -143,6 +143,18 @@ func runClusterStatus(ctx context.Context, out io.Writer, pocDir string) error {
 	}
 	fmt.Fprintln(out)
 
+	// 8. F5SPKVlan CRs — TMM data-plane VLANs applied by `deploy cne`.
+	//    Each is one VLAN tag aggregated across all DPUs. READY=True
+	//    means TMM picked up the config; False/Unknown means a
+	//    bfd_watcher mismatch (CR name vs OVS port) or missing self-ip.
+	fmt.Fprintln(out, "F5SPKVlan (data-plane VLANs on TMM):")
+	if has, _ := k.crdEstablished(ctx, "f5-spk-vlans.k8s.f5net.com"); has {
+		_ = k.runStream(ctx, out, "      | ", "get", "f5-spk-vlans", "-A")
+	} else {
+		fmt.Fprintln(out, "      (F5SPKVlan CRD not installed — `deploy cne` not run yet)")
+	}
+	fmt.Fprintln(out)
+
 	// 8. Anything unhealthy cluster-wide. `kubectl get pods -A
 	//    --field-selector=status.phase!=Running,status.phase!=Succeeded`
 	//    catches Pending / Failed / CrashLoopBackOff. Headers off so an
