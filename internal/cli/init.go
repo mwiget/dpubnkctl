@@ -49,6 +49,10 @@ Initializes a git repo unless --no-git.`,
 			if target == "" {
 				target = "./" + name
 			}
+			// Honor `~` / `~/...` even when the shell didn't expand it
+			// (quoted args, non-bash shells, some IDE terminals). Anything
+			// past that is filepath.Abs's job.
+			target = expandTilde(target)
 			abs, err := filepath.Abs(target)
 			if err != nil {
 				return err
@@ -146,20 +150,44 @@ func initArgs(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf(`PoC name required.
 
 Usage:
-  dpubnkctl init <poc-name>
+  dpubnkctl init <poc-name> [--dir <path>] [--customer "<name>"]
+
+By default the PoC repo is created at ./<poc-name> relative to your
+current working directory. Pass --dir to put it elsewhere.
 
 Examples:
-  dpubnkctl init customer-acme
-  dpubnkctl init customer-acme --customer "Acme Corp"
-  dpubnkctl init lab1 --dir /tmp/lab1
+  dpubnkctl init customer-acme                           # → ./customer-acme
+  dpubnkctl init customer-acme --customer "Acme Corp"    # → ./customer-acme
+  dpubnkctl init lab1 --dir ~/pocs/lab1                  # → ~/pocs/lab1
+  dpubnkctl init lab1 --dir /srv/pocs/lab1               # absolute path
 
 The name must match [a-z0-9-]+ and lands in poc.yaml.metadata.name.
+The target directory must not already exist (init refuses to overwrite).
 Run "dpubnkctl init --help" for all flags`)
 	case 1:
 		return nil
 	default:
 		return fmt.Errorf("only one <poc-name> is accepted; got %d arguments", len(args))
 	}
+}
+
+// expandTilde resolves a leading `~` or `~/...` to the operator's home
+// directory. Anything else is returned unchanged. Mirrors what bash
+// would do unquoted; covers the case where the path arrived quoted or
+// from a non-bash shell.
+func expandTilde(p string) string {
+	if p == "~" {
+		if h, err := os.UserHomeDir(); err == nil {
+			return h
+		}
+		return p
+	}
+	if strings.HasPrefix(p, "~/") {
+		if h, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(h, p[2:])
+		}
+	}
+	return p
 }
 
 func validName(s string) bool {
