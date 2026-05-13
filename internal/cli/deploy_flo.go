@@ -31,16 +31,21 @@ func newDeployFLOCmd() *cobra.Command {
 		Short: "Install bnk-ca cert-issuer chain + F5 Lifecycle Operator (DESTRUCTIVE)",
 		Long: `Phase 4b.1 — install the F5 Lifecycle Operator on the cluster:
 
-  1. Apply the bnk-ca cert-issuer chain to cert-manager:
+  1. Tools preflight (alpine/k8s container).
+  2. Read JWT from poc.yaml.bnk.jwt_ref, classify prod vs tst.
+  3. Ensure prereq namespaces exist (cert-manager, f5-operators).
+  4. Install cert-manager (pinned version, manifest from upstream).
+  5. Apply the bnk-ca cert-issuer chain to cert-manager:
        ClusterIssuer/selfsigned-bnk           (selfsigned root)
        Certificate/bnk-ca                     (CA cert + key)
        ClusterIssuer/bnk-ca-cluster-issuer    (CA referenced by FLO)
-  2. Read JWT from poc.yaml.bnk.jwt_ref, classify prod vs tst.
-  3. Render FLO values from the embedded template (matches
-     f5-bnk-nvidia-bf3-installations v2.2.0-static).
-  4. helm upgrade --install flo oci://repo.f5.com/charts/f5-lifecycle-operator
-     into namespace f5-operators with the rendered values.
-  5. Wait for the flo-controller deployment to become Available.
+  6. Create the far-secret (image-pull credential for repo.f5.com)
+     in f5-operators AND default — FLO + downstream pods reference
+     it; missing → ImagePullBackOff.
+  7. Render FLO values from the embedded template (prod or tst per
+     classifier in step 2), helm upgrade --install flo from
+     oci://repo.f5.com/charts/f5-lifecycle-operator into f5-operators.
+  8. Wait for the flo-controller deployment to become Available.
 
 Required gates:
   --yolo                   acknowledge cluster writes
@@ -92,7 +97,7 @@ func runDeployFLO(ctx context.Context, out io.Writer, f *deployFLOFlags) error {
 
 	r := &deploy.Runner{KubeconfigPath: kubeconfig, Out: prefixWriter{w: out, prefix: "      | "}}
 	if !f.skipPull {
-		fmt.Fprintln(out, "[1/5] Tools preflight ...")
+		fmt.Fprintln(out, "[1/7] Tools preflight ...")
 		if err := r.CheckTools(ctx); err != nil {
 			return err
 		}
@@ -100,7 +105,7 @@ func runDeployFLO(ctx context.Context, out io.Writer, f *deployFLOFlags) error {
 	fmt.Fprintln(out, "      ok")
 
 	// 2. Inspect JWT.
-	fmt.Fprintln(out, "[2/5] Inspecting JWT (prod vs tst) ...")
+	fmt.Fprintln(out, "[2/7] Inspecting JWT (prod vs tst) ...")
 	info, err := deploy.InspectJWT(jwtPath)
 	if err != nil {
 		return err
@@ -111,8 +116,34 @@ func runDeployFLO(ctx context.Context, out io.Writer, f *deployFLOFlags) error {
 	}
 	fmt.Fprintf(out, "      type=%s  iss=%v\n", info.Type, info.Claims["iss"])
 
-	// 3. Apply cert-issuer chain.
-	fmt.Fprintln(out, "[3/5] Applying bnk-ca cert-issuer chain ...")
+	// 3. Ensure prereq namespaces exist (cert-manager + f5-operators).
+	// `default` is created by kubespray; the others aren't.
+	fmt.Fprintln(out, "[3/7] Ensuring prereq namespaces exist ...")
+	for _, ns := range []string{"cert-manager", "f5-operators"} {
+		if err := r.Apply(ctx, deploy.RenderNamespace(ns)); err != nil {
+			return fmt.Errorf("create namespace %s: %w", ns, err)
+		}
+	}
+	fmt.Fprintln(out, "      ok")
+
+	// 4. Install cert-manager. Without this, the bnk-ca cert-issuer
+	// chain (next step) fails because the ClusterIssuer/Certificate CRDs
+	// don't exist. We pull the upstream manifest from GitHub at the
+	// pinned version (network: mgmt-route, lab data-plane has no
+	// internet — see AGENTS.md #23).
+	fmt.Fprintf(out, "[4/7] Installing cert-manager %s ...\n", version.CertManagerVersion)
+	cmURL := fmt.Sprintf("https://github.com/cert-manager/cert-manager/releases/download/%s/cert-manager.yaml", version.CertManagerVersion)
+	if err := r.Kubectl(ctx, "apply", "-f", cmURL); err != nil {
+		return fmt.Errorf("install cert-manager: %w", err)
+	}
+	if err := r.Wait(ctx, "cert-manager", "Available", "deployment", 5*time.Minute,
+		"-l", "app.kubernetes.io/instance=cert-manager"); err != nil {
+		return fmt.Errorf("cert-manager deployments did not become Available: %w", err)
+	}
+	fmt.Fprintln(out, "      cert-manager Ready.")
+
+	// 5. Apply cert-issuer chain.
+	fmt.Fprintln(out, "[5/7] Applying bnk-ca cert-issuer chain ...")
 	if err := r.Apply(ctx, deploy.CertIssuerChain()); err != nil {
 		return err
 	}
@@ -122,8 +153,26 @@ func runDeployFLO(ctx context.Context, out io.Writer, f *deployFLOFlags) error {
 	}
 	fmt.Fprintln(out, "      bnk-ca-cluster-issuer ready.")
 
-	// 4. Render values + helm install.
-	fmt.Fprintln(out, "[4/5] Rendering FLO values + helm install ...")
+	// 6. Create far-secret in f5-operators (FLO chart imagePullSecret)
+	// AND in default (TMM lives there per the namespace-fix in 0270d78).
+	// The chart references far-secret as imagePullSecret on every
+	// deployment it creates; without this, FLO + downstream pods
+	// ImagePullBackOff with `403 Forbidden — anonymous token` against
+	// repo.f5.com.
+	fmt.Fprintln(out, "[6/7] Creating far-secret (image-pull) in f5-operators + default ...")
+	dockerCfg, err := deploy.ExtractFARDockerConfig(farPath)
+	if err != nil {
+		return fmt.Errorf("extract FAR dockerconfigjson: %w", err)
+	}
+	for _, ns := range []string{"f5-operators", "default"} {
+		if err := r.Apply(ctx, deploy.RenderFARSecret(ns, dockerCfg)); err != nil {
+			return fmt.Errorf("create far-secret in %s: %w", ns, err)
+		}
+	}
+	fmt.Fprintln(out, "      far-secret in place.")
+
+	// 7. Render values + helm install.
+	fmt.Fprintln(out, "[7/7] Rendering FLO values + helm install ...")
 	values, err := deploy.RenderFLOValues(info.Type, jwt)
 	if err != nil {
 		return err
@@ -162,12 +211,12 @@ func runDeployFLO(ctx context.Context, out io.Writer, f *deployFLOFlags) error {
 		return err
 	}
 
-	// 5. Wait for FLO controller. The chart names the deployment with
+	// 8. Wait for FLO controller. The chart names the deployment with
 	// the release prefix, so it's "flo-f5-lifecycle-operator" not
 	// "f5-lifecycle-operator". Use the label selector instead — the
 	// chart sets app.kubernetes.io/name = f5-lifecycle-operator, so we
 	// can wait by selector regardless of release name.
-	fmt.Fprintln(out, "[5/5] Waiting for FLO controller to become Available ...")
+	fmt.Fprintln(out, "      Waiting for FLO controller to become Available ...")
 	if err := r.Wait(ctx, "f5-operators", "Available",
 		"deployment", 5*time.Minute,
 		"-l", "app.kubernetes.io/name=f5-lifecycle-operator"); err != nil {
