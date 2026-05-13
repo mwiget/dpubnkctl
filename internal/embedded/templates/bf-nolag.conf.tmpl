@@ -156,21 +156,6 @@ ip addr replace {{$vlan.IP}} dev {{$vlan.Name}}
 ip route replace default via {{$vlan.DefaultGateway}} dev {{$vlan.Name}}
 {{- end}}
 {{end}}
-
-# Trunk the host PCIe representors so the host's tagged VLAN sub-
-# interfaces can pass through to/from OVS. Without this OVS treats
-# pf0hpf / pf1hpf as access-mode-untagged and drops tagged frames
-# from the host PCIe path. See AGENTS.md OVS-pf0hpf note for the
-# symptom (host VLAN sub-ifs LOWERLAYERDOWN, ARP not resolving on
-# the data plane, kubespray join failing with "no route to host").
-# In non-LAG each pfXhpf only trunks the VLANs uplinked through its
-# bridge (sf-external↔p0↔pf0hpf, sf-internal↔p1↔pf1hpf).
-{{- if .PF0TrunkTags}}
-ovs-vsctl set port pf0hpf trunks={{.PF0TrunkTags}}
-{{- end}}
-{{- if .PF1TrunkTags}}
-ovs-vsctl set port pf1hpf trunks={{.PF1TrunkTags}}
-{{- end}}
 EOS
 
 chmod 755 /mnt/usr/local/sbin/ovs-vlan-init.sh
