@@ -102,7 +102,14 @@ No fancy tooling — stdlib + cobra + yaml.v3 + golang.org/x/crypto/ssh + sftp.
 
 19. **`deploy cne` step 3 renders + applies the F5SPKVlans** aggregated from every DPU's VLAN block — see `deploy.RenderF5SPKVlans` and `deploy_cne.go:122`. The TMM-side interface name and self-IP land in the rendered `F5SPKVlan` CR. If TMM's `bfd_watcher` still logs `ERROR: vlan name not found` and readiness gates `RoutingDone`/`ConfigurationDone` stay False, verify the CRD installed matches the templates' assumption — see #20 (CRD-name drift).
 
-20. **CNEInstance CRD names don't match dpubnkctl's templates.** Live cluster has `f5-spk-vlans.k8s.f5net.com` (kind `F5SPKVlan`), `f5-bnkgateways.k8s.f5net.com` (kind `F5BnkGateway`), and standard `gateway.networking.k8s.io/v1` GatewayClass — not the `BNKGatewayClassConfig` our `bnk-gatewayclass.yaml.tmpl` assumes. Verify against the installed CRD before applying (`kubectl get crd | grep f5`).
+20. **CRD-name drift between templates and live cluster — audited and fixed.** Earlier the `bnk-gatewayclass.yaml.tmpl` rendered a `BNKGatewayClassConfig` (`gateway.f5.com/v1`) that doesn't exist in BNK 2.2.0. The live CRDs the binary targets are:
+   - `F5SPKVlan` (`k8s.f5net.com/v1`) — matches `f5spkvlan.yaml.tmpl`
+   - `CNEInstance` (`k8s.f5.com/v1`) — matches `cne-instance.yaml.tmpl`
+   - `GatewayClass` (upstream `gateway.networking.k8s.io/v1`) with `controllerName: f5.com/default-f5-cne-controller` — `bnk-gatewayclass.yaml.tmpl` now renders just this (the BNKGatewayClassConfig block was removed)
+
+    `F5BnkGateway` (`k8s.f5net.com/v1`) does exist on the live cluster but is a per-Gateway resource (referenced from a `Gateway`'s `infrastructure.parametersRef`), not part of the GatewayClass. dpubnkctl doesn't create one — operators add it themselves when wiring application Gateways.
+
+    If TMM's bfd_watcher still logs `vlan name not found` after `deploy cne`, check the F5SPKVlans rendered to `artifacts/f5spkvlans-rendered.yaml` against `kubectl get f5spkvlan -A` for name + tag mismatch.
 
 ### Destroy / cleanup
 

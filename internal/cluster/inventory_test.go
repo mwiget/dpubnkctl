@@ -167,7 +167,7 @@ func TestRender_DataPlaneNodeIP(t *testing.T) {
 	}
 }
 
-func TestLocalizeKubeconfig(t *testing.T) {
+func TestLocalizeKubeconfig_Insecure(t *testing.T) {
 	// kubespray's apiserver_loadbalancer_domain_name path: server points
 	// at the data-plane IP that the operator can't route to.
 	raw := `apiVersion: v1
@@ -177,7 +177,7 @@ clusters:
     server: https://10.10.41.66:6443
   name: cluster.local
 `
-	got := LocalizeKubeconfig(raw, "192.168.68.66")
+	got := LocalizeKubeconfig(raw, "192.168.68.66", true)
 	for _, want := range []string{
 		"server: https://192.168.68.66:6443",
 		"insecure-skip-tls-verify: true",
@@ -198,9 +198,32 @@ clusters:
 - cluster:
     server: https://127.0.0.1:6443
 `
-	got2 := LocalizeKubeconfig(raw2, "192.168.68.66")
+	got2 := LocalizeKubeconfig(raw2, "192.168.68.66", true)
 	if !strings.Contains(got2, "server: https://192.168.68.66:6443") {
 		t.Errorf("127.0.0.1 path not rewritten:\n%s", got2)
+	}
+}
+
+func TestLocalizeKubeconfig_Secure(t *testing.T) {
+	// With insecure=false: rewrite server URL but keep CA data so kubectl
+	// validates the apiserver cert. Used when the kubespray inventory
+	// added mgmt addresses to supplementary_addresses_in_ssl_keys.
+	raw := `apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority-data: LS0tLS1CRUdJTi==
+    server: https://10.10.41.66:6443
+  name: cluster.local
+`
+	got := LocalizeKubeconfig(raw, "192.168.68.66", false)
+	if !strings.Contains(got, "server: https://192.168.68.66:6443") {
+		t.Errorf("server URL not rewritten:\n%s", got)
+	}
+	if !strings.Contains(got, "certificate-authority-data: LS0tLS1CRUdJTi==") {
+		t.Errorf("CA data should be preserved in secure mode:\n%s", got)
+	}
+	if strings.Contains(got, "insecure-skip-tls-verify") {
+		t.Errorf("insecure-skip-tls-verify must NOT be set in secure mode:\n%s", got)
 	}
 }
 

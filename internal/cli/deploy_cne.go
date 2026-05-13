@@ -16,11 +16,10 @@ import (
 )
 
 type deployCNEFlags struct {
-	pocDir         string
-	yolo           bool
-	confirmDeploy  string
-	tmmReplicas    int
-	skipPull       bool
+	pocDir          string
+	yolo            bool
+	confirmDeploy   string
+	skipPull        bool
 	cneReadyTimeout time.Duration
 }
 
@@ -37,7 +36,9 @@ func newDeployCNECmd() *cobra.Command {
      selfip_v4s across every DPU's IP for that VLAN tag. TMM-side
      interfaces auto-numbered 1.1, 1.2, ... in the order they appear
      in the first DPU's poc.yaml.
-  3. Render + apply BNKGatewayClassConfig + GatewayClass.
+  3. Render + apply the GatewayClass (upstream Gateway-API v1) with the
+     F5 CNE controllerName so FLO picks up Gateway objects that
+     reference it.
   4. Wait for the CNEInstance to report Ready (TMM pods up).
 
 Required gates:
@@ -50,7 +51,6 @@ Required gates:
 	cmd.Flags().StringVar(&f.pocDir, "poc", "", "PoC repo path (default: current directory)")
 	cmd.Flags().BoolVar(&f.yolo, "yolo", false, "Acknowledge cluster writes")
 	cmd.Flags().StringVar(&f.confirmDeploy, "confirm-deploy", "", "Must equal poc.yaml.metadata.name (typo guard)")
-	cmd.Flags().IntVar(&f.tmmReplicas, "tmm-replicas", 0, "Default TMM replicas in BNKGatewayClassConfig (0 = auto: one per DPU)")
 	cmd.Flags().BoolVar(&f.skipPull, "skip-pull", false, "Skip docker pull of alpine/k8s image")
 	cmd.Flags().DurationVar(&f.cneReadyTimeout, "cne-ready-timeout", 15*time.Minute, "How long to wait for CNEInstance Ready")
 	return cmd
@@ -76,25 +76,13 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 		return fmt.Errorf("kubeconfig %s missing — run `dpubnkctl cluster up` + `cluster join-dpus` + `deploy flo` first", kubeconfig)
 	}
 
-	tmmReplicas := f.tmmReplicas
-	if tmmReplicas == 0 {
-		// One TMM per DPU keeps the math simple — operator can override.
-		for _, h := range p.Hosts {
-			tmmReplicas += len(h.DPUs)
-		}
-		if tmmReplicas == 0 {
-			tmmReplicas = 1
-		}
-	}
-
 	fmt.Fprintf(out, "PoC:        %s\n", p.Metadata.Name)
-	fmt.Fprintf(out, "Cluster:    %s\n", kubeconfig)
-	fmt.Fprintf(out, "TMM:        %d replicas\n\n", tmmReplicas)
+	fmt.Fprintf(out, "Cluster:    %s\n\n", kubeconfig)
 
 	r := &deploy.Runner{KubeconfigPath: kubeconfig, Out: prefixWriter{w: out, prefix: "      | "}}
 
 	if !f.skipPull {
-		fmt.Fprintln(out, "[1/4] Tools preflight ...")
+		fmt.Fprintln(out, "[1/5] Tools preflight ...")
 		if err := r.CheckTools(ctx); err != nil {
 			return err
 		}
@@ -104,7 +92,7 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 	// 2. Apply CNEInstance — FLO watches it and reconciles the downstream
 	//    BNK CRs (TMM, dssm, observer, ...). Lands in `default` per the
 	//    cne-instance.yaml.tmpl namespace (commit 0270d78).
-	fmt.Fprintln(out, "[2/4] Rendering + applying CNEInstance ...")
+	fmt.Fprintln(out, "[2/5] Rendering + applying CNEInstance ...")
 	cne, err := deploy.RenderCNEInstance(p)
 	if err != nil {
 		return err
@@ -119,7 +107,7 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 	//    by Role+Tag so a single VLAN spanning both DPUs gets one
 	//    F5SPKVlan with both selfip_v4s. Skip if the PoC has no DPU
 	//    VLANs declared (single-host or NIC-mode topologies).
-	fmt.Fprintln(out, "[3/4] Rendering + applying F5SPKVlan(s) ...")
+	fmt.Fprintln(out, "[3/5] Rendering + applying F5SPKVlan(s) ...")
 	if vlanCount := dpuVLANCount(p); vlanCount > 0 {
 		vlans, err := deploy.RenderF5SPKVlans(p)
 		if err != nil {
@@ -133,9 +121,25 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 		fmt.Fprintln(out, "      (no DPU VLANs in poc.yaml — skipped)")
 	}
 
-	// 4. Wait for CNEInstance Ready. The CNEInstance lives in `default`
+	// 4. Apply the upstream Gateway-API GatewayClass with the F5 CNE
+	//    controllerName. FLO's f5-cne-controller registers itself under
+	//    this name; once the GatewayClass exists, downstream Gateway
+	//    objects can reference it via gatewayClassName. The historical
+	//    BNKGatewayClassConfig CRD this used to also apply does not
+	//    exist in BNK 2.2.0 — see AGENTS.md #20.
+	fmt.Fprintln(out, "[4/5] Rendering + applying BNK GatewayClass ...")
+	gwc, err := deploy.RenderGatewayClass("")
+	if err != nil {
+		return err
+	}
+	if err := saveAndApply(ctx, r, repo, "artifacts/bnk-gatewayclass-rendered.yaml", gwc); err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "      applied.")
+
+	// 5. Wait for CNEInstance Ready. The CNEInstance lives in `default`
 	//    (cne-instance.yaml.tmpl namespace), not f5-operators.
-	fmt.Fprintln(out, "[4/4] Waiting for CNEInstance Ready ...")
+	fmt.Fprintln(out, "[5/5] Waiting for CNEInstance Ready ...")
 	fmt.Fprintln(out, "      Requires Multus CNI + NADs in default (sf-external, sf-internal — installed by `deploy network`).")
 	fmt.Fprintln(out, "      If TMM gates stay False, check license: kubectl -n f5-operators get secret activationstatus -o jsonpath='{.data.activationstatus}' | base64 -d")
 	if err := r.Wait(ctx, "default", "Ready",
@@ -144,11 +148,6 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 	} else {
 		fmt.Fprintln(out, "      CNEInstance Ready.")
 	}
-
-	// GatewayClass apply still deferred — the live cluster's CRD set
-	// has F5BnkGateway (k8s.f5net.com/v1) instead of the template's
-	// BNKGatewayClassConfig. Tracked in #68.
-	_ = tmmReplicas
 
 	p.Status.Deploy = "completed"
 	p.Status.LastPhaseAt = time.Now().UTC()

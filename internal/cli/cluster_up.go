@@ -199,7 +199,13 @@ func runClusterUp(ctx context.Context, out io.Writer, f *clusterUpFlags) error {
 		cpName := plan.ControlPlane[0]
 		cpHost := plan.HostByName[cpName]
 		kcPath := filepath.Join(repo, "artifacts", "kubeconfig")
-		if err := fetchKubeconfig(ctx, repo, cpHost, kcPath); err != nil {
+		// When cluster_apiserver_address is set in poc.yaml, the inventory
+		// adds every host's SSH address to supplementary_addresses_in_ssl_keys
+		// so the apiserver cert SAN covers mgmt. In that case we can keep
+		// CA verification on. Otherwise fall back to insecure mode — the
+		// cert SAN won't include the mgmt address and TLS will fail.
+		insecure := p.Network.ClusterAPIServerAddress == ""
+		if err := fetchKubeconfig(ctx, repo, cpHost, kcPath, insecure); err != nil {
 			fmt.Fprintf(out, "      WARN: kubeconfig fetch failed (cluster is up, fetch manually): %v\n", err)
 		} else {
 			fmt.Fprintf(out, "      saved %s (kubectl --kubeconfig=%s get nodes)\n", kcPath, kcPath)
@@ -262,7 +268,7 @@ func preCreateKubeDir(ctx context.Context, repo string, plan cluster.Plan) error
 	return nil
 }
 
-func fetchKubeconfig(ctx context.Context, repo string, host *poc.Host, dst string) error {
+func fetchKubeconfig(ctx context.Context, repo string, host *poc.Host, dst string, insecure bool) error {
 	cfg, err := sshConfigForHost(repo, host, 30*time.Second)
 	if err != nil {
 		return err
@@ -278,7 +284,7 @@ func fetchKubeconfig(ctx context.Context, repo string, host *poc.Host, dst strin
 	if !r.OK() {
 		return fmt.Errorf("read admin.conf: exit=%d stderr=%s", r.ExitCode, strings.TrimSpace(r.Stderr))
 	}
-	localized := cluster.LocalizeKubeconfig(r.Stdout, host.SSH.Address)
+	localized := cluster.LocalizeKubeconfig(r.Stdout, host.SSH.Address, insecure)
 	return cluster.SaveKubeconfig(dst, localized)
 }
 

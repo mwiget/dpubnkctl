@@ -89,20 +89,39 @@ func TestRenderF5SPKVlans_AggregatesByName(t *testing.T) {
 }
 
 func TestRenderGatewayClass(t *testing.T) {
-	out, err := RenderGatewayClass("bnk-gatewayclass", 2)
+	out, err := RenderGatewayClass("bnk-gatewayclass")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"kind: BNKGatewayClassConfig",
+		"apiVersion: gateway.networking.k8s.io/v1",
 		"kind: GatewayClass",
 		"name: bnk-gatewayclass",
-		"name: bnk-gatewayclass-config",
-		"controllerName: f5.com/gateway-controller",
-		"defaultTmmReplicas: 2",
+		"controllerName: f5.com/default-f5-cne-controller",
 	} {
 		if !strings.Contains(out, want) {
-			t.Errorf("GatewayClass missing %q", want)
+			t.Errorf("GatewayClass missing %q in:\n%s", want, out)
 		}
+	}
+	// Defensive: the historical BNKGatewayClassConfig CRD doesn't exist
+	// in BNK 2.2.0 — make sure no future template edit re-introduces it.
+	for _, banned := range []string{
+		"BNKGatewayClassConfig",
+		"gateway.f5.com",
+		"defaultTmmReplicas",
+	} {
+		if strings.Contains(out, banned) {
+			t.Errorf("GatewayClass should NOT contain %q (CRD doesn't exist on BNK 2.2.0):\n%s", banned, out)
+		}
+	}
+}
+
+func TestRenderGatewayClass_DefaultName(t *testing.T) {
+	out, err := RenderGatewayClass("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "name: bnk-gatewayclass") {
+		t.Errorf("empty name should default to bnk-gatewayclass, got:\n%s", out)
 	}
 }

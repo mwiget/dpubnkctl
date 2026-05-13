@@ -1,20 +1,7 @@
-apiVersion: gateway.f5.com/v1
-kind: BNKGatewayClassConfig
-metadata:
-  name: {{.GatewayClassName}}-config
-  namespace: f5-operators
-spec:
-  defaultTmmReplicas: {{.TMMReplicas}}
----
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass
 metadata:
   name: {{.GatewayClassName}}
 spec:
-  controllerName: f5.com/gateway-controller
-  description: "F5 BNK GatewayClass managed by FLO"
-  parametersRef:
-    group: gateway.f5.com
-    kind: BNKGatewayClassConfig
-    name: {{.GatewayClassName}}-config
-    namespace: f5-operators
+  controllerName: f5.com/default-f5-cne-controller
+  description: "F5 BIG-IP Kubernetes Gateway managed by FLO"

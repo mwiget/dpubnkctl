@@ -37,7 +37,6 @@ type VLANInputs struct {
 // GatewayClassInputs feeds bnk-gatewayclass.yaml.tmpl.
 type GatewayClassInputs struct {
 	GatewayClassName string
-	TMMReplicas      int
 }
 
 // RenderCNEInstance picks defaults sensible for the lake1-style PoC:
@@ -119,19 +118,20 @@ func RenderF5SPKVlans(p *poc.PoC) (string, error) {
 	return renderTemplate("templates/f5spkvlan.yaml.tmpl", in)
 }
 
-// RenderGatewayClass returns the BNKGatewayClassConfig + GatewayClass
-// manifest pair. tmmReplicas defaults to 1; for multi-DPU clusters
-// callers may want higher.
-func RenderGatewayClass(name string, tmmReplicas int) (string, error) {
+// RenderGatewayClass returns an upstream Gateway-API GatewayClass with
+// the F5 CNE controllerName so FLO's f5-cne-controller picks up Gateway
+// objects that reference this class. The historical BNKGatewayClassConfig
+// CRD this template used to render does not exist in BNK 2.2.0 — see
+// AGENTS.md #20.
+//
+// TMM replica counts are driven by CNEInstance.spec.deploymentSize +
+// per-DPU scaling, not by a GatewayClass parameter.
+func RenderGatewayClass(name string) (string, error) {
 	if name == "" {
 		name = "bnk-gatewayclass"
 	}
-	if tmmReplicas == 0 {
-		tmmReplicas = 1
-	}
 	return renderTemplate("templates/bnk-gatewayclass.yaml.tmpl", GatewayClassInputs{
 		GatewayClassName: name,
-		TMMReplicas:      tmmReplicas,
 	})
 }
 
