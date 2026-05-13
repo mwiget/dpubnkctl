@@ -220,7 +220,12 @@ func runDiscoverWizard(ctx context.Context, out io.Writer, in io.Reader, pocDir 
 			sshUser: sshUser, sshKey: sshKey, sshPort: 22, jumphost: jumphost,
 			role: choice,
 		}
-		updatePoCWithHost(p, found[i].hostname, found[i].ip, hostFlags, sshKey, found[i].result)
+		mergedInto := updatePoCWithHost(p, found[i].hostname, found[i].ip, hostFlags, sshKey, found[i].result)
+		if mergedInto {
+			fmt.Fprintf(out, "  [merged] %s — existing hosts[] entry preserved; only empty fields filled\n", found[i].hostname)
+		} else {
+			fmt.Fprintf(out, "  [new]    %s — appended to hosts[]\n", found[i].hostname)
+		}
 		_ = appendDiscoverJournal(repo, found[i].hostname, found[i].ip, found[i].result)
 	}
 

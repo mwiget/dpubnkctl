@@ -211,7 +211,68 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	return os.WriteFile(dst, in, mode)
 }
 
-func updatePoCWithHost(p *poc.PoC, name, addr string, f *discoverHostFlags, keyRef string, r *discover.Result) {
+// updatePoCWithHost merges discovery output into p.Hosts. Returns true
+// when the entry was merged into an existing host (matched by SSH
+// address), false when a new host was appended.
+//
+// Merge policy is defensively non-destructive: anything the SE has
+// already curated in poc.yaml — role, data_plane block + VLANs, per-DPU
+// mode/lag/hostname/tmfifo_ip/vlans, BMC creds, jumphost — is
+// preserved. Discovery fills only fields that are currently empty.
+// DPUs are merged by PCI: discovered PCIs not in the existing host
+// append as starter entries; PCIs already present are left untouched.
+//
+// This lets the operator re-run `dpubnkctl discover` (or the wizard)
+// against an already-populated PoC without losing any hand-curated
+// network plan. To force a clean rebuild, delete hosts[] from poc.yaml
+// first.
+func updatePoCWithHost(p *poc.PoC, name, addr string, f *discoverHostFlags, keyRef string, r *discover.Result) (merged bool) {
+	p.Status.Discover = "in_progress" // becomes "completed" once SE confirms
+
+	for i := range p.Hosts {
+		if p.Hosts[i].SSH.Address != addr {
+			continue
+		}
+		existing := &p.Hosts[i]
+		if existing.Name == "" {
+			existing.Name = name
+		}
+		if existing.Role == "" {
+			existing.Role = f.role
+		}
+		if existing.SSH.User == "" {
+			existing.SSH.User = f.sshUser
+		}
+		if existing.SSH.Port == 0 {
+			existing.SSH.Port = f.sshPort
+		}
+		if existing.SSH.KeyRef == "" {
+			existing.SSH.KeyRef = keyRef
+		}
+		if existing.SSH.Jumphost == "" {
+			existing.SSH.Jumphost = f.jumphost
+		}
+		if existing.BMC == nil && r.BMC != nil {
+			existing.BMC = &poc.BMC{Address: r.BMC.IP, Protocol: "redfish"}
+		}
+		// DPUs: merge by PCI. Existing entries are sacred (operator may
+		// have set mode, lag, hostname, tmfifo_ip, vlans). Add discovered
+		// PCIs that aren't in the existing list yet.
+		for _, d := range r.DPUs {
+			if hasExistingDPU(existing.DPUs, d.PCI) {
+				continue
+			}
+			existing.DPUs = append(existing.DPUs, poc.DPU{
+				Serial: pickSerial(d),
+				PCI:    d.PCI,
+				Mode:   pickMode(d),
+				LAG:    pickLAG(d),
+			})
+		}
+		return true
+	}
+
+	// No match — build a fresh host entry from discovery.
 	host := poc.Host{
 		Name: name,
 		Role: f.role,
@@ -227,36 +288,24 @@ func updatePoCWithHost(p *poc.PoC, name, addr string, f *discoverHostFlags, keyR
 		host.BMC = &poc.BMC{Address: r.BMC.IP, Protocol: "redfish"}
 	}
 	for _, d := range r.DPUs {
-		dpu := poc.DPU{
+		host.DPUs = append(host.DPUs, poc.DPU{
 			Serial: pickSerial(d),
 			PCI:    d.PCI,
 			Mode:   pickMode(d),
 			LAG:    pickLAG(d),
-		}
-		host.DPUs = append(host.DPUs, dpu)
-	}
-
-	// Replace if a host with the same SSH address already exists; else append.
-	for i := range p.Hosts {
-		if p.Hosts[i].SSH.Address == addr {
-			// Preserve role + manual BMC creds the SE may have set.
-			if host.Role == "" {
-				host.Role = p.Hosts[i].Role
-			}
-			if p.Hosts[i].BMC != nil && p.Hosts[i].BMC.User != "" {
-				if host.BMC == nil {
-					host.BMC = p.Hosts[i].BMC
-				} else {
-					host.BMC.User = p.Hosts[i].BMC.User
-					host.BMC.PasswordRef = p.Hosts[i].BMC.PasswordRef
-				}
-			}
-			p.Hosts[i] = host
-			return
-		}
+		})
 	}
 	p.Hosts = append(p.Hosts, host)
-	p.Status.Discover = "in_progress" // becomes "completed" once SE confirms
+	return false
+}
+
+func hasExistingDPU(dpus []poc.DPU, pci string) bool {
+	for _, d := range dpus {
+		if d.PCI == pci {
+			return true
+		}
+	}
+	return false
 }
 
 // pickSerial pulls the DPU serial from rshim misc, falling back to "".
