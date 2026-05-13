@@ -351,7 +351,7 @@ func runE2E(ctx context.Context, out io.Writer, f *e2eFlags) error {
 	if f.dryRun {
 		return nil
 	}
-	if err := writeRunReports(reportDir, report); err != nil {
+	if err := writeRunReports(reportDir, report, p); err != nil {
 		fmt.Fprintf(out, "WARN: could not write reports: %v\n", err)
 	}
 
@@ -465,7 +465,7 @@ type phaseReport struct {
 	Summary   string    `json:"summary"`
 }
 
-func writeRunReports(dir string, r runReport) error {
+func writeRunReports(dir string, r runReport, p *poc.PoC) error {
 	jsonBytes, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return err
@@ -473,18 +473,18 @@ func writeRunReports(dir string, r runReport) error {
 	if err := os.WriteFile(filepath.Join(dir, "run.json"), jsonBytes, 0o644); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "run.md"), []byte(renderRunMarkdown(r)), 0o644)
+	return os.WriteFile(filepath.Join(dir, "run.md"), []byte(renderRunMarkdown(r, p)), 0o644)
 }
 
-func renderRunMarkdown(r runReport) string {
+func renderRunMarkdown(r runReport, p *poc.PoC) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# e2e report — %s\n\n", r.PoCName)
 	fmt.Fprintf(&b, "- **Started:** %s\n", r.StartedAt.Format(time.RFC3339))
 	fmt.Fprintf(&b, "- **Finished:** %s\n", r.FinishedAt.Format(time.RFC3339))
 	fmt.Fprintf(&b, "- **Wall:** %s\n\n", r.FinishedAt.Sub(r.StartedAt).Truncate(time.Second))
 	ok, failed, skipped := 0, 0, 0
-	for _, p := range r.Phases {
-		switch p.Status {
+	for _, ph := range r.Phases {
+		switch ph.Status {
 		case "ok":
 			ok++
 		case "failed":
@@ -495,28 +495,42 @@ func renderRunMarkdown(r runReport) string {
 	}
 	fmt.Fprintf(&b, "**Result:** %d ok, %d failed, %d skipped\n\n", ok, failed, skipped)
 
+	// Embed the topology diagrams so any markdown reader (or grep) sees
+	// the cluster shape inline with the results. Wrap in a fenced code
+	// block to preserve the ASCII alignment in renderers that reflow
+	// plain text.
+	if p != nil {
+		b.WriteString("## Topology\n\n")
+		b.WriteString("```\n")
+		b.WriteString(RenderClusterASCII(p))
+		b.WriteString("\n")
+		b.WriteString(RenderVLANsASCII(p))
+		b.WriteString("```\n\n")
+	}
+
+	b.WriteString("## Phases\n\n")
 	b.WriteString("| # | Phase | Status | Duration | Log |\n")
 	b.WriteString("|---|---|---|---|---|\n")
-	for _, p := range r.Phases {
-		dur := p.Duration
+	for _, ph := range r.Phases {
+		dur := ph.Duration
 		if dur == "" {
 			dur = "—"
 		}
 		logCell := "—"
-		if p.LogPath != "" {
-			logCell = "`" + p.LogPath + "`"
+		if ph.LogPath != "" {
+			logCell = "`" + ph.LogPath + "`"
 		}
-		fmt.Fprintf(&b, "| %d | %s | %s | %s | %s |\n", p.Index, p.Phase, statusBadge(p.Status), dur, logCell)
+		fmt.Fprintf(&b, "| %d | %s | %s | %s | %s |\n", ph.Index, ph.Phase, statusBadge(ph.Status), dur, logCell)
 	}
 
 	b.WriteString("\n## Per-phase summary\n\n")
-	for _, p := range r.Phases {
-		fmt.Fprintf(&b, "### %d. %s — %s\n\n", p.Index, p.Phase, p.Status)
-		if p.Command != "" {
-			fmt.Fprintf(&b, "    %s\n\n", p.Command)
+	for _, ph := range r.Phases {
+		fmt.Fprintf(&b, "### %d. %s — %s\n\n", ph.Index, ph.Phase, ph.Status)
+		if ph.Command != "" {
+			fmt.Fprintf(&b, "    %s\n\n", ph.Command)
 		}
-		if p.Summary != "" {
-			fmt.Fprintf(&b, "%s\n\n", p.Summary)
+		if ph.Summary != "" {
+			fmt.Fprintf(&b, "%s\n\n", ph.Summary)
 		}
 	}
 	return b.String()
