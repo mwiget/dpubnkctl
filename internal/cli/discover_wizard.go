@@ -212,7 +212,30 @@ func runDiscoverWizard(ctx context.Context, out io.Writer, in io.Reader, pocDir 
 		}
 	}
 	fmt.Fprintf(out, "\nDONE.  %d host(s) merged into poc.yaml.\n", merged)
-	fmt.Fprintln(out, "Next: edit poc.yaml to set per-DPU VLANs + IPs, then `dpubnkctl provision dpus`.")
+
+	// Wizard handles the SSH/role discovery slice; everything else
+	// (LAG vs non-LAG, VLAN tags + subnets, MTU, cluster apiserver address,
+	// self-IPs) lives in the network-design-checklist.md the binary
+	// dropped into the PoC repo. Run validate to print the punch list
+	// — operator sees exactly what's still missing before provisioning.
+	fmt.Fprintln(out, "\nNext steps:")
+	checklist := filepath.Join(repo, "network-design-checklist.md")
+	if _, err := os.Stat(checklist); err == nil {
+		fmt.Fprintf(out, "  1. Walk %s with the customer (LAG, VLANs, IPs, MTU, self-IPs).\n", checklist)
+		fmt.Fprintln(out, "     Record each answer in poc.yaml and the rationale in decisions.md.")
+	} else {
+		fmt.Fprintln(out, "  1. Edit poc.yaml: set per-DPU VLANs + IPs, MTU, cluster apiserver address.")
+	}
+	fmt.Fprintln(out, "  2. Drop FAR tarball + JWT + DPU password hash into keys/.")
+	fmt.Fprintln(out, "  3. Run `dpubnkctl validate` to confirm poc.yaml is consistent.")
+	fmt.Fprintln(out, "  4. `dpubnkctl provision dpus <hostname> --yolo --confirm-flash <hostname>`.")
+
+	fmt.Fprintln(out, "\n--- dpubnkctl validate ---")
+	vr := poc.Validate(p, repo)
+	printValidation(out, vr)
+	if !vr.Valid() {
+		fmt.Fprintf(out, "\n%d issue(s) still need attention before provisioning. Discovery itself completed successfully.\n", len(vr.Errors))
+	}
 	return nil
 }
 
