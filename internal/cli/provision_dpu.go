@@ -36,8 +36,9 @@ type provisionDPUFlags struct {
 func newProvisionDPUCmd() *cobra.Command {
 	f := &provisionDPUFlags{}
 	cmd := &cobra.Command{
-		Use:   "dpu <hostname> [<hostname>...]",
-		Short: "Flash one or more DPUs end-to-end (DESTRUCTIVE — wipes the DPU OS)",
+		Use:     "dpu <hostname> [<hostname>...]",
+		Aliases: []string{"dpus"}, // README + persona docs historically say `dpus`; both work
+		Short:   "Flash one or more DPUs end-to-end (DESTRUCTIVE — wipes the DPU OS)",
 		Long: `For each <hostname>:
   1. Render bf.conf (Phase 2a)
   2. SSH-connect to the host
@@ -131,12 +132,23 @@ func runProvisionDPUMulti(ctx context.Context, out io.Writer, hostnames []string
 	}
 
 	// Pre-render every bf.conf before touching anything destructive.
+	// Also persist each render to artifacts/<host>-bf.conf so it's
+	// inspectable after the fact (debugging stuck DPUs without having
+	// to re-run `provision plan`).
+	artifactsDir := filepath.Join(repo, "artifacts")
+	if err := os.MkdirAll(artifactsDir, 0o755); err != nil {
+		return fmt.Errorf("create artifacts dir: %w", err)
+	}
 	for i := range jobs {
 		rendered, err := provision.Render(p, jobs[i].host, jobs[i].dpu, repo)
 		if err != nil {
 			return fmt.Errorf("%s: bf.conf render: %w", jobs[i].hostname, err)
 		}
 		jobs[i].rendered = rendered
+		cfgPath := filepath.Join(artifactsDir, jobs[i].hostname+"-bf.conf")
+		if err := os.WriteFile(cfgPath, []byte(rendered), 0o644); err != nil {
+			return fmt.Errorf("%s: save bf.conf to %s: %w", jobs[i].hostname, cfgPath, err)
+		}
 	}
 
 	fmt.Fprintf(out, "PoC:    %s   (BNK %s, DOCA %s)\n", p.Metadata.Name, p.Metadata.BNKVersion, p.Versions.DOCA)

@@ -42,7 +42,7 @@ var canonicalPhases = []e2ePhase{
 	},
 	{
 		name:        "provision",
-		subcmd:      []string{"provision", "dpus"},
+		subcmd:      []string{"provision", "dpu"},
 		destructive: true,
 		confirmFlag: "--confirm-flash",
 		confirmVal:  hostListWithDPUs,
@@ -141,7 +141,7 @@ reports/<timestamp>/run.md.
 Canonical phase order (override with --phase <comma-list> to run a subset):
 
   validate           dpubnkctl validate
-  provision          dpubnkctl provision dpus <hosts> --yolo --confirm-flash <hosts>
+  provision          dpubnkctl provision dpu <hosts> --yolo --confirm-flash <hosts>
   host-network       dpubnkctl host network setup --yolo --confirm-cluster <name>
   cluster-up         dpubnkctl cluster up --yolo --confirm-cluster <name>
   cluster-join-dpus  dpubnkctl cluster join-dpus --yolo --confirm-cluster <name>
