@@ -161,9 +161,19 @@ Without an argument, lists all supported CLIs.`,
 
 // resolvePoCDir returns the PoC directory to use, defaulting to cwd.
 // It does not validate that poc.yaml exists; the caller does that via Load.
+// If the operator passed `--poc /path/to/poc.yaml` (the file rather than
+// its containing dir), strip the trailing filename so Load doesn't end up
+// looking for poc.yaml/poc.yaml.
 func resolvePoCDir(flag string) (string, error) {
 	if flag != "" {
-		return filepath.Abs(flag)
+		abs, err := filepath.Abs(flag)
+		if err != nil {
+			return "", err
+		}
+		if info, err := os.Stat(abs); err == nil && !info.IsDir() && filepath.Base(abs) == poc.FileName {
+			abs = filepath.Dir(abs)
+		}
+		return abs, nil
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
