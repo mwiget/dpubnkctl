@@ -231,6 +231,21 @@ func (r *Runner) kubectlArgs(kubectlArgs ...string) []string {
 	return append(base, kubectlArgs...)
 }
 
+// Helm runs a generic helm subcommand (uninstall, list, status, ...).
+// The kubeconfig is mounted read-only and KUBECONFIG points at it.
+// Output is streamed through r.Out and captured for the error message.
+func (r *Runner) Helm(ctx context.Context, args ...string) error {
+	full := r.helmArgs(args...)
+	cmd := exec.CommandContext(ctx, "docker", full...)
+	var out bytes.Buffer
+	cmd.Stdout = io.MultiWriter(r.Out, &out)
+	cmd.Stderr = cmd.Stdout
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("helm %s: %w\n%s", strings.Join(args, " "), err, out.String())
+	}
+	return nil
+}
+
 func (r *Runner) helmArgs(helmArgs ...string) []string {
 	base := []string{
 		"run", "--rm",

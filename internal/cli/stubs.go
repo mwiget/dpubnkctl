@@ -15,14 +15,6 @@ import (
 //   journal   -> Phase 5
 
 
-func newDestroyCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "destroy",
-		Short: "Tear down everything described in poc.yaml (Phase 4)",
-		RunE:  notYet("destroy", "Phase 4"),
-	}
-}
-
 func newJournalCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "journal",
