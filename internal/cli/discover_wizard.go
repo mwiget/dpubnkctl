@@ -229,7 +229,7 @@ func runDiscoverWizard(ctx context.Context, out io.Writer, in io.Reader, pocDir 
 		_ = appendDiscoverJournal(repo, found[i].hostname, found[i].ip, found[i].result)
 	}
 
-	if err := p.Save(repo); err != nil {
+	if err := savePoC(repo, p, out); err != nil {
 		return err
 	}
 	merged := 0

@@ -174,7 +174,7 @@ func runDiscoverRange(ctx context.Context, out io.Writer, rangeArg string, f *di
 			return err
 		}
 	}
-	if err := p.Save(repo); err != nil {
+	if err := savePoC(repo, p, out); err != nil {
 		return err
 	}
 

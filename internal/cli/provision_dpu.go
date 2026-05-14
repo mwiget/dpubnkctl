@@ -213,7 +213,7 @@ func runProvisionDPUMulti(ctx context.Context, out io.Writer, hostnames []string
 		p.Status.Provision = "in_progress"
 	}
 	p.Status.LastPhaseAt = time.Now().UTC()
-	if err := p.Save(repo); err != nil {
+	if err := savePoC(repo, p, out); err != nil {
 		return err
 	}
 

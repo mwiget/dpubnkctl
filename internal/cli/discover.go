@@ -174,7 +174,7 @@ func runDiscoverHost(ctx context.Context, out io.Writer, addr string, f *discove
 
 	// Merge into poc.yaml.
 	updatePoCWithHost(p, hostname, addr, f, keyRef, result)
-	if err := p.Save(repo); err != nil {
+	if err := savePoC(repo, p, out); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "Updated poc.yaml: host %q (%s)\n", hostname, result.Classification())

@@ -101,7 +101,7 @@ Initializes a git repo unless --no-git.`,
 			// Write poc.yaml with binary defaults.
 			p := poc.New(name)
 			p.Metadata.Customer = customer
-			if err := p.Save(abs); err != nil {
+			if err := savePoC(abs, p, cmd.OutOrStdout()); err != nil {
 				return err
 			}
 

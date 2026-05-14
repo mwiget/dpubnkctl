@@ -136,7 +136,7 @@ func runClusterReset(ctx context.Context, out io.Writer, f *clusterResetFlags) e
 	fmt.Fprintf(out, "      reset completed — log at %s\n", logPath)
 
 	p.Status.Cluster = "pending"
-	if err := p.Save(repo); err != nil {
+	if err := savePoC(repo, p, out); err != nil {
 		return err
 	}
 	fmt.Fprintln(out, "\nDONE.  Re-run `dpubnkctl cluster up ...` to bring up a fresh cluster.")

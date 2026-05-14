@@ -124,7 +124,7 @@ func runDestroyAll(ctx context.Context, out io.Writer, f *destroyAllFlags) error
 	p.Status.Deploy = "pending"
 	p.Status.Cluster = "pending"
 	p.Status.LastPhaseAt = time.Now().UTC()
-	if err := p.Save(repo); err != nil {
+	if err := savePoC(repo, p, out); err != nil {
 		return err
 	}
 	appendDestroyJournal(repo, p.Metadata.Name, "ALL", "")

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -46,9 +48,63 @@ func runDiagram(out io.Writer, pocDir string) error {
 	if err != nil {
 		return fmt.Errorf("not a PoC repo (%s): %w", repo, err)
 	}
-	fmt.Fprint(out, RenderClusterASCII(p))
-	fmt.Fprintln(out)
-	fmt.Fprint(out, RenderVLANsASCII(p))
+	io.WriteString(out, RenderFullDiagram(p))
+	// Also refresh the on-disk diagram.txt at the PoC root so the file
+	// stays current whenever the operator runs `dpubnkctl diagram` for
+	// any reason. Best-effort: a failure to write doesn't undo the
+	// stdout output the operator just saw.
+	if err := writeDiagramFile(repo, p); err != nil {
+		fmt.Fprintf(out, "\nWARN: refresh %s failed: %v\n", diagramFileName, err)
+	}
+	return nil
+}
+
+// RenderFullDiagram concatenates the three diagram sections that
+// `diagram.txt` ships with: the K8s cluster ASCII boxes, the
+// mgmt-plane table (out-of-band IPs operators use to SSH), and the
+// data-plane VLAN tables. Single string so callers can write it to
+// stdout or to a file uniformly.
+func RenderFullDiagram(p *poc.PoC) string {
+	var b strings.Builder
+	b.WriteString(RenderClusterASCII(p))
+	b.WriteString("\n")
+	b.WriteString(RenderMgmtPlaneASCII(p))
+	b.WriteString("\n")
+	b.WriteString(RenderVLANsASCII(p))
+	return b.String()
+}
+
+// diagramFileName is the basename of the auto-generated diagram inside
+// every PoC repo. Lives at the repo root (alongside poc.yaml), not in
+// artifacts/, since it's the human-facing summary — operators check it
+// to confirm what's in poc.yaml without parsing yaml by hand.
+const diagramFileName = "diagram.txt"
+
+// writeDiagramFile renders RenderFullDiagram(p) into <repo>/diagram.txt.
+// Best-effort: callers usually invoke this right after p.Save(repo);
+// a failure here shouldn't undo the save, so they should `_ =` the
+// return value.
+func writeDiagramFile(repo string, p *poc.PoC) error {
+	path := filepath.Join(repo, diagramFileName)
+	return os.WriteFile(path, []byte(RenderFullDiagram(p)), 0o644)
+}
+
+// savePoC persists poc.yaml AND regenerates diagram.txt so the human
+// readable view stays in lockstep with the source of truth. All cli
+// subcommands route through this instead of calling p.Save() directly
+// so a future phase that mutates poc.yaml automatically refreshes the
+// diagram (no new wiring required).
+//
+// The diagram write is best-effort — if it fails (disk full, permission)
+// we log a warning but return success, since the canonical state is
+// poc.yaml. errOut is optional; nil to swallow the warning.
+func savePoC(repo string, p *poc.PoC, errOut io.Writer) error {
+	if err := p.Save(repo); err != nil {
+		return err
+	}
+	if err := writeDiagramFile(repo, p); err != nil && errOut != nil {
+		fmt.Fprintf(errOut, "WARN: refresh %s failed: %v\n", diagramFileName, err)
+	}
 	return nil
 }
 
@@ -233,6 +289,64 @@ func joinColumns(cols [][]string, sep string) []string {
 // our renderer never emits non-ASCII; if that changes, swap to
 // utf8.RuneCountInString.
 func lineWidth(s string) int { return len(s) }
+
+// RenderMgmtPlaneASCII emits the out-of-band management plane table:
+// each host's SSH address (which is also its mgmt IP) and each DPU's
+// oob_net0 IP captured at cluster-join time. This is the "how do I get
+// a shell on it" view, separate from the data-plane VLAN tables which
+// are about east-west traffic IPs.
+//
+// DPUs with no oob_ip yet (not joined, or pre-discovery) show "—"
+// rather than being silently omitted, so the table doubles as a
+// progress indicator across phases.
+func RenderMgmtPlaneASCII(p *poc.PoC) string {
+	var b strings.Builder
+	title := "Mgmt-plane (out-of-band SSH addresses)"
+	fmt.Fprintln(&b, title)
+	fmt.Fprintln(&b, strings.Repeat("=", len(title)))
+	fmt.Fprintln(&b)
+
+	if len(p.Hosts) == 0 {
+		fmt.Fprintln(&b, "  (no hosts in poc.yaml)")
+		return b.String()
+	}
+
+	type row struct{ name, role, addr string }
+	var rows []row
+	nameW, roleW, addrW := len("Node"), len("Role"), len("Address")
+	for _, h := range p.Hosts {
+		rows = append(rows, row{name: h.Name, role: h.Role, addr: h.SSH.Address})
+		for _, d := range h.DPUs {
+			dname := d.Hostname
+			if dname == "" {
+				dname = h.Name + "-bf3"
+			}
+			addr := strings.TrimSpace(d.OOBIP)
+			if addr == "" {
+				addr = "—"
+			}
+			rows = append(rows, row{name: dname, role: "dpu", addr: addr})
+		}
+	}
+	for _, r := range rows {
+		if n := len(r.name); n > nameW {
+			nameW = n
+		}
+		if n := len(r.role); n > roleW {
+			roleW = n
+		}
+		if n := len(r.addr); n > addrW {
+			addrW = n
+		}
+	}
+	fmt.Fprintf(&b, "  %-*s    %-*s    %-*s\n", nameW, "Node", roleW, "Role", addrW, "Address")
+	fmt.Fprintf(&b, "  %s    %s    %s\n",
+		strings.Repeat("-", nameW), strings.Repeat("-", roleW), strings.Repeat("-", addrW))
+	for _, r := range rows {
+		fmt.Fprintf(&b, "  %-*s    %-*s    %-*s\n", nameW, r.name, roleW, r.role, addrW, r.addr)
+	}
+	return b.String()
+}
 
 // RenderVLANsASCII emits aligned tables for every VLAN, listing every
 // host / DPU / TMM self-IP that lives in it with the host part of its

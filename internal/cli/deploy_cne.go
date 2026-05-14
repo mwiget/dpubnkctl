@@ -219,7 +219,7 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 
 	p.Status.Deploy = "completed"
 	p.Status.LastPhaseAt = time.Now().UTC()
-	if err := p.Save(repo); err != nil {
+	if err := savePoC(repo, p, out); err != nil {
 		return err
 	}
 	appendDeployJournal(repo, p.Metadata.Name, "", "BNK DEPLOYED", "")
