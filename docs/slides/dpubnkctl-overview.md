@@ -6,19 +6,30 @@ size: 16:9
 header: 'dpubnkctl · BNK 2.2.0'
 footer: 'github.com/mwiget/dpubnkctl'
 style: |
-  section { font-size: 24px; padding: 50px 60px; }
+  section { font-size: 24px; padding: 40px 56px; line-height: 1.4; }
   h1 { color: #0a3a5c; font-size: 50px; }
-  h2 { color: #0a3a5c; font-size: 34px; border-bottom: 2px solid #d1d5db; padding-bottom: 6px; }
+  h2 { color: #0a3a5c; font-size: 32px; border-bottom: 2px solid #d1d5db; padding-bottom: 6px; margin-bottom: 12px; }
   h3 { color: #1f2937; font-size: 22px; }
+  p { margin: 6px 0; }
   code { font-size: 18px; background: #f1f5f9; padding: 1px 4px; border-radius: 3px; }
-  pre { background: #0b1220; color: #e2e8f0; font-size: 16px; padding: 14px 18px; border-radius: 6px; line-height: 1.35; }
+  pre { background: #0b1220; color: #e2e8f0; font-size: 16px; padding: 12px 16px; border-radius: 6px; line-height: 1.3; margin: 6px 0; }
   pre code { background: transparent; color: inherit; font-size: inherit; padding: 0; }
   table { font-size: 17px; }
   th { background: #e2e8f0; color: #0a3a5c; }
-  blockquote { border-left: 3px solid #0a3a5c; background: #f8fafc; padding: 6px 14px; color: #374151; font-style: normal; }
+  blockquote { border-left: 3px solid #0a3a5c; background: #f8fafc; padding: 4px 12px; color: #374151; font-style: normal; margin: 6px 0; }
   .tag { display: inline-block; background: #0a3a5c; color: white; padding: 2px 10px; border-radius: 4px; font-size: 16px; font-weight: 600; letter-spacing: 1px; margin-right: 10px; vertical-align: middle; }
-  .quote-user { color: #6b7280; font-family: monospace; font-size: 16px; }
-  .quote-agent { color: #0a3a5c; font-family: monospace; font-size: 16px; }
+  .quote-user { color: #6b7280; font-family: monospace; font-size: 15px; line-height: 1.3; }
+  .quote-agent { color: #0a3a5c; font-family: monospace; font-size: 15px; line-height: 1.3; }
+  /* Dense pages: case-study slides + audit table. Smaller body so the
+     four-or-five-line reasoning chain + symptom + fix all fit. */
+  section.dense { font-size: 19px; padding: 28px 50px; }
+  section.dense h2 { font-size: 26px; margin-bottom: 8px; padding-bottom: 4px; }
+  section.dense p { margin: 5px 0; }
+  section.dense pre { font-size: 13px; padding: 8px 12px; margin: 4px 0; line-height: 1.25; }
+  section.dense code { font-size: 15px; }
+  section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
+  section.dense blockquote { font-size: 15px; padding: 3px 10px; }
+  section.dense table { font-size: 14px; }
 ---
 
 <!-- _class: lead -->
@@ -219,6 +230,8 @@ Diagnoses **#2 – #4** are from the **homelab agentic PoC** — first successfu
 
 ---
 
+<!-- _class: dense -->
+
 ## <span class="tag">9</span>Agent diagnosis #1 — first hypothesis (ruled out)
 
 **Symptom:** `kubeadm join` from the DPU hung in discovery, timing out repeatedly:
@@ -241,29 +254,33 @@ The parent-vs-VLAN-child mismatch is the textbook MTU bug for this shape — and
 
 ---
 
+<!-- _class: dense -->
+
 ## <span class="tag">10</span>Agent diagnosis #1 — root cause (the real culprit)
 
-Continuing from slide 9 — agent walks the data-plane path end-to-end:
+Agent walks the data-plane path end-to-end:
 
 ```
-host  →  ens16f0np0  →  switch  →  bond0  →  p0/p1  →  pf0hpf  →  br-lag  →  …
-        (9000 ✓)         (9000)    (9000)   (9000)     (?)        (?)
+host → ens16f0np0 → switch → bond0 → p0/p1 → pf0hpf → br-lag → …
+       (9000 ✓)     (9000)   (9000)  (9000)   (?)      (?)
 ```
 
 <span class="quote-agent">●  `ip link show bond0 p0 p1` — 9000 each.</span>
 <span class="quote-agent">●  `ip link show pf0hpf br-lag external40 internal41` (on the DPU) → **mtu 1500**.</span>
-<span class="quote-agent">●  **Found it. DPU's OVS internal ports (`pf0hpf`, `br-lag`, the per-VLAN ports) are at default MTU 1500 even though `bond0/p0/p1` are 9000. Hosts send 9000-byte frames → enters OVS via `pf0hpf` MTU 1500 → dropped/fragmented. The bf.conf template doesn't bump MTU on the OVS internal ports.**</span>
+<span class="quote-agent">●  **Found it. DPU's OVS internal ports are at default MTU 1500 even though `bond0/p0/p1` are 9000. Host sends 9000-byte frames → enters OVS via pf0hpf MTU 1500 → dropped. The bf.conf template doesn't bump MTU on OVS internal ports.**</span>
 
-**Why it matched the symptom exactly:** TLS Client Hello (~512 B) fit under 1500 and got through. apiserver's Server Hello + Certificate (multi-KB) got silently dropped at `pf0hpf`. kubeadm's per-request 10s timeout retried forever, never seeing the response.
+**Why it matched the symptom exactly:** TLS Client Hello (~512 B) fit under 1500 and got through. apiserver's Server Hello + Certificate (multi-KB) got silently dropped at `pf0hpf`.
 
-**Fix — runtime + source:**
+**Fix:**
 
-- Live recovery: `sudo ip link set {br-lag,pf0hpf,external40,internal41} mtu 9000` on both DPUs. worker2 → apiserver dropped to 13 ms; jumbo pings to 8972 ✓.
-- Persistent: `bf.conf::ovs-vlan-init.sh` now sets MTU on every OVS internal port from the same `DPUMtu` var. **Commit `0815bb0`, AGENTS.md gotcha #8.** Every PoC initialised since ships with the fix.
+- Live: `sudo ip link set {br-lag,pf0hpf,external40,internal41} mtu 9000` — worker2 → apiserver instantly dropped to 13 ms; jumbo pings to 8972 ✓.
+- Persistent: `bf.conf::ovs-vlan-init.sh` sets MTU on every OVS internal port from `DPUMtu`. **Commit `0815bb0`, AGENTS.md gotcha #8.** Every PoC initialised since ships with the fix.
 
-> Four hours of "the cluster is broken" without an agent. **The feedback loop in action: lesson once, never re-paid.**
+> Four hours of "the cluster is broken" without an agent. **Feedback loop in action: lesson once, never re-paid.**
 
 ---
+
+<!-- _class: dense -->
 
 ## <span class="tag">11</span>Agent diagnosis #2 — ghost mlx5_core PF
 
@@ -284,6 +301,8 @@ The agent's reasoning chain (paraphrased from the live session):
 
 ---
 
+<!-- _class: dense -->
+
 ## <span class="tag">12</span>Agent diagnosis #3 — apiserver-without-VIP
 
 **Symptom:** `dpubnkctl cluster up` exits 1 — kubeadm init hits its 4-minute wait-control-plane timeout. Retries hit "ports already in use" cleanup garbage.
@@ -301,6 +320,8 @@ The agent's reasoning chain:
 The agent journaled the scope correction in `decisions.md` with the rejected alternative (kube-vip) before re-running. That delta later became validate rule #2 in v2.2.0.
 
 ---
+
+<!-- _class: dense -->
 
 ## <span class="tag">13</span>Agent diagnosis #4 — SR-IOV SF on wrong driver
 
@@ -324,7 +345,7 @@ The agent's reasoning chain:
 
 The agent wasn't infallible. Things it got wrong (and which now show up as v2.2.0 validate rules):
 
-- **Self-inflicted bug #1.** It set `cluster_apiserver_address: 192.168.50.10` at scoping time, optimistic about HA/VIP with no kube-vip plan. The same agent later diagnosed and fixed it (slide 10) — but the cause was its own earlier choice. → **Validate rule #2** now catches this at `dpubnkctl validate` time.
+- **Self-inflicted bug #1.** It set `cluster_apiserver_address: 192.168.50.10` at scoping time, optimistic about HA/VIP with no kube-vip plan. The same agent later diagnosed and fixed it (slide 12) — but the cause was its own earlier choice. → **Validate rule #2** now catches this at `dpubnkctl validate` time.
 
 - **Self-inflicted bug #2.** It set `worker2-bf3.tmfifo_ip: 192.168.100.6/30` reasoning "each host needs a unique /30". Wrong — each rshim is a private point-to-point link; the convention is `.2/30` everywhere. Cost: a `cluster join-dpus` retry. → **Validate rule #4** now flags non-`.2/30` values.
 
@@ -333,6 +354,8 @@ The agent wasn't infallible. Things it got wrong (and which now show up as v2.2.
 These all closed in v2.2.0. Future PoCs start with stronger defaults — see next slide.
 
 ---
+
+<!-- _class: dense -->
 
 ## <span class="tag">15</span>Audit closeout — v2.2.0 round
 
