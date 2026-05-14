@@ -191,50 +191,24 @@ dpubnkctl destroy --yolo --confirm-cluster <name>
 
 ---
 
-<!-- _class: dense -->
+## <span class="tag">7</span>Auto-generated PoC report — exec summary
 
-## <span class="tag">7</span>Auto-generated PoC report — executive summary
+`dpubnkctl journal report` rolls every phase journal entry + `decisions.md` + `poc.yaml.status` into one markdown handoff. Excerpt from the homelab run:
 
-`dpubnkctl journal report` aggregates every phase journal entry,
-`decisions.md`, and `poc.yaml.status` into a single markdown report.
-Verbatim opening of the homelab report:
+**~3.5 hours · clean state → working BNK 2.2.0**
 
-> A two-host bare-metal lab was provisioned from a clean state through
-> a fully operational F5 BIG-IP Next for Kubernetes 2.2.0 deployment in
-> ~3.5 hours. The PoC ended with **`HTTP/1.1 200 OK`** returned from
-> an nginx backend through a BNK Gateway listening on the configured
-> external VIP — proving end-to-end traffic through the LAG, switch
-> fabric, DPU TMM, and Calico pod network.
-
-- 2 BlueField-3 DPUs flashed to DOCA 2.9.2
-- 4-node Kubernetes 1.32 (worker1 = CP+worker, worker2 = worker, both DPUs = workers)
+- 2× BlueField-3 DPUs · DOCA 2.9.2
+- 4-node Kubernetes 1.32 · single control plane
 - F5 Lifecycle Operator v2.9.27-0.2.10 (tst variant, auto-detected from JWT `jku`)
-- CNEInstance `Available=True`; all 14 component conditions Available
-- Both `f5-tmm` pods 6/6 Ready with 2/2 readiness gates
+- CNEInstance `Available=True` — 14/14 component conditions Available
+- Both `f5-tmm` pods 6/6 Ready, 2/2 readiness gates
+- **`HTTP/1.1 200 OK`** through TMM at the external VIP
 
-> The path was non-linear (5 destructive consents, 1 scope correction,
-> 4 distinct technical workarounds) but the phase-based workflow +
-> persona-gated journal made every detour traceable, recoverable,
-> and reproducible.
+> Non-linear path (5 destructive consents, 1 scope correction, 4 technical detours), but the phase-gated journal kept every detour traceable, recoverable, and reproducible.
 
 ---
 
-<!-- _class: dense -->
-
-## <span class="tag">8</span>Hardware inventory + smoke test
-
-Also pulled from `dpubnkctl journal report` — the customer's takeaway artefact:
-
-### Hardware inventory
-
-| Host    | mgmt IP        | DPU PCI       | DPU FW       | Mode                                |
-|---------|----------------|---------------|--------------|-------------------------------------|
-| worker1 | 192.168.68.66  | 0000:00:10.0  | 32.43.2566   | EMBEDDED_CPU, LAG (PRE_ALLOCATION)  |
-| worker2 | 192.168.68.71  | 0000:00:10.0  | 32.43.2566   | EMBEDDED_CPU, LAG (PRE_ALLOCATION)  |
-
-Hosts: Ubuntu 22.04.5 LTS, 5.15.0-177-generic · DPU: BlueField-3 B3220 200GbE (15b3:a2dc, 16 ARM cores, 32 GB DDR) · Data-plane PF: `ens16f0np0` (MTU 9000) · Mgmt: `eth0` (DHCP on 192.168.68.0/22)
-
-### Smoke test — end-to-end traffic
+## <span class="tag">8</span>Smoke test — end-to-end traffic
 
 ```
 $ curl -v http://192.168.40.100/         # external VIP, from worker1 host
@@ -244,18 +218,59 @@ $ curl -v http://192.168.40.100/         # external VIP, from worker1 host
 <nginx welcome page body>
 ```
 
+Data path:
+
 ```
-worker1 (192.168.68.66)  ── VLAN 40 trunk ── DPU TMM 192.168.40.100 listener
-                                                  │
-                                                  ▼ Calico pod CIDR 10.233.64.0/18
-                                                  smoke-nginx pod
+worker1  ── VLAN 40 trunk ─── DPU TMM 192.168.40.100 listener
+                                    │
+                                    ▼ Calico pod CIDR 10.233.64.0/18
+                                    smoke-nginx pod
 ```
 
-Proves: LAG/LACP trunk · DPU OVS bridges · TMM listener · Calico ↔ TMM integration · BNK GatewayClass + HTTPRoute reconciler.
+**Proves:** LAG/LACP trunk · DPU OVS bridges · TMM listener · Calico ↔ TMM integration · BNK GatewayClass + HTTPRoute reconciler.
+
+Every CR + manifest applied during this run is saved verbatim under `artifacts/` — rendered `CNEInstance`, `F5SPKVlan`s, NADs, `Gateway`, etc. — for review, diff against the next deploy, or attaching to a ticket.
 
 ---
 
-## <span class="tag">9</span>The feedback loop
+<!-- _class: dense -->
+
+## <span class="tag">9</span>Embedded `AGENTS.md` — the runbook
+
+Every `dpubnkctl init` drops a persona-neutral `AGENTS.md` into the PoC repo. Single doc, agentic-CLI-agnostic. Three sections:
+
+- **Source of truth** — `poc.yaml` is the contract; teardown reads only this file. `network-design-checklist.md`, `decisions.md`, `journal/`, `inventory/`, `artifacts/`, `keys/` each have a documented role.
+- **YOLO / auto-approve tiers** — read-only (always auto), reversible (auto with `--auto reversible`), destructive (`--yolo` + matching PoC-name confirm only). Agents must respect.
+- **24 numbered gotchas** — every recurring failure mode from past PoCs, each with one-line symptom + one-line cause + one-line fix. Example:
+
+> **#8.** OVS internal ports default to MTU 1500 even when `bond0`/`p0`/`p1` are 9000. Anything >1500 from the host PCIe path gets dropped/fragmented inside the DPU OVS, breaking TLS handshakes (apiserver Server Hello + Certificate is multi-KB). `bf.conf::ovs-vlan-init.sh` now sets MTU on every OVS internal port (commit `0815bb0`).
+
+Agents read `AGENTS.md` first, on every session. New PoCs inherit every lesson the prior PoCs paid for.
+
+---
+
+<!-- _class: dense -->
+
+## <span class="tag">10</span>Three personas — separation of duties
+
+```
+personas/
+├── pre-sales-se.md       solution architect
+├── lab-tech.md            DPU / BMC / firmware specialist
+└── doc-specialist.md      journal keeper + report generator
+```
+
+Each persona has a **strict tool allowlist** + a **handoff protocol** + a **NOT-allowed** list. Boundaries are agent-CLI-neutral — same rules apply whether the operator runs Claude Code, Aider, Gemini, opencode, or an OpenAI-compat REPL.
+
+- **pre-sales-se** — only persona that talks to the customer; owns `decisions.md`. Cannot run destructive commands. Must consent via journal entry before lab-tech proceeds.
+- **lab-tech** — DPU/BMC/rshim/mlxconfig specialist. Runs `discover` and `provision`. Must journal an SE consent reference before any destructive action. Cannot modify `poc.yaml`.
+- **doc-specialist** — append-only journal keeper. Writes the day-end summary + final `report.md`. Cannot run infra commands.
+
+The PoC repo's `journal/` directory is the handoff bus: an SE journal entry grants consent, lab-tech journals what they ran + result, doc-specialist rolls both into the report. Every persona transition is auditable.
+
+---
+
+## <span class="tag">11</span>The feedback loop
 
 The PoC repo isn't a one-way deliverable — it's a feedback channel.
 
@@ -280,7 +295,7 @@ The next PoC starts with stronger defaults. Fewer surprises.
 
 ---
 
-## <span class="tag">10</span>Case study — four agent-diagnosed blockers
+## <span class="tag">12</span>Case study — four agent-diagnosed blockers
 
 The next slides show real moments where the agent **caught blockers a flat runbook would not have spotted unaided** — each from a real deploy on BlueField-3 hardware.
 
@@ -296,7 +311,7 @@ Diagnoses **#2 – #4** are from the **homelab agentic PoC** — first successfu
 
 <!-- _class: dense -->
 
-## <span class="tag">11</span>Agent diagnosis #1 — first hypothesis (ruled out)
+## <span class="tag">13</span>Agent diagnosis #1 — first hypothesis (ruled out)
 
 **Symptom:** `kubeadm join` from the DPU hung in discovery, timing out repeatedly:
 
@@ -320,7 +335,7 @@ The parent-vs-VLAN-child mismatch is the textbook MTU bug for this shape — and
 
 <!-- _class: dense -->
 
-## <span class="tag">12</span>Agent diagnosis #1 — root cause (the real culprit)
+## <span class="tag">14</span>Agent diagnosis #1 — root cause (the real culprit)
 
 Agent walks the data-plane path end-to-end:
 
@@ -346,7 +361,7 @@ host → ens16f0np0 → switch → bond0 → p0/p1 → pf0hpf → br-lag → …
 
 <!-- _class: dense -->
 
-## <span class="tag">13</span>Agent diagnosis #2 — ghost mlx5_core PF
+## <span class="tag">15</span>Agent diagnosis #2 — ghost mlx5_core PF
 
 **Symptom:** post-BFB flash, `netplan apply` rejects every host VLAN sub-interface with `RTNETLINK answers: No such device`, even though `ip -br a` lists the parent as UP.
 
@@ -367,7 +382,7 @@ The agent's reasoning chain (paraphrased from the live session):
 
 <!-- _class: dense -->
 
-## <span class="tag">14</span>Agent diagnosis #3 — apiserver-without-VIP
+## <span class="tag">16</span>Agent diagnosis #3 — apiserver-without-VIP
 
 **Symptom:** `dpubnkctl cluster up` exits 1 — kubeadm init hits its 4-minute wait-control-plane timeout. Retries hit "ports already in use" cleanup garbage.
 
@@ -387,7 +402,7 @@ The agent journaled the scope correction in `decisions.md` with the rejected alt
 
 <!-- _class: dense -->
 
-## <span class="tag">15</span>Agent diagnosis #4 — SR-IOV SF on wrong driver
+## <span class="tag">17</span>Agent diagnosis #4 — SR-IOV SF on wrong driver
 
 **Symptom:** Second `f5-tmm` pod stuck `Pending` — one DPU missing `nvidia.com/bf3_p0_sf1` allocatable, even though both DPUs flashed with the same `PER_PF_NUM_SF=1`.
 
@@ -405,11 +420,11 @@ The agent's reasoning chain:
 
 ---
 
-## <span class="tag">16</span>Honest caveats
+## <span class="tag">18</span>Honest caveats
 
 The agent wasn't infallible. Things it got wrong (and which now show up as v2.2.0 validate rules):
 
-- **Self-inflicted bug #1.** It set `cluster_apiserver_address: 192.168.50.10` at scoping time, optimistic about HA/VIP with no kube-vip plan. The same agent later diagnosed and fixed it (slide 14) — but the cause was its own earlier choice. → **Validate rule #2** now catches this at `dpubnkctl validate` time.
+- **Self-inflicted bug #1.** It set `cluster_apiserver_address: 192.168.50.10` at scoping time, optimistic about HA/VIP with no kube-vip plan. The same agent later diagnosed and fixed it (slide 16) — but the cause was its own earlier choice. → **Validate rule #2** now catches this at `dpubnkctl validate` time.
 
 - **Self-inflicted bug #2.** It set `worker2-bf3.tmfifo_ip: 192.168.100.6/30` reasoning "each host needs a unique /30". Wrong — each rshim is a private point-to-point link; the convention is `.2/30` everywhere. Cost: a `cluster join-dpus` retry. → **Validate rule #4** now flags non-`.2/30` values.
 
@@ -421,7 +436,7 @@ These all closed in v2.2.0. Future PoCs start with stronger defaults — see nex
 
 <!-- _class: dense -->
 
-## <span class="tag">17</span>Audit closeout — v2.2.0 round
+## <span class="tag">19</span>Audit closeout — v2.2.0 round
 
 | #  | Item                                              | Resolution kind   |
 |----|---------------------------------------------------|-------------------|
@@ -444,7 +459,7 @@ All in `main`. Each item carries a journal-entry reference in its commit message
 
 ---
 
-## <span class="tag">18</span>Where next
+## <span class="tag">20</span>Where next
 
 - Cut `v2.2.0` branch from current main as BNK 2.3.0 work begins
 - More PoCs feed more audit items
