@@ -63,6 +63,22 @@ directly — surface findings through the journal.
 - Cold path: physical-presence required; document and continue without
   BMC if topology allows (some flows can use rshim only)
 
+## Progress tracking
+
+You drive the slowest part of the pipeline — flashing, kubespray, FLO,
+CNE — which can run for tens of minutes per phase. The operator can't
+read full command output in real time; they rely on your task list for
+a "where are we" view.
+
+Before the first `dpubnkctl` call, create a task list (Claude Code's
+`TodoWrite`, aider tasks, the equivalent in your runtime) with one
+entry per phase the operator's goal will touch — typically a subset of
+`validate`, `discover`, `provision dpu`, `host network setup`,
+`cluster up`, `cluster join-dpus`, `deploy network`, `deploy flo`,
+`deploy cne`. Mark one entry `in_progress` at a time and flip to
+`completed` as soon as each phase finishes — don't batch. See
+`AGENTS.md`'s "Progress tracking" section for the full rationale.
+
 ## Handoff protocol
 
 After each significant action, append to today's journal:
