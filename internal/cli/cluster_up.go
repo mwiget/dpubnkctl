@@ -100,6 +100,21 @@ func runClusterUp(ctx context.Context, out io.Writer, f *clusterUpFlags) error {
 	}
 	fmt.Fprintln(out, "      ok")
 
+	// 1b. Host VLAN IP preflight. kubespray's "Stop if ip var does not
+	//     match local ips" Ansible task fires ~20 min into the play
+	//     with zero indication of which host or which IP is the
+	//     problem. Pre-check here: for each host, the IP we'll write
+	//     into the inventory's `ip:` (== the host's
+	//     data_plane.vlans[role==node_ip_role] IP) must actually be
+	//     live in `ip -4 addr`. If not, the operator forgot — or
+	//     `host network setup` failed — and we tell them so up-front.
+	if p.Network.NodeIPRole != "" {
+		fmt.Fprintln(out, "      Verifying VLAN IPs are live on every host ...")
+		if err := preflightVLANIPs(ctx, repo, plan, p.Network.NodeIPRole, out); err != nil {
+			return err
+		}
+	}
+
 	// 2. Regenerate inventory + stage SSH keys into the inventory tree
 	//    (kubespray container reads them from /inventory/keys/<host>.pem).
 	fmt.Fprintln(out, "[2/6] Regenerating kubespray inventory ...")
@@ -336,6 +351,50 @@ func restartContainerdOnHosts(ctx context.Context, repo string, plan cluster.Pla
 	wg.Wait()
 	if len(failures) > 0 {
 		return fmt.Errorf("%d host(s) failed containerd restart: %s", len(failures), strings.Join(failures, "; "))
+	}
+	return nil
+}
+
+// preflightVLANIPs SSHes every host in the plan and asserts the IP we'll
+// pass kubespray as the per-host `ip:` actually appears in the host's
+// `ip -4 addr show`. Catches the post-`host network setup`-skipped (or
+// failed) cases that otherwise blow up 20 min into kubespray's play
+// with an Ansible "Stop if ip var does not match local ips" error.
+//
+// role is poc.Network.NodeIPRole. Caller guarantees it's non-empty.
+func preflightVLANIPs(ctx context.Context, repo string, plan cluster.Plan, role string, out io.Writer) error {
+	var failures []string
+	for name, h := range plan.HostByName {
+		v := h.VLANByRole(role)
+		if v == nil {
+			failures = append(failures, fmt.Sprintf("%s: no data_plane.vlans[role=%q] entry — set host.data_plane.vlans in poc.yaml", name, role))
+			continue
+		}
+		want := stripCIDR(v.IP)
+		cfg, err := sshConfigForHost(repo, h, 15*time.Second)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: ssh config: %v", name, err))
+			continue
+		}
+		dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		c, err := ssh.Dial(dialCtx, cfg)
+		cancel()
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: ssh dial: %v", name, err))
+			continue
+		}
+		// inet <ip>/<prefix> matches on any interface. Single grep -q.
+		r := c.Run(ctx, fmt.Sprintf("ip -4 addr show | grep -qE 'inet %s/'", want))
+		c.Close()
+		if !r.OK() {
+			failures = append(failures, fmt.Sprintf("%s: IP %s (role=%s) not present on any interface", name, want, role))
+			continue
+		}
+		fmt.Fprintf(out, "      | %s %s OK\n", name, want)
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("VLAN IP preflight failed for %d host(s) — run `dpubnkctl host network setup` first:\n  - %s",
+			len(failures), strings.Join(failures, "\n  - "))
 	}
 	return nil
 }

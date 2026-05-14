@@ -168,6 +168,21 @@ func setupOneHost(ctx context.Context, out io.Writer, repo string, h *poc.Host, 
 	}
 	defer c.Close()
 
+	// Pre-flight: catch the post-BFB "ghost PF" state before netplan
+	// blunders into opaque RTNETLINK errors. A successful BFB flash
+	// leaves the host's mlx5_core PF detached from the kernel — the
+	// interface name exists, but `ethtool -i` returns "No such device".
+	// Only a host reboot recovers it (mlxfwreset is unsupported in
+	// EMBEDDED_CPU mode; see AGENTS.md #9). Fail loud so the operator
+	// reboots instead of chasing netplan errors.
+	if r := c.Run(ctx, fmt.Sprintf("ethtool -i %s 2>&1", dp.ParentIface)); !r.OK() {
+		combined := strings.TrimSpace(r.Stdout + r.Stderr)
+		if strings.Contains(combined, "No such device") {
+			return fmt.Errorf("parent iface %s exists but kernel says \"No such device\" — BlueField PF is in the post-flash 'ghost' state. Reboot the host (mlxfwreset is unsupported on BF3 EMBEDDED_CPU). See AGENTS.md #9", dp.ParentIface)
+		}
+		return fmt.Errorf("ethtool -i %s failed: %s", dp.ParentIface, combined)
+	}
+
 	const remotePath = "/etc/netplan/70-dpubnkctl-dataplane.yaml"
 	tmpRemote := "/tmp/dpubnkctl-dataplane-netplan.yaml"
 
