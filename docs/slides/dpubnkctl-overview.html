@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>dpubnkctl — Overview</title>
+<style>
+  /* Print-to-PDF: each <section.slide> is one landscape page.
+     In a browser, sections scroll vertically. */
+  @page { size: A4 landscape; margin: 0; }
+  html, body { margin: 0; padding: 0; background: #f3f4f6;
+               font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+               color: #111827; }
+  section.slide {
+    width: 297mm; height: 210mm;
+    box-sizing: border-box;
+    padding: 16mm 22mm 14mm 22mm;
+    background: white;
+    margin: 12mm auto;
+    box-shadow: 0 1px 4px rgba(0,0,0,.12);
+    page-break-after: always;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  section.slide:last-of-type { page-break-after: auto; }
+  section.slide.title { justify-content: center; text-align: center; }
+  h1 { font-size: 30pt; margin: 0 0 6mm 0; color: #0a3a5c; font-weight: 700; }
+  h2 { font-size: 18pt; margin: 0 0 6mm 0; color: #0a3a5c; font-weight: 600;
+       border-bottom: 1.5pt solid #d1d5db; padding-bottom: 2mm; }
+  h3 { font-size: 14pt; margin: 5mm 0 2mm 0; color: #1f2937; font-weight: 600; }
+  p, li { font-size: 11pt; line-height: 1.45; }
+  ul, ol { padding-left: 6mm; margin: 2mm 0; }
+  li { margin: 1mm 0; }
+  pre { background: #0b1220; color: #e2e8f0; padding: 4mm 5mm;
+        font-size: 9pt; line-height: 1.35; border-radius: 2mm;
+        font-family: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, monospace;
+        overflow: hidden; margin: 2mm 0; }
+  code { font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+         font-size: 10pt; background: #f1f5f9; padding: 0.5pt 2pt; border-radius: 1pt; }
+  pre code { background: transparent; padding: 0; color: inherit; font-size: inherit; }
+  table { border-collapse: collapse; width: 100%; margin: 2mm 0; font-size: 9pt; }
+  th, td { border: 0.5pt solid #cbd5e1; padding: 1.5mm 3mm; text-align: left; }
+  th { background: #e2e8f0; color: #0a3a5c; font-weight: 600; }
+  tr:nth-child(even) td { background: #f8fafc; }
+  .tag { display: inline-block; background: #0a3a5c; color: white;
+         padding: 1pt 6pt; border-radius: 2pt; font-size: 9pt;
+         font-weight: 600; letter-spacing: 0.5pt; margin-right: 4pt; }
+  .footer { margin-top: auto; font-size: 8pt; color: #6b7280;
+            border-top: 0.5pt solid #e5e7eb; padding-top: 2mm; }
+  .meta { font-size: 11pt; color: #4b5563; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6mm; }
+  .arrow { color: #0a3a5c; font-weight: bold; }
+  blockquote { border-left: 3pt solid #0a3a5c; margin: 2mm 0; padding: 1mm 4mm;
+               color: #374151; font-size: 11pt; background: #f8fafc; }
+</style>
+</head>
+<body>
+
+<!-- Slide 1: Title -->
+<section class="slide title">
+  <h1>dpubnkctl</h1>
+  <p class="meta" style="font-size:14pt;color:#0a3a5c;font-weight:500;">
+    F5 BIG-IP Next for Kubernetes — deploy in one binary,<br>
+    drive with an agent.
+  </p>
+  <p class="meta" style="margin-top:14mm;">
+    BNK 2.2.0 · NVIDIA BlueField-3 · Kubernetes 1.32 · kubespray v2.28.1
+  </p>
+  <p class="meta" style="margin-top:6mm;">
+    Marcel Wiget &nbsp;·&nbsp; https://github.com/mwiget/dpubnkctl
+  </p>
+</section>
+
+<!-- Slide 2: Why -->
+<section class="slide">
+  <h2><span class="tag">1</span>Why this exists</h2>
+  <p>Manual BNK-on-bare-metal deploy is 20+ steps over ~3.5 hours:</p>
+  <ul>
+    <li>BFB flash the DPU (mlxconfig, rshim, bf.conf)</li>
+    <li>Host VLAN sub-interfaces (netplan)</li>
+    <li>Kubespray cluster bring-up</li>
+    <li>Externally join DPUs to k8s</li>
+    <li>Multus + SR-IOV + NADs</li>
+    <li>cert-manager + F5 Lifecycle Operator (FLO)</li>
+    <li>CNEInstance + F5SPKVlans + Gateway/HTTPRoute</li>
+  </ul>
+  <p>24+ recurring failure modes catalogued in <code>AGENTS.md</code>.
+     Easy to misorder. Painful to redo from a partial state.</p>
+  <blockquote>
+    dpubnkctl is the runbook turned into a single Go binary with
+    persistent declarative state.
+  </blockquote>
+</section>
+
+<!-- Slide 3: Architecture -->
+<section class="slide">
+  <h2><span class="tag">2</span>Two-repo architecture</h2>
+<pre>+----------------------+
+| dpubnkctl source     |   single binary, BNK-2.2.0-pinned
+|  - internal/         |   (DOCA, BFB, FLO, kubespray) ─────►
+|  - embedded/         |   stamped with `git describe`
+|    files/AGENTS.md
+|    files/personas/
++----------------------+
+
+     | `dpubnkctl init &lt;name&gt;`
+     v
++----------------------+
+| &lt;customer&gt;-poc repo  |   declarative state — everything
+|  - poc.yaml          |   needed to teardown + redeploy
+|  - AGENTS.md + personas/   lives here.
+|  - keys/ (gitignored)      poc.yaml.status tracks phase progress.
+|  - artifacts/, journal/,
+|    decisions.md, diagram.txt
++----------------------+</pre>
+  <p>The binary is the engine. The PoC repo is the contract.</p>
+</section>
+
+<!-- Slide 4: Modes -->
+<section class="slide">
+  <h2><span class="tag">3</span>Two operating modes</h2>
+  <div class="grid2">
+    <div>
+      <h3>Human direct</h3>
+<pre>dpubnkctl init mycustomer
+dpubnkctl discover wizard
+dpubnkctl validate
+dpubnkctl e2e --yolo</pre>
+    </div>
+    <div>
+      <h3>Agentic</h3>
+<pre>dpubnkctl agent claude   # prints invocation
+cd ~/lab/mycustomer && claude
+
+# Inside the session:
+"Read AGENTS.md, act as the
+ pre-sales SE persona.
+ Confirm scope with me."</pre>
+    </div>
+  </div>
+  <p style="margin-top:5mm;">
+    The PoC repo ships <code>AGENTS.md</code> + three personas
+    (<code>pre-sales-se</code>, <code>lab-tech</code>,
+    <code>doc-specialist</code>) so any agentic CLI — Claude Code,
+    Aider, Gemini, opencode, openai-compat REPL — inherits the same
+    runbook with the same tool allowlists and handoff protocol.
+  </p>
+  <p>The binary doesn't ship an LLM. You pick the model.</p>
+</section>
+
+<!-- Slide 5: init files -->
+<section class="slide">
+  <h2><span class="tag">4</span>What <code>init</code> creates</h2>
+<pre>poc.yaml                 single source of truth — every input
+                         to teardown/redeploy lives here
+
+AGENTS.md                persona-neutral runbook (embedded)
+personas/
+  pre-sales-se.md        only persona that talks to the customer
+  lab-tech.md            DPU/BMC/firmware specialist
+  doc-specialist.md      journal + final-report keeper
+
+network-design-checklist.md   SE-fills-in before provisioning
+inventory/               discover output (json)
+artifacts/               rendered manifests, kubeconfig
+journal/                 append-only, one file per phase
+decisions.md             SE decision log
+keys/                    FAR, JWT, SSH keys (gitignored)
+diagram.txt              auto-regenerated topology view</pre>
+</section>
+
+<!-- Slide 6: diagram.txt -->
+<section class="slide">
+  <h2><span class="tag">5</span><code>diagram.txt</code> — homelab, real run</h2>
+<pre style="font-size:8pt;">K8s cluster: homelab
+====================
+
+  +--------------------------+    +--------------------------+
+  |         worker1          |    |         worker2          |
+  |           both           |    |          worker          |
+  |    eth0 192.168.68.66    |    |    eth0 192.168.68.71    |
+  +--------------------------+    +--------------------------+
+              |                               |
+              | kubeadm join                  | kubeadm join
+              v                               v
+  +--------------------------+    +--------------------------+
+  |       worker1-bf3        |    |       worker2-bf3        |
+  |        DPU worker        |    |        DPU worker        |
+  |          (LAG)           |    |          (LAG)           |
+  |  oob_net0 192.168.68.96  |    |  oob_net0 192.168.68.79  |
+  +--------------------------+    +--------------------------+
+
+  apiserver: 192.168.50.66:6443  (all 4 node(s) connect here)
+
+Mgmt-plane (out-of-band SSH addresses)
+======================================
+  Node           Role      Iface       Address
+  worker1        both      eth0        192.168.68.66
+  worker1-bf3    dpu       oob_net0    192.168.68.96
+  worker2        worker    eth0        192.168.68.71
+  worker2-bf3    dpu       oob_net0    192.168.68.79
+
+  external VLAN 40 (external40) — 192.168.40.0/24
+    worker1        192.168.40.66
+    worker1-bf3    192.168.40.5
+    worker2        192.168.40.71
+    worker2-bf3    192.168.40.6</pre>
+  <p style="margin-top:auto;">Auto-refreshed whenever any phase mutates <code>poc.yaml</code>.</p>
+</section>
+
+<!-- Slide 7: Pipeline -->
+<section class="slide">
+  <h2><span class="tag">6</span>8-phase pipeline</h2>
+<pre>1. validate            poc.yaml schema sanity + phase-tagged rules
+2. provision dpu       BFB flash, mlxconfig SR-IOV, bf.conf, wait
+3. host network setup  netplan VLAN sub-interfaces
+4. cluster up          kubespray cluster.yml
+5. cluster join-dpus   externally join BlueField nodes to k8s
+6. deploy network      Multus + SR-IOV CNI + NADs
+7. deploy flo          cert-manager + F5 Lifecycle Operator
+8. deploy cne          CNEInstance + F5SPKVlans + BNK GatewayClass</pre>
+  <p>Symmetric teardown:
+    <code>destroy bnk → destroy dpus → cluster reset</code>.
+    Both directions resume-safe via <code>artifacts/e2e-state.json</code>.</p>
+  <h3>The one-shot</h3>
+<pre>dpubnkctl e2e --yolo                            # ~75 min, resume-safe
+dpubnkctl destroy --yolo --confirm-cluster &lt;name&gt;</pre>
+</section>
+
+<!-- Slide 8: Feedback loop -->
+<section class="slide">
+  <h2><span class="tag">7</span>The feedback loop</h2>
+  <p>The PoC repo isn't a one-way deliverable — it's a feedback channel.</p>
+<pre>+----------------------+   journal entries        +----------------------+
+| PoC repo             | ────── lessons-learned ──>| dpubnkctl source     |
+| (per customer)       |       audit punch list   | repo (engineering)   |
+|                      |                          |                      |
+| AGENTS.md   ◄── embedded/files/AGENTS.md ───────┤ AGENTS.md +24 gotchas|
+| personas/   ◄── embedded/files/personas/ ───────┤ personas/            |
+| code        ◄── new pinned binary release ──────┤ internal/            |
++----------------------+                          +----------------------+</pre>
+  <p>Each tagged release embeds the latest hard-won runbook. Gotchas
+     surface in three ways depending on what's actionable:</p>
+  <ol>
+    <li><strong>As code</strong> — validate rules, pre-flight checks, readiness gates</li>
+    <li><strong>As docs</strong> — numbered AGENTS.md gotcha (humans + agents read it)</li>
+    <li><strong>As persona text</strong> — workflow guidance the agent honors per-PoC</li>
+  </ol>
+  <p>The next PoC starts with stronger defaults. Fewer surprises.</p>
+</section>
+
+<!-- Slide 9: Case study -->
+<section class="slide">
+  <h2><span class="tag">8</span>Case study — homelab agentic PoC</h2>
+  <p>First successful end-to-end agentic deploy on real BlueField-3
+     hardware.</p>
+  <ul>
+    <li>2 hosts, 1 DPU each, LAG topology</li>
+    <li>4-node Kubernetes cluster (2 hosts + 2 DPUs)</li>
+    <li>~3.5 hours wall-clock — agent-driven, operator only consented
+        to destructive phases</li>
+    <li><code>HTTP/1.1 200 OK</code> from
+        <code>curl http://192.168.40.100/</code> through the BNK TMM
+        Gateway to an nginx pod on the worker2 DPU</li>
+  </ul>
+  <p>Journals + <code>decisions.md</code> captured 15 distinct pain
+     points the agent or operator had to work around. Each became an
+     audit item in the v2.2.0 hardening round →</p>
+</section>
+
+<!-- Slide 10: Audit closeout -->
+<section class="slide">
+  <h2><span class="tag">9</span>Audit closeout — v2.2.0 round</h2>
+  <table>
+    <tr><th style="width:8%;">#</th><th>Item</th><th style="width:25%;">Resolution kind</th></tr>
+    <tr><td>1</td><td>validate phase-blind (FAR/JWT blocking provision)</td><td>refactor</td></tr>
+    <tr><td>2</td><td>cluster_apiserver_address not cross-checked</td><td>new validate rule</td></tr>
+    <tr><td>3</td><td>network.vlans[] silently dropped role/tag</td><td>strict yaml load</td></tr>
+    <tr><td>4</td><td>tmfifo_ip didn't catch wrong /30</td><td>new validate rule</td></tr>
+    <tr><td>5</td><td>cluster join-dpus not idempotent</td><td>code fix</td></tr>
+    <tr><td>6</td><td>kubelet stayed dead on join failure</td><td>code fix</td></tr>
+    <tr><td>7</td><td>deploy cne raced FLO crd-installer</td><td>two-step wait</td></tr>
+    <tr><td>8</td><td>deploy network returned mid-DS-flap</td><td>rollout-status</td></tr>
+    <tr><td>9</td><td>post-flash SF aux device race</td><td>readiness probe</td></tr>
+    <tr><td>10</td><td>kubespray "ip var" error opaque</td><td>pre-flight</td></tr>
+    <tr><td>11</td><td>ghost mlx5_core PF needed reboot</td><td>pre-flight</td></tr>
+    <tr><td>12</td><td>doc-specialist promised non-existent --pdf</td><td>persona fix</td></tr>
+    <tr><td>13</td><td><em>rendered moot by item 6</em></td><td>—</td></tr>
+    <tr><td>14</td><td>no Gateway scaffolding (BNK 2.2.0 has no IPAM)</td><td>new subcommand</td></tr>
+    <tr><td>15</td><td>provision exit-0-on-timeout misleading</td><td>grace + hard fail</td></tr>
+  </table>
+  <p>All in <code>main</code>. Each item carries a journal-entry reference
+     in its commit message — future engineers can read the failure
+     narrative.</p>
+</section>
+
+<!-- Slide 11: Where next -->
+<section class="slide">
+  <h2><span class="tag">10</span>Where next</h2>
+  <ul>
+    <li>Cut <code>v2.2.0</code> branch from current main as BNK 2.3.0 work begins</li>
+    <li>More PoCs feed more audit items</li>
+    <li>Multi-DPU-per-host support (host-side tmfifo netplan + relaxed validate)</li>
+    <li>Live TMM self-IP capture from F5SPKVlan after deploy</li>
+    <li>IPAM auto-allocation if BNK exposes a default-pool concept</li>
+    <li>Generalised pre-sales SE workflow for non-BNK F5 products</li>
+  </ul>
+  <p>The binary is <code>~16 MB</code>, statically linked, single-file.
+     Drop it on a jumphost and you're one <code>dpubnkctl init</code> away
+     from a reproducible PoC.</p>
+<pre>go install github.com/mwiget/dpubnkctl/cmd/dpubnkctl@latest</pre>
+  <p class="footer">— end —</p>
+</section>
+
+</body>
+</html>
