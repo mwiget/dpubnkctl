@@ -220,11 +220,17 @@ func runClusterJoinDPUs(ctx context.Context, out io.Writer, f *clusterJoinDPUsFl
 	return nil
 }
 
-// probeOOBIP returns the DPU's oob_net0 IPv4 address (no CIDR). Best
-// effort — returns "" if the command fails or the output is unparseable.
-// Output of `ip -br -4 addr show oob_net0` looks like:
+// probeOOBIP returns the DPU's oob_net0 IPv4 address as CIDR (e.g.
+// "192.168.68.96/22"). Best-effort — returns "" if the command fails
+// or the output is unparseable. Output of `ip -br -4 addr show oob_net0`
+// looks like:
 //
 //	oob_net0         UP             192.168.68.96/22 metric 100
+//
+// Stashing the full CIDR (not just the bare IP) keeps poc.yaml's oob_ip
+// shape parallel to tmfifo_ip and preserves the DHCP-supplied netmask
+// — useful when diagnosing routing problems or printing the mgmt subnet
+// in reports. The diagram renderer strips the prefix for display.
 func probeOOBIP(ctx context.Context, c *ssh.Client) string {
 	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -233,8 +239,9 @@ func probeOOBIP(ctx context.Context, c *ssh.Client) string {
 		return ""
 	}
 	for _, f := range strings.Fields(r.Stdout) {
-		if ip, _, err := net.ParseCIDR(f); err == nil && ip.To4() != nil {
-			return ip.String()
+		if ip, ipnet, err := net.ParseCIDR(f); err == nil && ip.To4() != nil {
+			ones, _ := ipnet.Mask.Size()
+			return fmt.Sprintf("%s/%d", ip.String(), ones)
 		}
 	}
 	return ""

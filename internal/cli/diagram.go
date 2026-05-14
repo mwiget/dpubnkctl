@@ -321,7 +321,7 @@ func RenderMgmtPlaneASCII(p *poc.PoC) string {
 			if dname == "" {
 				dname = h.Name + "-bf3"
 			}
-			addr := strings.TrimSpace(d.OOBIP)
+			addr := stripCIDR(strings.TrimSpace(d.OOBIP))
 			if addr == "" {
 				addr = "—"
 			}
