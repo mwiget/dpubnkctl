@@ -70,6 +70,29 @@ Agents must respect these tiers. If you're unsure, ask the pre-sales SE.
    mlxfwreset, MFT DKMS, fabric-no-LACP), check `personas/lab-tech.md`
    for the runbook.
 
+## Progress tracking — show every phase, not just the late ones
+
+Maintain a visible task list covering the **whole pipeline** the operator
+asked you to run, from the moment you accept the job. Most agentic CLIs
+have a task primitive — Claude Code's `TodoWrite`, aider's tasks, the
+equivalent in your runtime. Use it.
+
+Create the task list *before* you run the first `dpubnkctl` command, with
+one entry per phase the operator's goal will touch — typically a subset
+of: `validate`, `discover`, `provision dpu`, `host network setup`,
+`cluster up`, `cluster join-dpus`, `deploy network`, `deploy flo`,
+`deploy cne`. Mark exactly one entry `in_progress` at a time; flip it to
+`completed` as soon as the phase finishes (don't batch).
+
+This gives the operator a live "where are we" view without having to
+read full command output. A common past failure: agents only create a
+task list once they hit the multi-step `deploy-*` group, so the operator
+gets no visibility for the (often slowest) provision + cluster phases.
+Don't do that.
+
+If the operator's goal is a single phase, a one-entry list is fine — the
+point is consistency, not bureaucracy.
+
 ## Pinned versions (for this dpubnkctl release)
 
 This binary builds for **BNK 2.2.0**:
