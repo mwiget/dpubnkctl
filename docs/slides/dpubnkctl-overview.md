@@ -205,20 +205,45 @@ The next PoC starts with stronger defaults. Fewer surprises.
 
 ---
 
-## <span class="tag">8</span>Case study — homelab agentic PoC
+## <span class="tag">8</span>Case study — four agent-diagnosed blockers
 
-First successful end-to-end agentic deploy on real BlueField-3 hardware.
+The next four slides show real moments where the agent **caught blockers a flat runbook would not have spotted unaided** — each from a real deploy on BlueField-3 hardware.
 
-- 2 hosts, 1 DPU each, LAG topology
-- 4-node Kubernetes cluster (2 hosts + 2 DPUs)
-- ~3.5 hours wall-clock — agent-driven, operator only consented to destructive phases
+The first (slide 9) is from the **lake1 dogfood** that built the binary itself; the fix lives in the bf.conf template, so the homelab PoC three weeks later **never even had to debug it**.
+
+The other three (slides 10-12) are from the **homelab agentic PoC** — first successful end-to-end agent-driven deploy:
+
+- 2 hosts, 1 DPU each, LAG topology · 4-node k8s cluster
+- ~3.5 h wall-clock, operator only consented to destructive phases
 - `HTTP/1.1 200 OK` from `curl http://192.168.40.100/` through the BNK TMM Gateway to an nginx pod on the worker2 DPU
-
-The next three slides show concrete moments where the agent **caught blockers a human runbook would not have spotted unaided**.
 
 ---
 
-## <span class="tag">9</span>Agent diagnosis #1 — ghost mlx5_core PF
+## <span class="tag">9</span>Agent diagnosis #1 — apiserver hang from OVS-port MTU
+
+**Symptom:** `kubeadm join` from the DPU hung in discovery, timing out repeatedly:
+
+```
+GET https://10.10.41.66:6443/api/v1/namespaces/kube-public/configmaps/cluster-info?timeout=10s
+→ request canceled while waiting for connection
+```
+
+TCP connect succeeded. TLS handshake never completed. The agent's reasoning:
+
+<span class="quote-agent">●  TCP up, TLS hangs — smells like a fragmentation / large-packet drop, not auth or routing.</span>
+<span class="quote-agent">●  Bisect MTU on the data-plane VLAN: `ping -M do -s 1472` ✓, `ping -M do -s 4000` ✗. Drops above 1500.</span>
+<span class="quote-agent">●  bond0 / p0 / p1 are 9000 (set by netplan from bf.conf). What's at 1500?</span>
+<span class="quote-agent">●  Walked the path host → pf0hpf → br-lag → bond0 → fabric. `ip link show pf0hpf` → **mtu 1500**. OVS-internal ports default to 1500 even when the bridge's uplinks are 9000.</span>
+
+**Root cause:** TLS Client Hello (~512 B) fit under 1500 and got through. The apiserver's Server Hello + Certificate (multi-KB) got dropped at the OVS internal port. kubeadm's per-request 10s timeout retried forever, never seeing the response.
+
+**Fix:** `bf.conf::ovs-vlan-init.sh` now sets MTU on `br-lag`, `pf0hpf`, `pf1hpf`, and every per-VLAN OVS port (commit `0815bb0`, AGENTS.md #8). The fix lives in the binary's embedded template — every PoC initialised since then ships with it.
+
+> Four hours of "the cluster is broken" without an agent. **The feedback loop in action: lesson once, never re-paid.**
+
+---
+
+## <span class="tag">10</span>Agent diagnosis #2 — ghost mlx5_core PF
 
 **Symptom:** post-BFB flash, `netplan apply` rejects every host VLAN sub-interface with `RTNETLINK answers: No such device`, even though `ip -br a` lists the parent as UP.
 
@@ -237,7 +262,7 @@ The agent's reasoning chain (paraphrased from the live session):
 
 ---
 
-## <span class="tag">10</span>Agent diagnosis #2 — apiserver-without-VIP
+## <span class="tag">11</span>Agent diagnosis #3 — apiserver-without-VIP
 
 **Symptom:** `dpubnkctl cluster up` exits 1 — kubeadm init hits its 4-minute wait-control-plane timeout. Retries hit "ports already in use" cleanup garbage.
 
@@ -255,7 +280,7 @@ The agent journaled the scope correction in `decisions.md` with the rejected alt
 
 ---
 
-## <span class="tag">11</span>Agent diagnosis #3 — SR-IOV SF on wrong driver
+## <span class="tag">12</span>Agent diagnosis #4 — SR-IOV SF on wrong driver
 
 **Symptom:** Second `f5-tmm` pod stuck `Pending` — one DPU missing `nvidia.com/bf3_p0_sf1` allocatable, even though both DPUs flashed with the same `PER_PF_NUM_SF=1`.
 
@@ -273,7 +298,7 @@ The agent's reasoning chain:
 
 ---
 
-## <span class="tag">12</span>Honest caveats
+## <span class="tag">13</span>Honest caveats
 
 The agent wasn't infallible. Things it got wrong (and which now show up as v2.2.0 validate rules):
 
@@ -287,7 +312,7 @@ These all closed in v2.2.0. Future PoCs start with stronger defaults — see nex
 
 ---
 
-## <span class="tag">13</span>Audit closeout — v2.2.0 round
+## <span class="tag">14</span>Audit closeout — v2.2.0 round
 
 | #  | Item                                              | Resolution kind   |
 |----|---------------------------------------------------|-------------------|
@@ -310,7 +335,7 @@ All in `main`. Each item carries a journal-entry reference in its commit message
 
 ---
 
-## <span class="tag">14</span>Where next
+## <span class="tag">15</span>Where next
 
 - Cut `v2.2.0` branch from current main as BNK 2.3.0 work begins
 - More PoCs feed more audit items
