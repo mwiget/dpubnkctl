@@ -1,4 +1,4 @@
-.PHONY: build install test clean tidy fmt vet smoke
+.PHONY: build install test clean tidy fmt vet smoke slides slides-html slides-pptx slides-pdf
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
@@ -41,3 +41,33 @@ smoke: build
 
 clean:
 	rm -rf bin/
+
+# --- slide deck ---------------------------------------------------------
+#
+# Source: docs/slides/*.md (Marp markdown — readable on GitHub as-is).
+# `make slides` produces HTML (no extra tooling), PPTX, and PDF in one go.
+# PPTX + PDF need a Chromium/Firefox binary at $CHROME_PATH (or installed
+# on PATH); HTML is the browser-free fallback. Marp-cli is fetched on
+# demand via `npx`, no global install needed.
+
+SLIDE_SRC := $(wildcard docs/slides/*.md)
+SLIDE_HTML := $(SLIDE_SRC:.md=.html)
+SLIDE_PPTX := $(SLIDE_SRC:.md=.pptx)
+SLIDE_PDF  := $(SLIDE_SRC:.md=.pdf)
+
+slides: slides-html slides-pptx slides-pdf
+
+slides-html: $(SLIDE_HTML)
+
+slides-pptx: $(SLIDE_PPTX)
+
+slides-pdf: $(SLIDE_PDF)
+
+docs/slides/%.html: docs/slides/%.md
+	npx --yes @marp-team/marp-cli $< -o $@
+
+docs/slides/%.pptx: docs/slides/%.md
+	npx --yes @marp-team/marp-cli $< -o $@ --allow-local-files
+
+docs/slides/%.pdf: docs/slides/%.md
+	npx --yes @marp-team/marp-cli $< -o $@ --allow-local-files
