@@ -191,7 +191,71 @@ dpubnkctl destroy --yolo --confirm-cluster <name>
 
 ---
 
-## <span class="tag">7</span>The feedback loop
+<!-- _class: dense -->
+
+## <span class="tag">7</span>Auto-generated PoC report — executive summary
+
+`dpubnkctl journal report` aggregates every phase journal entry,
+`decisions.md`, and `poc.yaml.status` into a single markdown report.
+Verbatim opening of the homelab report:
+
+> A two-host bare-metal lab was provisioned from a clean state through
+> a fully operational F5 BIG-IP Next for Kubernetes 2.2.0 deployment in
+> ~3.5 hours. The PoC ended with **`HTTP/1.1 200 OK`** returned from
+> an nginx backend through a BNK Gateway listening on the configured
+> external VIP — proving end-to-end traffic through the LAG, switch
+> fabric, DPU TMM, and Calico pod network.
+
+- 2 BlueField-3 DPUs flashed to DOCA 2.9.2
+- 4-node Kubernetes 1.32 (worker1 = CP+worker, worker2 = worker, both DPUs = workers)
+- F5 Lifecycle Operator v2.9.27-0.2.10 (tst variant, auto-detected from JWT `jku`)
+- CNEInstance `Available=True`; all 14 component conditions Available
+- Both `f5-tmm` pods 6/6 Ready with 2/2 readiness gates
+
+> The path was non-linear (5 destructive consents, 1 scope correction,
+> 4 distinct technical workarounds) but the phase-based workflow +
+> persona-gated journal made every detour traceable, recoverable,
+> and reproducible.
+
+---
+
+<!-- _class: dense -->
+
+## <span class="tag">8</span>Hardware inventory + smoke test
+
+Also pulled from `dpubnkctl journal report` — the customer's takeaway artefact:
+
+### Hardware inventory
+
+| Host    | mgmt IP        | DPU PCI       | DPU FW       | Mode                                |
+|---------|----------------|---------------|--------------|-------------------------------------|
+| worker1 | 192.168.68.66  | 0000:00:10.0  | 32.43.2566   | EMBEDDED_CPU, LAG (PRE_ALLOCATION)  |
+| worker2 | 192.168.68.71  | 0000:00:10.0  | 32.43.2566   | EMBEDDED_CPU, LAG (PRE_ALLOCATION)  |
+
+Hosts: Ubuntu 22.04.5 LTS, 5.15.0-177-generic · DPU: BlueField-3 B3220 200GbE (15b3:a2dc, 16 ARM cores, 32 GB DDR) · Data-plane PF: `ens16f0np0` (MTU 9000) · Mgmt: `eth0` (DHCP on 192.168.68.0/22)
+
+### Smoke test — end-to-end traffic
+
+```
+$ curl -v http://192.168.40.100/         # external VIP, from worker1 host
+< HTTP/1.1 200 OK
+< Server: nginx/1.27.5
+< Content-Length: 615
+<nginx welcome page body>
+```
+
+```
+worker1 (192.168.68.66)  ── VLAN 40 trunk ── DPU TMM 192.168.40.100 listener
+                                                  │
+                                                  ▼ Calico pod CIDR 10.233.64.0/18
+                                                  smoke-nginx pod
+```
+
+Proves: LAG/LACP trunk · DPU OVS bridges · TMM listener · Calico ↔ TMM integration · BNK GatewayClass + HTTPRoute reconciler.
+
+---
+
+## <span class="tag">9</span>The feedback loop
 
 The PoC repo isn't a one-way deliverable — it's a feedback channel.
 
@@ -216,7 +280,7 @@ The next PoC starts with stronger defaults. Fewer surprises.
 
 ---
 
-## <span class="tag">8</span>Case study — four agent-diagnosed blockers
+## <span class="tag">10</span>Case study — four agent-diagnosed blockers
 
 The next slides show real moments where the agent **caught blockers a flat runbook would not have spotted unaided** — each from a real deploy on BlueField-3 hardware.
 
@@ -232,7 +296,7 @@ Diagnoses **#2 – #4** are from the **homelab agentic PoC** — first successfu
 
 <!-- _class: dense -->
 
-## <span class="tag">9</span>Agent diagnosis #1 — first hypothesis (ruled out)
+## <span class="tag">11</span>Agent diagnosis #1 — first hypothesis (ruled out)
 
 **Symptom:** `kubeadm join` from the DPU hung in discovery, timing out repeatedly:
 
@@ -256,7 +320,7 @@ The parent-vs-VLAN-child mismatch is the textbook MTU bug for this shape — and
 
 <!-- _class: dense -->
 
-## <span class="tag">10</span>Agent diagnosis #1 — root cause (the real culprit)
+## <span class="tag">12</span>Agent diagnosis #1 — root cause (the real culprit)
 
 Agent walks the data-plane path end-to-end:
 
@@ -282,7 +346,7 @@ host → ens16f0np0 → switch → bond0 → p0/p1 → pf0hpf → br-lag → …
 
 <!-- _class: dense -->
 
-## <span class="tag">11</span>Agent diagnosis #2 — ghost mlx5_core PF
+## <span class="tag">13</span>Agent diagnosis #2 — ghost mlx5_core PF
 
 **Symptom:** post-BFB flash, `netplan apply` rejects every host VLAN sub-interface with `RTNETLINK answers: No such device`, even though `ip -br a` lists the parent as UP.
 
@@ -303,7 +367,7 @@ The agent's reasoning chain (paraphrased from the live session):
 
 <!-- _class: dense -->
 
-## <span class="tag">12</span>Agent diagnosis #3 — apiserver-without-VIP
+## <span class="tag">14</span>Agent diagnosis #3 — apiserver-without-VIP
 
 **Symptom:** `dpubnkctl cluster up` exits 1 — kubeadm init hits its 4-minute wait-control-plane timeout. Retries hit "ports already in use" cleanup garbage.
 
@@ -323,7 +387,7 @@ The agent journaled the scope correction in `decisions.md` with the rejected alt
 
 <!-- _class: dense -->
 
-## <span class="tag">13</span>Agent diagnosis #4 — SR-IOV SF on wrong driver
+## <span class="tag">15</span>Agent diagnosis #4 — SR-IOV SF on wrong driver
 
 **Symptom:** Second `f5-tmm` pod stuck `Pending` — one DPU missing `nvidia.com/bf3_p0_sf1` allocatable, even though both DPUs flashed with the same `PER_PF_NUM_SF=1`.
 
@@ -341,11 +405,11 @@ The agent's reasoning chain:
 
 ---
 
-## <span class="tag">14</span>Honest caveats
+## <span class="tag">16</span>Honest caveats
 
 The agent wasn't infallible. Things it got wrong (and which now show up as v2.2.0 validate rules):
 
-- **Self-inflicted bug #1.** It set `cluster_apiserver_address: 192.168.50.10` at scoping time, optimistic about HA/VIP with no kube-vip plan. The same agent later diagnosed and fixed it (slide 12) — but the cause was its own earlier choice. → **Validate rule #2** now catches this at `dpubnkctl validate` time.
+- **Self-inflicted bug #1.** It set `cluster_apiserver_address: 192.168.50.10` at scoping time, optimistic about HA/VIP with no kube-vip plan. The same agent later diagnosed and fixed it (slide 14) — but the cause was its own earlier choice. → **Validate rule #2** now catches this at `dpubnkctl validate` time.
 
 - **Self-inflicted bug #2.** It set `worker2-bf3.tmfifo_ip: 192.168.100.6/30` reasoning "each host needs a unique /30". Wrong — each rshim is a private point-to-point link; the convention is `.2/30` everywhere. Cost: a `cluster join-dpus` retry. → **Validate rule #4** now flags non-`.2/30` values.
 
@@ -357,7 +421,7 @@ These all closed in v2.2.0. Future PoCs start with stronger defaults — see nex
 
 <!-- _class: dense -->
 
-## <span class="tag">15</span>Audit closeout — v2.2.0 round
+## <span class="tag">17</span>Audit closeout — v2.2.0 round
 
 | #  | Item                                              | Resolution kind   |
 |----|---------------------------------------------------|-------------------|
@@ -380,7 +444,7 @@ All in `main`. Each item carries a journal-entry reference in its commit message
 
 ---
 
-## <span class="tag">16</span>Where next
+## <span class="tag">18</span>Where next
 
 - Cut `v2.2.0` branch from current main as BNK 2.3.0 work begins
 - More PoCs feed more audit items
