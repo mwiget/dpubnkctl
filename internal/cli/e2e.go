@@ -122,6 +122,7 @@ type e2eFlags struct {
 	pocDir            string
 	phaseFilter       string
 	reportDir         string
+	yolo              bool
 	dryRun            bool
 	continueOnFailure bool
 	skipValidate      bool
@@ -157,9 +158,22 @@ Prerequisites:
     host's ssh.key_ref points at.
   - dpubnkctl validate is clean (this is checked as phase 1).
 
---dry-run prints the plan with exact invocations but runs nothing.
---continue-on-failure keeps the pipeline moving past a failed phase
-(useful for diagnosing late-phase issues without re-running earlier ones).`,
+DESTRUCTIVE. Re-flashes DPUs, brings up the cluster, deploys BNK. The
+full pipeline typically takes 60–90 minutes against real hardware.
+
+Invocation summary:
+
+  dpubnkctl e2e                  Print the plan + how to proceed (no-op).
+  dpubnkctl e2e --dry-run        Print the plan with exact per-phase
+                                 invocations. Runs nothing.
+  dpubnkctl e2e --yolo           Actually run the pipeline. Resume-safe
+                                 — already-completed phases skipped via
+                                 artifacts/e2e-state.json.
+  dpubnkctl e2e --yolo --no-resume     Re-run every phase from scratch.
+  dpubnkctl e2e --yolo --phase A,B,C   Run only the listed phases.
+  dpubnkctl e2e --yolo --continue-on-failure
+                                 Keep going past a failed phase (useful
+                                 for diagnosing without restarting).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runE2E(cmd.Context(), cmd.OutOrStdout(), f)
 		},
@@ -167,6 +181,7 @@ Prerequisites:
 	cmd.Flags().StringVar(&f.pocDir, "poc", "", "PoC repo path (default: current directory)")
 	cmd.Flags().StringVar(&f.phaseFilter, "phase", "", "Comma-separated subset of phases to run (default: all in canonical order)")
 	cmd.Flags().StringVar(&f.reportDir, "report-dir", "", "Output dir (default: <poc>/reports/<RFC3339-timestamp>/)")
+	cmd.Flags().BoolVar(&f.yolo, "yolo", false, "Acknowledge the pipeline is destructive and actually run it (required; without it e2e prints the plan and exits)")
 	cmd.Flags().BoolVar(&f.dryRun, "dry-run", false, "Print the plan, run nothing")
 	cmd.Flags().BoolVar(&f.continueOnFailure, "continue-on-failure", false, "Keep running phases after a failure")
 	cmd.Flags().BoolVar(&f.skipValidate, "skip-validate", false, "Skip the validate precheck (not recommended)")
@@ -233,6 +248,17 @@ func runE2E(ctx context.Context, out io.Writer, f *e2eFlags) error {
 	binary, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("locate dpubnkctl binary: %w", err)
+	}
+
+	// Discoverability gate: a bare `dpubnkctl e2e` used to start the
+	// full destructive pipeline immediately, which surprised operators
+	// (and agents) running the binary for the first time. Require an
+	// explicit --yolo or --dry-run; otherwise print what the run will
+	// do, point at the relevant flags, and exit cleanly so the operator
+	// can decide.
+	if !f.yolo && !f.dryRun {
+		printE2EPlan(out, p, repo, binary, selected, f)
+		return nil
 	}
 
 	reportDir := f.reportDir
@@ -367,6 +393,33 @@ func runE2E(ctx context.Context, out io.Writer, f *e2eFlags) error {
 	}
 	fmt.Fprintf(out, "DONE. Report at %s\n", reportDir)
 	return nil
+}
+
+// printE2EPlan summarises what `dpubnkctl e2e --yolo` would do for this
+// PoC and exits without running. Shows the actual per-phase
+// subcommands that would fire (gates auto-filled from poc.yaml) so the
+// operator can preview before opting in.
+func printE2EPlan(out io.Writer, p *poc.PoC, repo, binary string, selected []e2ePhase, f *e2eFlags) {
+	fmt.Fprintf(out, "PoC: %s   (BNK %s)\n", p.Metadata.Name, p.Metadata.BNKVersion)
+	fmt.Fprintf(out, "Repo: %s\n\n", repo)
+	fmt.Fprintln(out, "`dpubnkctl e2e` runs the full deploy pipeline end-to-end. It is")
+	fmt.Fprintln(out, "DESTRUCTIVE (BFB re-flash, kubespray cluster bring-up, BNK deploy)")
+	fmt.Fprintln(out, "and typically takes 60–90 minutes on a 2-host PoC.")
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "Phases (%d) — would run, in order:\n\n", len(selected))
+	for i, ph := range selected {
+		args := buildArgs(p, repo, ph)
+		fmt.Fprintf(out, "  %d. %-18s %s %s\n", i+1, ph.name, binary, strings.Join(args, " "))
+	}
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Nothing has been changed. To proceed:")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "  dpubnkctl e2e --yolo               # actually run (resume-safe)")
+	fmt.Fprintln(out, "  dpubnkctl e2e --yolo --no-resume   # re-run every phase from scratch")
+	fmt.Fprintln(out, "  dpubnkctl e2e --dry-run            # show the plan again (no-op)")
+	fmt.Fprintln(out, "  dpubnkctl validate                 # sanity-check poc.yaml first")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Reports + per-phase logs land under reports/<RFC3339-timestamp>/.")
 }
 
 func selectPhases(filter string, skipValidate bool) ([]e2ePhase, error) {
