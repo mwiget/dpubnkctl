@@ -52,6 +52,7 @@ before driving a PoC.`,
 		newValidateCmd(),
 		newE2ECmd(),
 		newDiagramCmd(),
+		newGatewayCmd(),
 		newTopologiesCmd(),
 		newVersionCmd(),
 	)

@@ -118,6 +118,8 @@ No fancy tooling — stdlib + cobra + yaml.v3 + golang.org/x/crypto/ssh + sftp.
 
     If TMM's bfd_watcher still logs `vlan name not found` after `deploy cne`, check the F5SPKVlans rendered to `artifacts/f5spkvlans-rendered.yaml` against `kubectl get f5spkvlan -A` for name + tag mismatch.
 
+24. **BNK 2.2.0 Gateways require explicit `spec.addresses`.** There is no global IPAM pool in BNK 2.2.0 — applying a `Gateway` without `spec.addresses` leaves it at `Programmed=False, reason=AddressNotAssigned` forever. The f5-cne-controller does create per-Gateway `IPAMRange` CRs named `bnkgw-<ns>-<gatewayName>` for its own bookkeeping, but those are not user-supplied pools — they're internal accounting. (Manually-applied `IPAMRange`s with arbitrary names get rejected with `Failed to extract BnkGateway name`.) Use `dpubnkctl gateway example` to scaffold a Gateway pre-filled with `bnk.external_selfip`; `--smoke-test` adds a backend Deployment + Service for an end-to-end curl path.
+
 ### Destroy / cleanup
 
 21. **F5 sub-CRs leak finalizers when the parent CNEInstance is deleted.** FLO reliably removes the finalizer on its own CNEInstance, but `csrcs`/`cwcs`/`observers`/`rabbitmqs`/`otelcollectors`/`cnemanifests`/etc. get stuck on Terminating. `destroy bnk` force-deletes them and patches `metadata.finalizers: []`. Without this, namespace deletion hangs forever.

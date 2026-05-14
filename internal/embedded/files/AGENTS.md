@@ -93,6 +93,35 @@ Don't do that.
 If the operator's goal is a single phase, a one-entry list is fine — the
 point is consistency, not bureaucracy.
 
+## Smoke-testing the deployed Gateway
+
+BNK 2.2.0 has **no global IPAM pool** — a `Gateway` applied without
+`spec.addresses` stays at `Programmed=False, reason=AddressNotAssigned`.
+Every Gateway must explicitly declare its IP, typically the
+`bnk.external_selfip` value from `poc.yaml`.
+
+Scaffold one with:
+
+```
+dpubnkctl gateway example --smoke-test --name demo --app-name nginx \
+  | kubectl apply -f -
+```
+
+That emits a `Deployment` + `Service` + `Gateway` + `HTTPRoute` already
+wired together. The Gateway's address comes from `poc.yaml`
+`bnk.external_selfip` (override with `--address <ip>`). Once applied,
+`curl http://<external_selfip>/` should return the nginx welcome page.
+
+If you author Gateways by hand instead, fill in:
+
+```yaml
+spec:
+  gatewayClassName: bnk-gatewayclass
+  addresses:
+    - type: IPAddress
+      value: <bnk.external_selfip>
+```
+
 ## Pinned versions (for this dpubnkctl release)
 
 This binary builds for **BNK 2.2.0**:
