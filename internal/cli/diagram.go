@@ -149,7 +149,15 @@ func RenderClusterASCII(p *poc.PoC) string {
 // are rendered at the SAME outer width so the arrows align perfectly
 // under each box's center.
 func renderHostColumn(h *poc.Host) []string {
-	hostBody := []string{h.Role, h.SSH.Address}
+	// Host mgmt line: prefix with the kernel iface name (e.g. "eth0")
+	// when discover captured it, so the host block reads symmetrically
+	// with the DPU block ("oob_net0 <ip>"). Older PoCs without
+	// MgmtIface populated fall back to the bare IP.
+	mgmtLine := h.SSH.Address
+	if iface := strings.TrimSpace(h.MgmtIface); iface != "" {
+		mgmtLine = iface + " " + h.SSH.Address
+	}
+	hostBody := []string{h.Role, mgmtLine}
 
 	type dpuSpec struct {
 		title string
@@ -166,14 +174,15 @@ func renderHostColumn(h *poc.Host) []string {
 			lag = "LAG"
 		}
 		body := []string{"DPU worker", "(" + lag + ")"}
-		// Prefer the DPU's externally-reachable oob_net0 IP. tmfifo_net0
-		// only works from the host that owns the DPU, so it's useless as
-		// "mgmt" in a shared report; show it as "tmfifo" instead when
-		// that's all we have.
+		// Prefer the DPU's externally-reachable oob_net0 address; label
+		// with the literal iface name so the block reads "oob_net0 <ip>"
+		// (parallel to the host block's "<iface> <ip>"). When oob_ip
+		// isn't captured yet, fall back to the tmfifo address with the
+		// "tmfifo_net0" iface label so the operator can still find it.
 		if oob := strings.TrimSpace(d.OOBIP); oob != "" {
-			body = append(body, "mgmt "+stripCIDR(oob))
+			body = append(body, "oob_net0 "+stripCIDR(oob))
 		} else if tm := stripCIDR(d.TmfifoIP); tm != "" {
-			body = append(body, "tmfifo "+tm)
+			body = append(body, "tmfifo_net0 "+tm)
 		}
 		dpus = append(dpus, dpuSpec{title: label, body: body})
 	}
@@ -311,11 +320,15 @@ func RenderMgmtPlaneASCII(p *poc.PoC) string {
 		return b.String()
 	}
 
-	type row struct{ name, role, addr string }
+	type row struct{ name, role, iface, addr string }
 	var rows []row
-	nameW, roleW, addrW := len("Node"), len("Role"), len("Address")
+	nameW, roleW, ifaceW, addrW := len("Node"), len("Role"), len("Iface"), len("Address")
 	for _, h := range p.Hosts {
-		rows = append(rows, row{name: h.Name, role: h.Role, addr: h.SSH.Address})
+		iface := strings.TrimSpace(h.MgmtIface)
+		if iface == "" {
+			iface = "—"
+		}
+		rows = append(rows, row{name: h.Name, role: h.Role, iface: iface, addr: h.SSH.Address})
 		for _, d := range h.DPUs {
 			dname := d.Hostname
 			if dname == "" {
@@ -325,7 +338,9 @@ func RenderMgmtPlaneASCII(p *poc.PoC) string {
 			if addr == "" {
 				addr = "—"
 			}
-			rows = append(rows, row{name: dname, role: "dpu", addr: addr})
+			// DPU mgmt is always oob_net0 on BlueField — constant, not
+			// learned. Hard-code the label so the table is complete.
+			rows = append(rows, row{name: dname, role: "dpu", iface: "oob_net0", addr: addr})
 		}
 	}
 	for _, r := range rows {
@@ -335,15 +350,21 @@ func RenderMgmtPlaneASCII(p *poc.PoC) string {
 		if n := len(r.role); n > roleW {
 			roleW = n
 		}
+		if n := len(r.iface); n > ifaceW {
+			ifaceW = n
+		}
 		if n := len(r.addr); n > addrW {
 			addrW = n
 		}
 	}
-	fmt.Fprintf(&b, "  %-*s    %-*s    %-*s\n", nameW, "Node", roleW, "Role", addrW, "Address")
-	fmt.Fprintf(&b, "  %s    %s    %s\n",
-		strings.Repeat("-", nameW), strings.Repeat("-", roleW), strings.Repeat("-", addrW))
+	fmt.Fprintf(&b, "  %-*s    %-*s    %-*s    %-*s\n",
+		nameW, "Node", roleW, "Role", ifaceW, "Iface", addrW, "Address")
+	fmt.Fprintf(&b, "  %s    %s    %s    %s\n",
+		strings.Repeat("-", nameW), strings.Repeat("-", roleW),
+		strings.Repeat("-", ifaceW), strings.Repeat("-", addrW))
 	for _, r := range rows {
-		fmt.Fprintf(&b, "  %-*s    %-*s    %-*s\n", nameW, r.name, roleW, r.role, addrW, r.addr)
+		fmt.Fprintf(&b, "  %-*s    %-*s    %-*s    %-*s\n",
+			nameW, r.name, roleW, r.role, ifaceW, r.iface, addrW, r.addr)
 	}
 	return b.String()
 }

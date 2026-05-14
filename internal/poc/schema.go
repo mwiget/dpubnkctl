@@ -148,9 +148,16 @@ type VLAN struct {
 }
 
 type Host struct {
-	Name      string         `yaml:"name"`
-	Role      string         `yaml:"role"` // control-plane | worker | both
-	SSH       SSH            `yaml:"ssh"`
+	Name string `yaml:"name"`
+	Role string `yaml:"role"` // control-plane | worker | both
+	SSH  SSH    `yaml:"ssh"`
+	// MgmtIface is the kernel interface name on the host whose IPv4
+	// address equals SSH.Address (e.g. "eth0" or "eno1"). Populated by
+	// `dpubnkctl discover` by matching the SSH address against the
+	// probed `ip -j addr show` output. Used by the diagram to label the
+	// mgmt-plane interface symmetrically with the DPU's "oob_net0".
+	// Optional — older PoCs without it render with just the IP.
+	MgmtIface string         `yaml:"mgmt_iface,omitempty"`
 	BMC       *BMC           `yaml:"bmc,omitempty"`
 	DataPlane *HostDataPlane `yaml:"data_plane,omitempty"`
 	DPUs      []DPU          `yaml:"dpus,omitempty"`

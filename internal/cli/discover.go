@@ -256,6 +256,9 @@ func updatePoCWithHost(p *poc.PoC, name, addr string, f *discoverHostFlags, keyR
 		if existing.SSH.Jumphost == "" {
 			existing.SSH.Jumphost = f.jumphost
 		}
+		if existing.MgmtIface == "" {
+			existing.MgmtIface = mgmtIfaceForAddress(r, addr)
+		}
 		if existing.BMC == nil && r.BMC != nil {
 			existing.BMC = &poc.BMC{Address: r.BMC.IP, Protocol: "redfish"}
 		}
@@ -287,6 +290,7 @@ func updatePoCWithHost(p *poc.PoC, name, addr string, f *discoverHostFlags, keyR
 			KeyRef:   keyRef,
 			Jumphost: f.jumphost,
 		},
+		MgmtIface: mgmtIfaceForAddress(r, addr),
 	}
 	if r.BMC != nil {
 		host.BMC = &poc.BMC{Address: r.BMC.IP, Protocol: "redfish"}
@@ -301,6 +305,32 @@ func updatePoCWithHost(p *poc.PoC, name, addr string, f *discoverHostFlags, keyR
 	}
 	p.Hosts = append(p.Hosts, host)
 	return false
+}
+
+// mgmtIfaceForAddress finds which discovered host interface carries the
+// SSH address. Returns "" when no match (DNS hostname, NAT'd jumphost,
+// or a discovery probe that couldn't enumerate addresses). The diagram
+// renderer treats "" as "iface unknown" and falls back to bare IP.
+func mgmtIfaceForAddress(r *discover.Result, addr string) string {
+	if r == nil {
+		return ""
+	}
+	want := strings.TrimSpace(addr)
+	if want == "" {
+		return ""
+	}
+	for _, iface := range r.Host.Interfaces {
+		for _, a := range iface.IPs {
+			ip := a
+			if i := strings.IndexByte(ip, '/'); i > 0 {
+				ip = ip[:i]
+			}
+			if ip == want {
+				return iface.Name
+			}
+		}
+	}
+	return ""
 }
 
 func hasExistingDPU(dpus []poc.DPU, pci string) bool {
