@@ -3,6 +3,13 @@
 Single-binary CLI to deploy F5 BIG-IP Next for Kubernetes (BNK) on bare-metal
 hosts with NVIDIA BlueField DPUs.
 
+**Overview deck:**
+[browse as slides](https://mwiget.github.io/dpubnkctl/slides/dpubnkctl-overview.html)
+·
+[markdown source](docs/slides/dpubnkctl-overview.md)
+— the why, the human + agentic operating modes, the homelab case study,
+and the v2.2.0 audit closeout. Best first read.
+
 Recurring failure modes are documented in [AGENTS.md](AGENTS.md) — read
 it before driving a new lab. `journal list/add/report`, `validate`,
 `doctor`, and `topologies` are wired.
