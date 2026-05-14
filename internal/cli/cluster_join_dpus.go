@@ -147,6 +147,7 @@ func runClusterJoinDPUs(ctx context.Context, out io.Writer, f *clusterJoinDPUsFl
 		wg       sync.WaitGroup
 		mu       sync.Mutex
 		failures []string
+		joined   []dpuJob // DPUs that ended this phase as cluster members
 	)
 	nodeIPRole := p.Network.NodeIPRole
 	for _, j := range jobs {
@@ -163,7 +164,7 @@ func runClusterJoinDPUs(ctx context.Context, out io.Writer, f *clusterJoinDPUsFl
 				fmt.Fprintf(out, "%s ERR: %v\n", tag, err)
 				return
 			}
-			err = joinOneDPU(ctx, repo, j, jc, nodeIP, p.Versions.K8s, f, prefixWriter{w: out, prefix: tag + " "})
+			outcome, err := joinOneDPU(ctx, repo, j, jc, nodeIP, p.Versions.K8s, f, prefixWriter{w: out, prefix: tag + " "})
 			if err != nil {
 				mu.Lock()
 				failures = append(failures, fmt.Sprintf("%s: %v", j.dpu.Hostname, err))
@@ -171,23 +172,41 @@ func runClusterJoinDPUs(ctx context.Context, out io.Writer, f *clusterJoinDPUsFl
 				fmt.Fprintf(out, "%s ERR: %v\n", tag, err)
 				return
 			}
-			fmt.Fprintf(out, "%s joined.\n", tag)
+			mu.Lock()
+			joined = append(joined, j)
+			mu.Unlock()
+			switch outcome {
+			case joinOutcomeJoined:
+				fmt.Fprintf(out, "%s joined.\n", tag)
+			case joinOutcomeAlreadyJoined:
+				fmt.Fprintf(out, "%s already a cluster member (skipped kubeadm join).\n", tag)
+			}
 		}()
 	}
 	wg.Wait()
 
-	if len(failures) > 0 {
-		return fmt.Errorf("%d DPU join(s) failed:\n  - %s", len(failures), strings.Join(failures, "\n  - "))
+	// 3. Label + taint the DPUs that ended up as cluster members, even
+	//    if some other DPU's join failed. Both label and taint use
+	//    `kubectl label --overwrite` / `kubectl taint --overwrite` so a
+	//    re-run against an already-labeled node is safe — and a
+	//    partial-success retry shouldn't leave the succeeded DPU
+	//    unlabeled just because a sibling failed.
+	if !f.skipLabelTaint && len(joined) > 0 {
+		fmt.Fprintf(out, "[3/3] Labeling + tainting %d DPU node(s) ...\n", len(joined))
+		if err := labelAndTaintDPUs(ctx, repo, joined, out); err != nil {
+			fmt.Fprintf(out, "      WARN: label/taint partial failure: %v\n", err)
+		}
+	} else if f.skipLabelTaint {
+		fmt.Fprintln(out, "[3/3] (--skip-label-taint)")
+	} else {
+		fmt.Fprintln(out, "[3/3] (no DPUs joined — skipping label/taint)")
 	}
 
-	// 3. Label + taint via operator's kubectl.
-	if !f.skipLabelTaint {
-		fmt.Fprintln(out, "[3/3] Labeling + tainting DPU nodes ...")
-		if err := labelAndTaintDPUs(ctx, repo, jobs, out); err != nil {
-			return fmt.Errorf("label/taint: %w", err)
-		}
-	} else {
-		fmt.Fprintln(out, "[3/3] (--skip-label-taint)")
+	// Surface join failures AFTER labeling so the succeeded DPUs get
+	// finalized regardless. Exit non-zero so the operator (or e2e) knows
+	// to retry the failed ones.
+	if len(failures) > 0 {
+		return fmt.Errorf("%d DPU join(s) failed:\n  - %s", len(failures), strings.Join(failures, "\n  - "))
 	}
 
 	// Update poc.yaml + journal.
@@ -240,7 +259,18 @@ func resolveDPUNodeIP(d *poc.DPU, role string) (string, error) {
 	return ip.String(), nil
 }
 
-func joinOneDPU(ctx context.Context, repo string, j dpuJob, jc *cluster.JoinCommand, nodeIP, k8sMinor string, f *clusterJoinDPUsFlags, w io.Writer) error {
+// joinOutcome distinguishes "did a real kubeadm join" from "DPU was
+// already a cluster member, fast-path". The outer caller still treats
+// both as success — this only changes the user-facing message and the
+// journal entry.
+type joinOutcome int
+
+const (
+	joinOutcomeJoined        joinOutcome = iota // ran kubeadm join, OK
+	joinOutcomeAlreadyJoined                    // /etc/kubernetes/kubelet.conf already present
+)
+
+func joinOneDPU(ctx context.Context, repo string, j dpuJob, jc *cluster.JoinCommand, nodeIP, k8sMinor string, f *clusterJoinDPUsFlags, w io.Writer) (joinOutcome, error) {
 	dpuIP := strings.SplitN(j.dpu.TmfifoIP, "/", 2)[0]
 
 	hostKey := j.host.SSH.KeyRef
@@ -274,7 +304,7 @@ func joinOneDPU(ctx context.Context, repo string, j dpuJob, jc *cluster.JoinComm
 	c, err := ssh.Dial(dialCtx, cfg)
 	cancel()
 	if err != nil {
-		return fmt.Errorf("ssh dpu: %w", err)
+		return joinOutcomeJoined, fmt.Errorf("ssh dpu: %w", err)
 	}
 	defer c.Close()
 
@@ -287,13 +317,25 @@ func joinOneDPU(ctx context.Context, repo string, j dpuJob, jc *cluster.JoinComm
 		j.dpu.OOBIP = ip
 	}
 
+	// Fast-path: if this DPU was already joined on a prior attempt, skip
+	// the install + join entirely. The install step disables kubelet, so
+	// re-running it on an already-joined DPU would risk breaking the
+	// running node (the previous behavior left worker1-bf3 kubelet
+	// `inactive (dead)` for several minutes during the lake1 retry; see
+	// punch-list item 5/6). We DO want label/taint to re-run, which
+	// happens regardless of this outcome.
+	if cluster.AlreadyJoined(ctx, c) {
+		fmt.Fprintln(w, "already a cluster member — skipping install + kubeadm join.")
+		return joinOutcomeAlreadyJoined, nil
+	}
+
 	if !f.skipInstall {
 		fmt.Fprintln(w, "installing kubelet/kubeadm/kubectl ...")
 		instCtx, icancel := context.WithTimeout(ctx, 10*time.Minute)
 		err := cluster.InstallKubeBinaries(instCtx, c, k8sMinor)
 		icancel()
 		if err != nil {
-			return err
+			return joinOutcomeJoined, err
 		}
 		fmt.Fprintln(w, "install ok")
 	}
@@ -303,8 +345,8 @@ func joinOneDPU(ctx context.Context, repo string, j dpuJob, jc *cluster.JoinComm
 	} else {
 		fmt.Fprintln(w, "running kubeadm join ...")
 	}
-	if err := cluster.JoinDPU(ctx, c, jc, j.dpu.Hostname, nodeIP); err != nil {
-		return err
+	if _, err := cluster.JoinDPU(ctx, c, jc, j.dpu.Hostname, nodeIP); err != nil {
+		return joinOutcomeJoined, err
 	}
 	// Restart containerd so its CRI re-scans /etc/cni/net.d. kubeadm
 	// join only waited for the kubelet TLS bootstrap; it didn't trigger
@@ -314,7 +356,7 @@ func joinOneDPU(ctx context.Context, repo string, j dpuJob, jc *cluster.JoinComm
 	if err := cluster.RestartContainerd(ctx, c); err != nil {
 		fmt.Fprintf(w, "WARN: containerd restart failed (DPU may stay NotReady): %v\n", err)
 	}
-	return nil
+	return joinOutcomeJoined, nil
 }
 
 func labelAndTaintDPUs(ctx context.Context, repo string, jobs []dpuJob, out io.Writer) error {

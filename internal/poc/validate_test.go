@@ -217,6 +217,65 @@ func TestValidate_EmptyClusterAPIServerWarns(t *testing.T) {
 	}
 }
 
+func TestValidateForPhase_ProvisionIgnoresDeployFields(t *testing.T) {
+	// The motivating bug: `provision dpus` was refusing to run because
+	// FAR/JWT/selfip were empty, even though those only matter at
+	// deploy. ValidateForPhase(PhaseProvision) must let that through.
+	p, repo := goodPoC(t)
+	p.BNK.FARKeyRef = ""
+	p.BNK.JWTRef = ""
+	p.BNK.ExternalSelfIP = ""
+	p.BNK.InternalSelfIP = ""
+
+	r := ValidateForPhase(p, repo, PhaseProvision)
+	if !r.Valid() {
+		t.Errorf("PhaseProvision must not block on empty deploy-phase fields; got:\n  %s", strings.Join(r.Errors, "\n  "))
+	}
+	for _, w := range r.Warnings {
+		if strings.Contains(w, "selfip") {
+			t.Errorf("PhaseProvision must not emit deploy-phase warnings; got: %s", w)
+		}
+	}
+
+	// Conversely, the same PoC should fail at Deploy.
+	r = ValidateForPhase(p, repo, PhaseDeploy)
+	if r.Valid() {
+		t.Fatal("PhaseDeploy must block on missing FAR/JWT")
+	}
+	if !errorContains(r, "far_key_ref") || !errorContains(r, "jwt_ref") {
+		t.Errorf("expected FAR + JWT errors at PhaseDeploy; got: %v", r.Errors)
+	}
+}
+
+func TestValidateForPhase_ProvisionStillCatchesProvisionFields(t *testing.T) {
+	// Filter must not silence rules that DO belong to the current phase.
+	p, repo := goodPoC(t)
+	p.Hosts[0].DPUs[0].Hostname = ""
+	p.Provisioning.DPUDNS = nil
+
+	r := ValidateForPhase(p, repo, PhaseProvision)
+	if r.Valid() {
+		t.Fatal("expected provision-phase rules to still fire")
+	}
+	if !errorContains(r, "hostname") {
+		t.Errorf("DPU hostname error missing: %v", r.Errors)
+	}
+	if !errorContains(r, "dpu_dns") {
+		t.Errorf("dpu_dns error missing: %v", r.Errors)
+	}
+}
+
+func TestValidate_StillRunsEverything(t *testing.T) {
+	// Backward compat: bare Validate must enforce all rules (== PhaseDeploy).
+	p, repo := goodPoC(t)
+	p.BNK.JWTRef = ""
+
+	r := Validate(p, repo)
+	if r.Valid() {
+		t.Fatal("Validate (full) must still block on missing JWT")
+	}
+}
+
 func errorContains(r ValidationResult, substr string) bool {
 	for _, e := range r.Errors {
 		if strings.Contains(e, substr) {

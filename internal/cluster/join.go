@@ -106,8 +106,22 @@ func RestartContainerd(ctx context.Context, c *ssh.Client) error {
 	return nil
 }
 
+// AlreadyJoined returns true if the DPU has a usable kubelet.conf —
+// the file kubeadm join writes once TLS bootstrap succeeds. Used by
+// JoinDPU to skip the join when it would otherwise fail-loud with
+// "/etc/kubernetes/kubelet.conf already exists". A partial-success
+// retry of `cluster join-dpus` against an already-joined DPU should
+// be a no-op, not an error.
+func AlreadyJoined(ctx context.Context, dpu *ssh.Client) bool {
+	r := dpu.Run(ctx, "test -s /etc/kubernetes/kubelet.conf")
+	return r.OK()
+}
+
 // JoinDPU runs the kubeadm-supplied join command on the DPU, with our
 // node name override. Containerd is the default CRI (set up by bf.conf).
+// If the DPU already has /etc/kubernetes/kubelet.conf, JoinDPU returns
+// nil immediately — the DPU was joined on an earlier pass and a retry
+// must be idempotent.
 //
 // nodeIP, when non-empty, is written to /etc/default/kubelet as
 // KUBELET_EXTRA_ARGS=--node-ip=<ip> BEFORE kubeadm join runs. kubeadm
@@ -116,14 +130,27 @@ func RestartContainerd(ctx context.Context, c *ssh.Client) error {
 // the cluster's east-west fabric is on a different subnet than the
 // DPU's management (oob_net0) IP. (We can't pass --node-ip to kubeadm
 // join directly — it's a kubelet flag, not a kubeadm one.)
-func JoinDPU(ctx context.Context, dpu *ssh.Client, jc *JoinCommand, dpuHostname, nodeIP string) error {
+//
+// joined reports whether the join actually ran (true) or was skipped
+// because the DPU was already a member (false). Callers use this to
+// decide whether to label/taint anew — the label/taint themselves are
+// idempotent via `kubectl label --overwrite` so it's mostly informational.
+func JoinDPU(ctx context.Context, dpu *ssh.Client, jc *JoinCommand, dpuHostname, nodeIP string) (joined bool, err error) {
+	if AlreadyJoined(ctx, dpu) {
+		// Make sure kubelet is enabled+running even on the skip path —
+		// InstallKubeBinaries always disables kubelet to avoid a cert-less
+		// crash loop, but on a retry that previously got past install we
+		// must re-enable so the DPU stays in the cluster.
+		_ = dpu.Run(ctx, "sudo -n systemctl enable --now kubelet")
+		return false, nil
+	}
 	if nodeIP != "" {
 		// Drop a small file kubelet's systemd unit reads via EnvironmentFile=
 		// (kubespray + kubeadm both wire this in). Single line, idempotent
 		// — re-running join overwrites it with the same content.
 		env := fmt.Sprintf(`echo 'KUBELET_EXTRA_ARGS=--node-ip=%s' | sudo -n tee /etc/default/kubelet >/dev/null`, nodeIP)
 		if r := dpu.Run(ctx, env); !r.OK() {
-			return fmt.Errorf("write /etc/default/kubelet: exit=%d %s", r.ExitCode, strings.TrimSpace(r.Stderr+r.Stdout))
+			return false, fmt.Errorf("write /etc/default/kubelet: exit=%d %s", r.ExitCode, strings.TrimSpace(r.Stderr+r.Stdout))
 		}
 	}
 	// Append --node-name so the DPU registers under the friendly name we
@@ -136,9 +163,14 @@ func JoinDPU(ctx context.Context, dpu *ssh.Client, jc *JoinCommand, dpuHostname,
 	defer cancel()
 	r := dpu.Run(joinCtx, cmd)
 	if !r.OK() {
-		return fmt.Errorf("kubeadm join on DPU: exit=%d\noutput: %s", r.ExitCode, truncate(r.Stdout+r.Stderr, 1000))
+		// Failure path: kubelet was disabled by InstallKubeBinaries, restore
+		// to running state so the DPU isn't left as an inert "kubelet
+		// inactive (dead)" — the operator can't tell from outside whether
+		// the join half-succeeded. Best-effort.
+		_ = dpu.Run(ctx, "sudo -n systemctl enable --now kubelet")
+		return false, fmt.Errorf("kubeadm join on DPU: exit=%d\noutput: %s", r.ExitCode, truncate(r.Stdout+r.Stderr, 1000))
 	}
-	return nil
+	return true, nil
 }
 
 func truncate(s string, n int) string {

@@ -110,10 +110,13 @@ func runProvisionDPUMulti(ctx context.Context, out io.Writer, hostnames []string
 	// errors up front rather than after a BFB cache-and-push that won't
 	// be usable. Override with --skip-validate.
 	if !f.skipValidate {
-		vr := poc.Validate(p, repo)
+		// Only enforce rules whose phase ≤ provision. FAR/JWT/selfip checks
+		// fire at deploy and are irrelevant here — refusing to provision a
+		// DPU because a JWT isn't on disk yet wastes operator time.
+		vr := poc.ValidateForPhase(p, repo, poc.PhaseProvision)
 		printValidation(out, vr)
 		if !vr.Valid() {
-			return fmt.Errorf("poc.yaml has %d validation error(s) — fix them or pass --skip-validate", len(vr.Errors))
+			return fmt.Errorf("poc.yaml has %d provision-phase validation error(s) — fix them or pass --skip-validate", len(vr.Errors))
 		}
 	}
 
