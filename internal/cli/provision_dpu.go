@@ -332,11 +332,10 @@ func flashOneJob(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j fl
 		fmt.Fprintln(w, "[5/7] (skipping DPU SSH wait)")
 	} else {
 		fmt.Fprintf(w, "[5/7] Waiting for %s first boot (via tmfifo) ...\n", dpuName)
-		waitCtx, waitCancel := context.WithTimeout(ctx, f.dpuWaitTimeout)
-		err := waitForDPUSSH(waitCtx, client, dpuIP)
-		waitCancel()
-		if err != nil {
-			fmt.Fprintf(w, "      WARN: first boot wait timed out (%v) — continuing anyway\n", err)
+		// First-boot wait is heuristic — we SW_RESET afterwards and the
+		// real gate is the post-reset wait in step 7. Stay non-fatal here.
+		if err := waitForDPUSSHWithGrace(ctx, client, dpuIP, f.dpuWaitTimeout); err != nil {
+			fmt.Fprintf(w, "      WARN: first boot wait timed out (%v) — continuing to SW_RESET anyway\n", err)
 		} else {
 			fmt.Fprintf(w, "      %s is reachable.\n", dpuName)
 		}
@@ -355,25 +354,128 @@ func flashOneJob(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j fl
 		fmt.Fprintln(w, "[6/7] (skipping post-flash reboot)")
 	}
 
-	// 7. Wait for second DPU boot (after the soft-reset).
+	// 7. Wait for second DPU boot (after the soft-reset). This IS the
+	//    gate — if the DPU doesn't come back after SW_RESET it's not
+	//    going to come back without operator intervention. Treat the
+	//    timeout (after grace) as a hard failure so journal records
+	//    FAILED and the operator (or e2e) doesn't press on into
+	//    cluster-join time only to discover the DPU is dead.
 	if !f.skipPostFlashReboot && !f.skipDPUWait && dpuIP != "" {
 		fmt.Fprintf(w, "[7/7] Waiting for %s second boot (via tmfifo) ...\n", dpuName)
 		// Give the reset a moment to actually start before polling.
 		time.Sleep(8 * time.Second)
-		waitCtx, waitCancel := context.WithTimeout(ctx, f.dpuWaitTimeout)
-		err := waitForDPUSSH(waitCtx, client, dpuIP)
-		waitCancel()
-		if err != nil {
-			fmt.Fprintf(w, "      WARN: second boot wait timed out (%v) — verify manually\n", err)
-		} else {
-			fmt.Fprintf(w, "      %s is reachable after reboot.\n", dpuName)
+		if err := waitForDPUSSHWithGrace(ctx, client, dpuIP, f.dpuWaitTimeout); err != nil {
+			journaled(journalMu, repo, j.hostname, j.dpu, "POST_FLASH_UNREACHABLE", logPath, err.Error())
+			return fmt.Errorf("DPU %s never came back after SW_RESET (timeout + grace expired) — check rshim console for kernel panic, BL2 hang, or PCIe reset failure", dpuName)
 		}
+		fmt.Fprintf(w, "      %s is reachable after reboot.\n", dpuName)
 	} else {
 		fmt.Fprintln(w, "[7/7] (no second boot wait)")
 	}
 
+	// Final readiness gate: confirm the DPU created both SR-IOV
+	// sub-functions (one per PF) that TMM later claims as devices.
+	// The BSP's mlnx-sf systemd unit races kernel module init and
+	// sometimes only creates one — TMM then stays Pending forever on
+	// "Insufficient nvidia.com/bf3_p0_sf1". Fail flash-completion with
+	// a recovery recipe so the operator catches it now rather than
+	// after `deploy cne`. Skip if we couldn't even reach the DPU
+	// (we already warned above) or if the operator opted out of
+	// post-flash waits.
+	if !f.skipPostFlashReboot && !f.skipDPUWait && dpuIP != "" {
+		if err := verifyDPUSubFunctions(ctx, repo, j, w); err != nil {
+			journaled(journalMu, repo, j.hostname, j.dpu, "POST_FLASH_SF_INCOMPLETE", logPath, err.Error())
+			return err
+		}
+	}
+
 	journaled(journalMu, repo, j.hostname, j.dpu, "SUCCESS", logPath, "")
 	return nil
+}
+
+// verifyDPUSubFunctions SSHes into the freshly-flashed DPU and counts
+// mlx5_core sub-function aux devices. PER_PF_NUM_SF=1 (set by the bf.conf
+// mlxconfig step) means we should see exactly 2 — one each for p0/p1.
+// Polls for up to 60s because the mlnx-sf systemd unit may still be
+// settling when sshd accepted the connection.
+//
+// On failure, returns an error whose text includes the recovery recipe
+// the operator can run on the DPU directly. AGENTS.md #7 covers the
+// underlying race in narrative form.
+func verifyDPUSubFunctions(ctx context.Context, repo string, j flashJob, w io.Writer) error {
+	cfg, err := dpuSSHConfig(repo, j.host, j.dpu)
+	if err != nil {
+		fmt.Fprintf(w, "      WARN: skipping SF readiness check (%v)\n", err)
+		return nil
+	}
+	fmt.Fprintf(w, "      Verifying %s SR-IOV sub-functions are present ...\n", j.dpu.Hostname)
+
+	const want = 2
+	pollCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	dial, dcancel := context.WithTimeout(pollCtx, 30*time.Second)
+	c, err := ssh.Dial(dial, cfg)
+	dcancel()
+	if err != nil {
+		fmt.Fprintf(w, "      WARN: skipping SF readiness check (ssh to DPU: %v)\n", err)
+		return nil
+	}
+	defer c.Close()
+
+	var lastCount int
+	for {
+		// `ls -1 /sys/bus/auxiliary/devices/` enumerates every aux
+		// device; mlx5_core.sf.<n> is the SF entry. wc -l gives count.
+		r := c.Run(pollCtx, `ls /sys/bus/auxiliary/devices/ 2>/dev/null | grep -cE '^mlx5_core\.sf\.[0-9]+$' || true`)
+		if r.OK() {
+			n := 0
+			fmt.Sscanf(strings.TrimSpace(r.Stdout), "%d", &n)
+			lastCount = n
+			if n >= want {
+				fmt.Fprintf(w, "      %d/%d SR-IOV sub-functions present.\n", n, want)
+				return nil
+			}
+		}
+		select {
+		case <-pollCtx.Done():
+			return fmt.Errorf(
+				"DPU %s has %d/%d SR-IOV sub-functions after second boot — "+
+					"TMM would stay Pending on `Insufficient nvidia.com/bf3_p0_sf1`. "+
+					"Recovery: ssh to the DPU and run `sudo /sbin/mlnx-sf --action create "+
+					"--device <pci-of-missing-pf> --sfnum 1 --enable-trust --hwaddr <random-mac>` "+
+					"(see /etc/mellanox/mlnx-sf.conf for the original create commands). "+
+					"AGENTS.md #7 documents the underlying race",
+				j.dpu.Hostname, lastCount, want)
+		case <-time.After(3 * time.Second):
+		}
+	}
+}
+
+// dpuSSHConfig builds an ssh.Config for connecting to a DPU through
+// its host (ProxyJump). Mirrors the pattern in cluster_join_dpus.go.
+func dpuSSHConfig(repo string, host *poc.Host, dpu *poc.DPU) (ssh.Config, error) {
+	if dpu == nil || dpu.TmfifoIP == "" {
+		return ssh.Config{}, fmt.Errorf("dpu has no tmfifo_ip")
+	}
+	dpuIP := strings.SplitN(dpu.TmfifoIP, "/", 2)[0]
+	hostKey := host.SSH.KeyRef
+	if !filepath.IsAbs(hostKey) {
+		hostKey = filepath.Join(repo, hostKey)
+	}
+	return ssh.Config{
+		Address: dpuIP,
+		Port:    22,
+		User:    "ubuntu",
+		KeyPath: hostKey,
+		Timeout: 30 * time.Second,
+		Jumphost: &ssh.Config{
+			Address: host.SSH.Address,
+			Port:    host.SSH.Port,
+			User:    host.SSH.User,
+			KeyPath: hostKey,
+			Timeout: 30 * time.Second,
+		},
+	}, nil
 }
 
 // perHostWriter returns a writer that prefixes lines with [hostname] when
@@ -535,6 +637,27 @@ func tmfifoHostPart(cidr string) string {
 		return cidr[:i]
 	}
 	return cidr
+}
+
+// waitForDPUSSHWithGrace runs the primary wait, and on timeout extends
+// once for an additional 30s "grace" before reporting failure. The
+// homelab PoC saw both boot waits expire on the millisecond while the
+// DPU was actually responding — rshim/cloud-init settling races the
+// primary timeout. One extra burst absorbs that without raising the
+// primary (which would slow the happy path).
+func waitForDPUSSHWithGrace(ctx context.Context, host *ssh.Client, dpuIP string, primary time.Duration) error {
+	first, fcancel := context.WithTimeout(ctx, primary)
+	err := waitForDPUSSH(first, host, dpuIP)
+	fcancel()
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return err
+	}
+	grace, gcancel := context.WithTimeout(ctx, 30*time.Second)
+	defer gcancel()
+	return waitForDPUSSH(grace, host, dpuIP)
 }
 
 // waitForDPUSSH polls TCP/22 on dpuIP from the host every 5 s.

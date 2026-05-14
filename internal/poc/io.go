@@ -1,9 +1,11 @@
 package poc
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -70,11 +72,33 @@ func Load(dir string) (*PoC, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
+	// Strict decode: yaml.v3's default silently drops unknown fields, so
+	// a typo like `role:` instead of `name:` under network.vlans[] used
+	// to load clean but with an empty struct — only surfacing two phases
+	// later as a baffling failure. KnownFields(true) hard-fails any key
+	// the schema doesn't declare; the helper below sniffs the common
+	// "they used the DPU VLAN shape instead of the network.vlans shape"
+	// mistake and points at the right schema.
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
 	var p PoC
-	if err := yaml.Unmarshal(data, &p); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+	if err := dec.Decode(&p); err != nil {
+		return nil, fmt.Errorf("parse %s: %w%s", path, err, schemaHintFor(err))
 	}
 	return &p, nil
+}
+
+// schemaHintFor recognises common shape-confusion errors and appends a
+// pointer at the right fields. yaml.v3's KnownFields error text gives us
+// the offending key name but not a corrective suggestion.
+func schemaHintFor(err error) string {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "field role not found in type poc.VLAN") ||
+		strings.Contains(msg, "field tag not found in type poc.VLAN"):
+		return "\n\nhint: network.vlans[] uses { name, id, subnet } — not { role, tag, subnet }. The role/tag shape is for the per-host data_plane.vlans[] and per-DPU dpus[].vlans[] (where the role+tag combine into a Linux interface name)."
+	}
+	return ""
 }
 
 func (p *PoC) Save(dir string) error {
