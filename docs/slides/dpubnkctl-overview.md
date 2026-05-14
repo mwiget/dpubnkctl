@@ -233,40 +233,29 @@ Every CR + manifest applied during this run is saved verbatim under `artifacts/`
 
 ---
 
-<!-- _class: dense -->
-
 ## <span class="tag">9</span>Embedded `AGENTS.md` — the runbook
 
 Every `dpubnkctl init` drops a persona-neutral `AGENTS.md` into the PoC repo. Single doc, agentic-CLI-agnostic. Three sections:
 
-- **Source of truth** — `poc.yaml` is the contract; teardown reads only this file. `network-design-checklist.md`, `decisions.md`, `journal/`, `inventory/`, `artifacts/`, `keys/` each have a documented role.
-- **YOLO / auto-approve tiers** — read-only (always auto), reversible (auto with `--auto reversible`), destructive (`--yolo` + matching PoC-name confirm only). Agents must respect.
-- **24 numbered gotchas** — every recurring failure mode from past PoCs, each with one-line symptom + one-line cause + one-line fix. Example:
+- **Source of truth** — `poc.yaml` is the contract. `decisions.md`, `journal/`, `inventory/`, `artifacts/`, `keys/` each have a documented role.
+- **YOLO tiers** — read-only (always auto), reversible (auto with `--auto reversible`), destructive (`--yolo` + matching PoC-name confirm). Agents must respect.
+- **24 numbered gotchas** — every recurring failure from past PoCs. One-line symptom / cause / fix. e.g.:
 
-> **#8.** OVS internal ports default to MTU 1500 even when `bond0`/`p0`/`p1` are 9000. Anything >1500 from the host PCIe path gets dropped/fragmented inside the DPU OVS, breaking TLS handshakes (apiserver Server Hello + Certificate is multi-KB). `bf.conf::ovs-vlan-init.sh` now sets MTU on every OVS internal port (commit `0815bb0`).
+> **#8.** OVS internal ports default to MTU 1500; apiserver TLS handshakes hang from frame loss. Fix: `bf.conf` sets MTU on every internal port.
 
-Agents read `AGENTS.md` first, on every session. New PoCs inherit every lesson the prior PoCs paid for.
+Agents read `AGENTS.md` first, every session. **New PoCs inherit every lesson the prior PoCs paid for.**
 
 ---
 
-<!-- _class: dense -->
-
 ## <span class="tag">10</span>Three personas — separation of duties
 
-```
-personas/
-├── pre-sales-se.md       solution architect
-├── lab-tech.md            DPU / BMC / firmware specialist
-└── doc-specialist.md      journal keeper + report generator
-```
+Each persona has a **strict tool allowlist** + **NOT-allowed list** + a journal-based handoff protocol. Same constraints regardless of which agentic CLI runs.
 
-Each persona has a **strict tool allowlist** + a **handoff protocol** + a **NOT-allowed** list. Boundaries are agent-CLI-neutral — same rules apply whether the operator runs Claude Code, Aider, Gemini, opencode, or an OpenAI-compat REPL.
+- **`pre-sales-se`** — solution architect. *Only* persona that talks to the customer. Owns `decisions.md`. Cannot run destructive commands.
+- **`lab-tech`** — DPU / BMC / rshim / mlxconfig / firmware specialist. Runs `discover` + `provision`. Must journal an SE-consent reference before any destructive action. Cannot modify `poc.yaml`.
+- **`doc-specialist`** — append-only journal keeper. Writes the day-end summary and final `report.md`. Cannot run infra commands.
 
-- **pre-sales-se** — only persona that talks to the customer; owns `decisions.md`. Cannot run destructive commands. Must consent via journal entry before lab-tech proceeds.
-- **lab-tech** — DPU/BMC/rshim/mlxconfig specialist. Runs `discover` and `provision`. Must journal an SE consent reference before any destructive action. Cannot modify `poc.yaml`.
-- **doc-specialist** — append-only journal keeper. Writes the day-end summary + final `report.md`. Cannot run infra commands.
-
-The PoC repo's `journal/` directory is the handoff bus: an SE journal entry grants consent, lab-tech journals what they ran + result, doc-specialist rolls both into the report. Every persona transition is auditable.
+The `journal/` directory is the handoff bus: SE consent → lab-tech executes + records → doc-specialist rolls into the report. **Every persona transition is auditable.**
 
 ---
 
