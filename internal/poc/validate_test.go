@@ -44,7 +44,9 @@ func goodPoC(t *testing.T) (*PoC, string) {
 			DataPlane: &HostDataPlane{
 				ParentIface: "ens16f0np0",
 				VLANs: []HostDataPlaneVLAN{
-					{Role: "internal", Tag: 41, IP: "10.10.41.10/24"},
+					// IP matches ClusterAPIServerAddress on purpose — the new
+					// validate rule requires this when there's a single CP.
+					{Role: "internal", Tag: 41, IP: "10.10.41.66/24"},
 				},
 			},
 			DPUs: []DPU{{
@@ -273,6 +275,66 @@ func TestValidate_StillRunsEverything(t *testing.T) {
 	r := Validate(p, repo)
 	if r.Valid() {
 		t.Fatal("Validate (full) must still block on missing JWT")
+	}
+}
+
+func TestValidate_ClusterAPIServerMustMatchSingleCPVLANIP(t *testing.T) {
+	// goodPoC ships with apiserver == host VLAN IP (both .66). Force a
+	// mismatch and confirm the new rule fires.
+	p, repo := goodPoC(t)
+	p.Network.ClusterAPIServerAddress = "10.10.41.99" // not present on the CP host
+	r := ValidateForPhase(p, repo, PhaseCluster)
+	if !errorContains(r, "cluster_apiserver_address") {
+		t.Errorf("expected cluster_apiserver_address mismatch error; got: %v", r.Errors)
+	}
+}
+
+func TestValidate_ClusterAPIServerNotEnforcedAtProvision(t *testing.T) {
+	// The cross-check should only fire at Cluster — provision shouldn't
+	// care since kubeadm hasn't run yet.
+	p, repo := goodPoC(t)
+	p.Network.ClusterAPIServerAddress = "192.0.2.99" // bogus, doesn't match anything
+	r := ValidateForPhase(p, repo, PhaseProvision)
+	if errorContains(r, "cluster_apiserver_address") {
+		t.Errorf("apiserver cross-check leaked into provision phase: %v", r.Errors)
+	}
+}
+
+func TestValidate_TmfifoIPWrongSubnet(t *testing.T) {
+	// 192.168.100.6/30 is .4 net / .5 first / .6 second / .7 bcast — a
+	// different /30 than the rshim default 192.168.100.0/30.
+	p, repo := goodPoC(t)
+	p.Hosts[0].DPUs[0].TmfifoIP = "192.168.100.6/30"
+	r := ValidateForPhase(p, repo, PhaseProvision)
+	if !errorContains(r, "tmfifo_ip") {
+		t.Errorf("expected tmfifo_ip wrong-subnet error; got: %v", r.Errors)
+	}
+}
+
+func TestValidate_TmfifoIPNotSlash30(t *testing.T) {
+	p, repo := goodPoC(t)
+	p.Hosts[0].DPUs[0].TmfifoIP = "192.168.100.2/24"
+	r := ValidateForPhase(p, repo, PhaseProvision)
+	if !errorContains(r, "/30") {
+		t.Errorf("expected /30 error; got: %v", r.Errors)
+	}
+}
+
+func TestValidate_TmfifoIPCollidesWithRshim(t *testing.T) {
+	p, repo := goodPoC(t)
+	p.Hosts[0].DPUs[0].TmfifoIP = "192.168.100.1/30"
+	r := ValidateForPhase(p, repo, PhaseProvision)
+	if !errorContains(r, "rshim") {
+		t.Errorf("expected rshim-collision error; got: %v", r.Errors)
+	}
+}
+
+func TestValidate_TmfifoIPOK(t *testing.T) {
+	p, repo := goodPoC(t)
+	p.Hosts[0].DPUs[0].TmfifoIP = "192.168.100.2/30"
+	r := ValidateForPhase(p, repo, PhaseProvision)
+	if !r.Valid() {
+		t.Errorf("standard 192.168.100.2/30 should validate clean; got: %v", r.Errors)
 	}
 }
 

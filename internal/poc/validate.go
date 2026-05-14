@@ -210,6 +210,32 @@ func ValidateForPhase(p *PoC, repoDir string, minPhase Phase) ValidationResult {
 		c.warn(PhaseCluster, "2 control planes is not HA-safe — etcd quorum requires 3 to survive a single failure")
 	}
 
+	// Cross-check: with a single control plane, cluster_apiserver_address
+	// must equal that host's VLAN-of-role IP. The lake1/homelab PoC
+	// caught this the hard way — operator set a placeholder VIP that
+	// no listener answered on, kubeadm hung 4 minutes before failing.
+	// With >1 CP an external VIP is plausible, so skip the check there.
+	if cps == 1 && p.Network.ClusterAPIServerAddress != "" && p.Network.NodeIPRole != "" {
+		role := p.Network.NodeIPRole
+		addr := p.Network.ClusterAPIServerAddress
+		var cpHost *Host
+		for i := range p.Hosts {
+			h := &p.Hosts[i]
+			if h.Role == "control-plane" || h.Role == "both" {
+				cpHost = h
+				break
+			}
+		}
+		if cpHost != nil {
+			v := cpHost.VLANByRole(role)
+			if v == nil {
+				c.err(PhaseCluster, "network.cluster_apiserver_address %s set, but control-plane host %q has no data_plane vlan with role=%q (network.node_ip_role) — kubeadm will hang trying to reach it", addr, cpHost.Name, role)
+			} else if ip, _, err := net.ParseCIDR(v.IP); err == nil && ip.String() != addr {
+				c.err(PhaseCluster, "network.cluster_apiserver_address (%s) doesn't match control-plane %q's %s VLAN IP (%s) — with a single control plane, the address must equal that host's data-plane IP, no VIP listener answers otherwise (kubeadm hung 4 min on this in a past PoC)", addr, cpHost.Name, role, ip.String())
+			}
+		}
+	}
+
 	// --- provisioning (everything here renders into bf.conf at provision) ---
 	if p.Provisioning.DPUPasswordHashRef == "" {
 		c.err(PhaseProvision, "provisioning.dpu_password_hash_ref is empty (path to file containing the output of `openssl passwd -1 '<password>'`)")
@@ -263,6 +289,14 @@ func validateDPU(c *checker, d *DPU, ctx string) {
 	}
 	if d.TmfifoIP == "" {
 		c.err(PhaseProvision, "%s.tmfifo_ip is empty (tmfifo_net0 CIDR, e.g. 192.168.100.2/30)", ctx)
+	} else {
+		// rshim driver hard-codes the host side at 192.168.100.1/30, so
+		// the DPU's tmfifo_net0 must live in the same /30 and not collide
+		// with .1. The lake1 PoC hit this: operator picked .6/30, which
+		// is a *different* /30 (.4 net / .5 first / .6 second / .7 bcast)
+		// — host's rshim auto-took 192.168.100.1/30, ProxyJump SSH broke
+		// with "No route to host". Catch the entire failure shape.
+		validateTmfifoIP(c, d.TmfifoIP, ctx)
 	}
 	if len(d.VLANs) == 0 {
 		c.warn(PhaseProvision, "%s has no vlans — DPU won't have any data-plane interfaces", ctx)
@@ -270,6 +304,46 @@ func validateDPU(c *checker, d *DPU, ctx string) {
 	for k, v := range d.VLANs {
 		vctx := fmt.Sprintf("%s.vlans[%d]", ctx, k)
 		validateDPUVLAN(c, v, vctx, d.LAG)
+	}
+}
+
+// rshimHostIP is the address the BlueField rshim driver auto-assigns
+// on the host side. Hard-coded by the kernel module; the operator can
+// technically override via sysfs but no PoC has ever done that.
+var rshimHostIP = net.ParseIP("192.168.100.1")
+
+// validateTmfifoIP enforces the rshim /30 constraint. Anything that
+// would leave the host's rshim interface and the DPU's tmfifo_net0
+// in different subnets — or collide on .1 — is an error.
+func validateTmfifoIP(c *checker, raw, ctx string) {
+	ip, ipnet, err := net.ParseCIDR(raw)
+	if err != nil {
+		c.err(PhaseProvision, "%s.tmfifo_ip %q is not a valid CIDR (typical: 192.168.100.2/30)", ctx, raw)
+		return
+	}
+	ones, bits := ipnet.Mask.Size()
+	if bits != 32 {
+		c.err(PhaseProvision, "%s.tmfifo_ip %q must be IPv4", ctx, raw)
+		return
+	}
+	if ones != 30 {
+		c.err(PhaseProvision, "%s.tmfifo_ip %q must be a /30 (rshim driver uses /30); typical: 192.168.100.2/30", ctx, raw)
+		return
+	}
+	if !ipnet.Contains(rshimHostIP) {
+		c.err(PhaseProvision, "%s.tmfifo_ip %q is on a different /30 than the host rshim default (192.168.100.1/30) — host cannot route to the DPU; use 192.168.100.2/30", ctx, raw)
+		return
+	}
+	if ip.Equal(rshimHostIP) {
+		c.err(PhaseProvision, "%s.tmfifo_ip %q collides with the host rshim address 192.168.100.1 — use 192.168.100.2/30", ctx, raw)
+		return
+	}
+	// /30 of 192.168.100.0: .0 (network), .1 (rshim), .2 (DPU usable),
+	// .3 (broadcast). Only .2 is a valid DPU address; .0 and .3 are
+	// unaddressable.
+	last := ip.To4()[3]
+	if last != 2 {
+		c.err(PhaseProvision, "%s.tmfifo_ip %q must be 192.168.100.2/30 — .0/.3 of the rshim /30 are network/broadcast, .1 is rshim", ctx, raw)
 	}
 }
 

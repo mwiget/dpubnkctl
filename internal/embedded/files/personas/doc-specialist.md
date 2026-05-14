@@ -58,4 +58,7 @@ When the SE signals the PoC is complete, produce `report.md`:
 6. **Appendix: full deployment commands** — derived from `poc.yaml` so
    another engineer can reproduce
 
-Render to PDF if the SE requests: `dpubnkctl journal report --pdf`.
+If the SE requests a PDF, the binary writes markdown only — convert
+with `pandoc report.md -o report.pdf` (if pandoc is installed) or
+open `report.md` in any markdown viewer and print-to-PDF from the
+browser. Don't expect `dpubnkctl journal report` itself to emit PDF.
