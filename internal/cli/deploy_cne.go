@@ -117,7 +117,19 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 	//    lake1). Wait until the CRD is Established.
 	fmt.Fprintln(out, "[3/5] Rendering + applying F5SPKVlan(s) ...")
 	if vlanCount := dpuVLANCount(p); vlanCount > 0 {
-		fmt.Fprintln(out, "      Waiting for FLO to install F5SPKVlan CRD ...")
+		// FLO doesn't apply the F5SPKVlan CRD inline with its own helm
+		// release — a `crd-installer` Job inside f5-operators races to
+		// reconcile it after the CNEInstance lands. `kubectl wait
+		// --for=condition=Established` errors immediately ("error: no
+		// matching resources found") when the CRD object itself doesn't
+		// yet exist, so we have to two-step: wait for the CRD to be
+		// created at all, then wait for it to be Established.
+		fmt.Fprintln(out, "      Waiting for FLO crd-installer to create the F5SPKVlan CRD ...")
+		if err := r.Kubectl(ctx, "wait", "--for=create",
+			"crd/f5-spk-vlans.k8s.f5net.com", "--timeout=5m"); err != nil {
+			return fmt.Errorf("F5SPKVlan CRD never created (check `kubectl -n f5-operators get jobs` for FLO crd-installer status): %w", err)
+		}
+		fmt.Fprintln(out, "      Waiting for F5SPKVlan CRD Established ...")
 		if err := r.Wait(ctx, "", "Established",
 			"crd/f5-spk-vlans.k8s.f5net.com", 5*time.Minute); err != nil {
 			return fmt.Errorf("F5SPKVlan CRD did not become Established: %w", err)

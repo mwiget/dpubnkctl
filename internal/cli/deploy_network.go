@@ -208,9 +208,46 @@ func runDeployNetwork(ctx context.Context, out io.Writer, f *deployNetworkFlags)
 		fmt.Fprintf(out, "      WARN: containerd restart had errors (some nodes may stay NotReady): %v\n", err)
 	}
 
+	// The containerd restart kills every pod's connection to its CRI
+	// shim; the kubelet rebuilds them on the next sync, which briefly
+	// flips affected DaemonSets to ImagePullBackOff / NotReady before
+	// recovering. If `deploy network` returns while that's still
+	// flapping, the operator (or the next phase) reads the noise as
+	// "deploy network failed". Wait for the DaemonSets we explicitly
+	// rely on to come back to full Ready before declaring done.
+	// `kubectl rollout status ds/...` blocks until
+	// numberReady == desiredNumberScheduled.
+	fmt.Fprintln(out, "\nWaiting for DaemonSets to converge after containerd restart ...")
+	for _, ds := range networkDaemonSets {
+		fmt.Fprintf(out, "      %s/%s ...\n", ds.namespace, ds.name)
+		if err := r.Kubectl(ctx, "rollout", "status",
+			"-n", ds.namespace,
+			"ds/"+ds.name, "--timeout=3m"); err != nil {
+			// Don't fail the phase: a DS that isn't installed yet
+			// (timing on the last apply) or a transient straggler after
+			// the bounce each surface here. Warn so the operator can
+			// triage if they want, but let the deploy chain proceed.
+			fmt.Fprintf(out, "      WARN: %s/%s not fully Ready: %v\n", ds.namespace, ds.name, err)
+		}
+	}
+
 	appendDeployJournal(repo, p.Metadata.Name, "", "NETWORK INSTALLED", "")
 	fmt.Fprintln(out, "\nDONE.  FLO should now reconcile the CNEInstance — re-check `kubectl get cneinstance -A` + `kubectl get pods -A`.")
 	return nil
+}
+
+// networkDaemonSets lists the DaemonSets `deploy network` apply
+// that should be Ready before the phase returns. Same set we wait
+// on earlier in this command (multus + sriov) plus local-path,
+// which also bounces during the containerd restart and is the
+// default storage class for the rest of the deploy.
+var networkDaemonSets = []struct {
+	namespace string
+	name      string
+}{
+	{"kube-system", "kube-multus-ds"},
+	{"kube-system", "kube-sriov-cni-ds-amd64"},
+	{"kube-system", "kube-sriov-device-plugin-amd64"},
 }
 
 // restartContainerdEverywhere SSHes to every host AND every DPU in
