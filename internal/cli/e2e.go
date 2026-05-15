@@ -555,7 +555,7 @@ func renderRunMarkdown(r runReport, p *poc.PoC) string {
 	fmt.Fprintln(&b, "## Versions")
 	fmt.Fprintln(&b)
 	fmt.Fprintf(&b, "- **dpubnkctl:** %s  (targets BNK %s)\n", version.Version, version.BNKVersion)
-	fmt.Fprintf(&b, "- **FLO chart:** %s\n", version.FLOChartVer)
+	fmt.Fprintf(&b, "- **FLO chart:** %s\n", floChartLabel(p))
 	fmt.Fprintf(&b, "- **CNE manifest:** %s\n\n", version.CNEManifestVersion)
 
 	// Embed the topology diagrams so any markdown reader (or grep) sees

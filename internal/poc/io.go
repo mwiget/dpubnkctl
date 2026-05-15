@@ -26,9 +26,13 @@ func New(name string) *PoC {
 			BNKVersion:       version.BNKVersion,
 		},
 		Versions: Versions{
-			DOCA:       version.DOCAVersion,
-			BFBImage:   version.BFBImage,
-			FLOChart:   version.FLOChartVer,
+			DOCA:     version.DOCAVersion,
+			BFBImage: version.BFBImage,
+			// FLOChart is resolved from the release-manifest chart at
+			// deploy time on BNK 2.3+. Leaving it empty here makes the
+			// "not yet resolved" state explicit; `deploy flo` populates
+			// it after pulling internal/version.CNEManifestVersion.
+			FLOChart:   "",
 			K8s:        version.K8sVersion,
 			Containerd: version.ContainerdVer,
 			Runc:       version.RuncVersion,

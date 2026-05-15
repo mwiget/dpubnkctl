@@ -93,7 +93,7 @@ func runDeployFLO(ctx context.Context, out io.Writer, f *deployFLOFlags) error {
 	fmt.Fprintf(out, "PoC:        %s\n", p.Metadata.Name)
 	fmt.Fprintf(out, "Cluster:    %s\n", kubeconfig)
 	fmt.Fprintf(out, "JWT:        %s\n", jwtPath)
-	fmt.Fprintf(out, "FLO chart:  %s @ %s\n\n", version.FLOChartName, p.Versions.FLOChart)
+	fmt.Fprintf(out, "FLO chart:  %s @ %s\n\n", version.FLOChartOCIRef, floChartVersionLabel(p))
 
 	r := &deploy.Runner{KubeconfigPath: kubeconfig, Out: prefixWriter{w: out, prefix: "      | "}}
 	if !f.skipPull {
@@ -206,7 +206,7 @@ func runDeployFLO(ctx context.Context, out io.Writer, f *deployFLOFlags) error {
 			Password: saJSON,
 		},
 		"flo",
-		version.FLOChartName,
+		version.FLOChartOCIRef,
 		"f5-operators",
 		p.Versions.FLOChart,
 		values,
@@ -245,6 +245,22 @@ func readJWT(path string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(data)), nil
+}
+
+// floChartVersionLabel returns p.Versions.FLOChart or a placeholder when
+// it hasn't been resolved yet — the release-manifest workflow populates
+// it during `deploy flo`. Used purely for the operator-facing banner.
+func floChartVersionLabel(p *poc.PoC) string {
+	return floChartLabel(p)
+}
+
+// floChartLabel is the shared formatter used by cluster_status, e2e
+// report rendering, and the FLO deploy banner.
+func floChartLabel(p *poc.PoC) string {
+	if v := strings.TrimSpace(p.Versions.FLOChart); v != "" {
+		return v
+	}
+	return "(unresolved — pulled from release-manifest " + version.CNEManifestVersion + " at deploy time)"
 }
 
 // extractFARServiceAccount returns the raw GCP service-account JSON from

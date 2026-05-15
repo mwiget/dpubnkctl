@@ -109,7 +109,7 @@ func TestRender_Files(t *testing.T) {
 		}
 	}
 	cluster := files["group_vars/k8s_cluster/k8s-cluster.yml"]
-	for _, want := range []string{"kube_version: 1.32.8", "kube_network_plugin: calico", "container_manager: containerd", "calico_mtu: 8900"} {
+	for _, want := range []string{"kube_version: 1.30.14", "kube_network_plugin: calico", "container_manager: containerd", "calico_mtu: 8900"} {
 		if !strings.Contains(cluster, want) {
 			t.Errorf("k8s-cluster.yml missing %q", want)
 		}
