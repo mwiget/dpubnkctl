@@ -64,6 +64,24 @@ No fancy tooling — stdlib + cobra + yaml.v3 + golang.org/x/crypto/ssh + sftp.
 
 6. **Kubeconfig localization rewrites server URL + drops CA data + adds insecure-skip-tls-verify.** `cluster.LocalizeKubeconfig` handles all three so the kubeconfig that lands at `artifacts/kubeconfig` works from outside the cluster fabric. The apiserver cert SAN doesn't include the mgmt address — kubespray's `supplementary_addresses_in_ssl_keys` knob would extend it but isn't wired through poc.yaml yet, hence the `insecure-skip-tls-verify`. If you need a properly-trusted kubeconfig, add the mgmt address to the kubespray inventory's `supplementary_addresses_in_ssl_keys` before `cluster up`.
 
+### Apt repo trap on DOCA 3.2 BFB (kubernetes.sources)
+
+25. **DOCA 3.2 / Ubuntu 24.04 BFBs pre-ship `/etc/apt/sources.list.d/kubernetes.sources`** (deb822
+    format) pinned to the *latest* k8s stable (observed: `v1.34`).
+    `cluster join-dpus` adds `/etc/apt/sources.list.d/kubernetes.list`
+    pointing at the cluster's k8s minor (e.g. `v1.30`), but apt
+    *unions* both sources and resolves the highest available version.
+    Without removing the pre-shipped deb822 source, the DPU ends up
+    with `kubeadm 1.34.x` and refuses to join a 1.30 control plane:
+
+      this version of kubeadm only supports deploying clusters with
+      the control plane version >= 1.33.0. Current version: v1.30.14
+
+    Fix (in `internal/cluster/join.go::InstallKubeBinaries`):
+    explicitly `rm -f /etc/apt/sources.list.d/kubernetes.sources
+    /etc/apt/sources.list.d/kubernetes.list` *before* writing the
+    .list. Found in the Phase 6 e2e on homelab-2-3-0 (this branch).
+
 ### DPU OS observations on DOCA 3.2.0 / Ubuntu 24.04 (BNK 2.3)
 
 The 2.2 → 2.3 reflash on the homelab (commit history starting at
