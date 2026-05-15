@@ -6,11 +6,11 @@ title: dpubnkctl
 
 F5 BIG-IP Next for Kubernetes — deploy in one binary, drive with an agent.
 
-Targets **BNK 2.2.0** on NVIDIA BlueField-3 DPUs.
+Targets **BNK 2.3.0** on NVIDIA BlueField-3 DPUs (DOCA 3.2.0, Ubuntu 24.04). Maintenance fixes for 2.2.0 live on the `release-2.2.0` branch.
 
 ## Slide decks
 
-- [Overview deck (web)](slides/dpubnkctl-overview.html) — what dpubnkctl is, why it exists, the human + agentic operating modes, the homelab case study, and the v2.2.0 audit closeout. ~14 slides; arrow keys to navigate, `f` for fullscreen, `o` for overview.
+- [Overview deck (web)](slides/dpubnkctl-overview.html) — what dpubnkctl is, why it exists, the human + agentic operating modes, the homelab case study (v2.2.0 round + v2.3.0 migration), and the deploy-confirmed proof. ~23 slides; arrow keys to navigate, `f` for fullscreen, `o` for overview.
 - [Overview deck (markdown source)](slides/dpubnkctl-overview.md) — readable as a long doc on GitHub; also the source `make slides{-html,-pptx,-pdf}` builds from.
 
 ## Source
