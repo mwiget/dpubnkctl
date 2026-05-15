@@ -205,23 +205,31 @@ section.dense table { font-size: 14px; }
 ;" data-marpit-pagination-total="24" data-size="16:9">
 <header>dpubnkctl · BNK 2.3.0</header>
 <h2 id="two-repo-architecture">Two-repo architecture</h2>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code>+----------------------+
-| dpubnkctl source     |   single binary, BNK-2.3.0-pinned
-|  - internal/         |   (DOCA, BFB, FLO, kubespray) --&gt;
-|  - embedded/         |   stamped with `git describe`
-|    files/AGENTS.md
-|    files/personas/
-+----------------------+
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code>+----------------------------------------------+
+|  dpubnkctl source — single binary,           |
+|  BNK-2.3.0-pinned (DOCA, BFB, FLO,           |
+|  kubespray); stamped with `git describe`     |
+|                                              |
+|     internal/                                |
+|     embedded/files/AGENTS.md                 |
+|     embedded/files/personas/                 |
++----------------------------------------------+
 
-     | `dpubnkctl init &lt;name&gt;`
-     v
-+----------------------+
-| &lt;customer&gt;-poc repo  |   declarative state - everything
-|  - poc.yaml          |   needed to teardown + redeploy
-|  - AGENTS.md + personas/  lives here.
-|  - keys/ (gitignored)     poc.yaml.status tracks phase progress.
-|  - artifacts/, journal/, decisions.md, diagram.txt
-+----------------------+
+              | `dpubnkctl init &lt;name&gt;`
+              v
+
++----------------------------------------------+
+|  &lt;customer&gt;-poc repo — declarative state.    |
+|  Every input needed to teardown + redeploy   |
+|  lives here. poc.yaml.status tracks phase    |
+|  progress.                                   |
+|                                              |
+|     poc.yaml                                 |
+|     AGENTS.md + personas/                    |
+|     keys/   (gitignored)                     |
+|     artifacts/, journal/, decisions.md,      |
+|     diagram.txt                              |
++----------------------------------------------+
 </code></pre>
 <p>The binary is the engine. The PoC repo is the contract.</p>
 <footer>github.com/mwiget/dpubnkctl</footer>

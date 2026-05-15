@@ -76,23 +76,31 @@ Manual BNK-on-bare-metal deploy is 20+ steps over ~3.5 hours:
 ## Two-repo architecture
 
 ```
-+----------------------+
-| dpubnkctl source     |   single binary, BNK-2.3.0-pinned
-|  - internal/         |   (DOCA, BFB, FLO, kubespray) -->
-|  - embedded/         |   stamped with `git describe`
-|    files/AGENTS.md
-|    files/personas/
-+----------------------+
++----------------------------------------------+
+|  dpubnkctl source — single binary,           |
+|  BNK-2.3.0-pinned (DOCA, BFB, FLO,           |
+|  kubespray); stamped with `git describe`     |
+|                                              |
+|     internal/                                |
+|     embedded/files/AGENTS.md                 |
+|     embedded/files/personas/                 |
++----------------------------------------------+
 
-     | `dpubnkctl init <name>`
-     v
-+----------------------+
-| <customer>-poc repo  |   declarative state - everything
-|  - poc.yaml          |   needed to teardown + redeploy
-|  - AGENTS.md + personas/  lives here.
-|  - keys/ (gitignored)     poc.yaml.status tracks phase progress.
-|  - artifacts/, journal/, decisions.md, diagram.txt
-+----------------------+
+              | `dpubnkctl init <name>`
+              v
+
++----------------------------------------------+
+|  <customer>-poc repo — declarative state.    |
+|  Every input needed to teardown + redeploy   |
+|  lives here. poc.yaml.status tracks phase    |
+|  progress.                                   |
+|                                              |
+|     poc.yaml                                 |
+|     AGENTS.md + personas/                    |
+|     keys/   (gitignored)                     |
+|     artifacts/, journal/, decisions.md,      |
+|     diagram.txt                              |
++----------------------------------------------+
 ```
 
 The binary is the engine. The PoC repo is the contract.
