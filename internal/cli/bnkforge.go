@@ -95,8 +95,8 @@ func LaunchBNKForge(ctx context.Context, out io.Writer, repo string, p *poc.PoC)
 	fmt.Fprintf(out, "bnk-forge URL: %s\n", cfg.URL)
 	fmt.Fprintf(out, "Repo path:     %s\n\n", cfg.RepoPath)
 
-	fmt.Fprintln(out, "[1/4] Ensuring bnk-forge is running ...")
-	if err := bnkforge.EnsureRunning(ctx, cfg, out); err != nil {
+	fmt.Fprintln(out, "[1/4] Checking that bnk-forge is running ...")
+	if err := bnkforge.RequireRunning(ctx, cfg, out); err != nil {
 		return err
 	}
 

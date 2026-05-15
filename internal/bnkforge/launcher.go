@@ -21,11 +21,22 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 )
+
+// ErrNotRunning is the sentinel returned by RequireRunning when the
+// bnk-forge backend is not responding at cfg.URL. Callers that want to
+// soft-skip the integration (e.g. `cluster up`'s auto-hook) check for
+// this with errors.Is; explicit operator invocations (`dpubnkctl
+// bnk-forge launch`) propagate it as a regular error.
+//
+// dpubnkctl never installs bnk-forge for the operator: if the stack
+// isn't running, that's a deliberate operator decision (or oversight)
+// — surface it cleanly, don't shell out to `make deploy` in the
+// background.
+var ErrNotRunning = errors.New("bnk-forge is not running")
 
 // Config is the operator-facing surface — sourced from poc.yaml's
 // bnk_forge: block, with defaults filled in.
@@ -267,53 +278,22 @@ func (c *Client) CreateProject(ctx context.Context, p Project) (int, error) {
 	return out.ProjectID, nil
 }
 
-// EnsureRunning checks the local bnk-forge listener. If healthy,
-// returns immediately. Otherwise runs `make deploy` in the configured
-// RepoPath, then polls the health endpoint until ready or timeout
-// fires.
-func EnsureRunning(ctx context.Context, cfg Config, out io.Writer) error {
+// RequireRunning probes the local bnk-forge listener. Returns nil
+// when healthy. When unreachable, returns ErrNotRunning (wrapping the
+// underlying transport error) — callers decide whether to soft-skip
+// or hard-fail. We do NOT shell out to `make deploy`; if the stack
+// isn't up, that's the operator's call to make.
+func RequireRunning(ctx context.Context, cfg Config, out io.Writer) error {
 	cli := NewClient(cfg)
-
-	// Fast path: already up.
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if err := cli.Health(probeCtx); err == nil {
-		fmt.Fprintf(out, "  bnk-forge already running at %s — skipping make deploy.\n", cfg.URL)
-		return nil
+	if err := cli.Health(probeCtx); err != nil {
+		fmt.Fprintf(out, "  bnk-forge not responding at %s: %v\n", cfg.URL, err)
+		return fmt.Errorf("%w at %s — start it manually (e.g. `cd %s && make deploy`) and retry",
+			ErrNotRunning, cfg.URL, cfg.RepoPath)
 	}
-
-	// Sanity-check the repo path before kicking off make.
-	if _, err := os.Stat(filepath.Join(cfg.RepoPath, "Makefile")); err != nil {
-		return fmt.Errorf("bnk-forge Makefile not found at %s — clone https://github.com/sp-prod-field/bnk-forge to that path or override bnk_forge.repo_path",
-			cfg.RepoPath)
-	}
-
-	fmt.Fprintf(out, "  bnk-forge not responding at %s — running `make deploy` in %s ...\n",
-		cfg.URL, cfg.RepoPath)
-	cmd := exec.CommandContext(ctx, "make", "deploy")
-	cmd.Dir = cfg.RepoPath
-	cmd.Stdout = out
-	cmd.Stderr = out
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("make deploy in %s: %w", cfg.RepoPath, err)
-	}
-
-	// Poll for ready.
-	fmt.Fprintln(out, "  Waiting for bnk-forge /api/system/health ...")
-	deadline := time.Now().Add(3 * time.Minute)
-	for {
-		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		err := cli.Health(probeCtx)
-		cancel()
-		if err == nil {
-			fmt.Fprintln(out, "  bnk-forge is up.")
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("bnk-forge did not become healthy within 3m at %s (last error: %v)", cfg.URL, err)
-		}
-		time.Sleep(5 * time.Second)
-	}
+	fmt.Fprintf(out, "  bnk-forge is up at %s.\n", cfg.URL)
+	return nil
 }
 
 func expandHome(p string) string {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/mwiget/dpubnkctl/internal/bnkforge"
 	"github.com/mwiget/dpubnkctl/internal/cluster"
 	"github.com/mwiget/dpubnkctl/internal/poc"
 	"github.com/mwiget/dpubnkctl/internal/ssh"
@@ -24,6 +25,7 @@ type clusterUpFlags struct {
 	confirmCluster string
 	pull           bool
 	skipFetch      bool
+	skipBNKForge   bool
 	timeout        time.Duration
 	playbook       string
 }
@@ -58,6 +60,7 @@ Required gates:
 	cmd.Flags().StringVar(&f.confirmCluster, "confirm-cluster", "", "Must equal poc.yaml.metadata.name (typo guard)")
 	cmd.Flags().BoolVar(&f.pull, "pull", true, "Run `docker pull` for the kubespray image before cluster.yml")
 	cmd.Flags().BoolVar(&f.skipFetch, "skip-fetch-kubeconfig", false, "Don't pull /etc/kubernetes/admin.conf back to artifacts/kubeconfig")
+	cmd.Flags().BoolVar(&f.skipBNKForge, "skip-bnk-forge", false, "Skip the optional bnk-forge auto-registration even if bnk_forge.enabled=true")
 	cmd.Flags().DurationVar(&f.timeout, "timeout", 90*time.Minute, "Wall-clock timeout for the kubespray run")
 	cmd.Flags().StringVar(&f.playbook, "playbook", "cluster.yml", "Playbook to run (use reset.yml for tear-down)")
 	return cmd
@@ -236,12 +239,28 @@ func runClusterUp(ctx context.Context, out io.Writer, f *clusterUpFlags) error {
 	appendClusterJournal(repo, p.Metadata.Name, "SUCCESS", logPath, "")
 
 	// 8. (Optional) Register the cluster with bnk-forge so the operator
-	//    can watch the rest of the deployment live in the UI. Soft-fail:
-	//    a missing bnk-forge clone or unreachable backend doesn't break
-	//    the cluster-up phase — the deployment can still proceed.
-	if p.BNKForge.Enabled {
+	//    can watch the rest of the deployment live in the UI.
+	//
+	//    Soft-fail policy (dpubnkctl never installs bnk-forge):
+	//      - bnk_forge.enabled=false OR --skip-bnk-forge → skip silently
+	//      - stack not running → info-level skip (operator already
+	//        decided not to run it; ErrNotRunning)
+	//      - any other error (bad creds, API failure) → WARN
+	//      Either way cluster-up still succeeds.
+	switch {
+	case f.skipBNKForge:
+		fmt.Fprintln(out, "\n[bnk-forge] --skip-bnk-forge set — not registering with bnk-forge.")
+	case !p.BNKForge.Enabled:
+		// silent: user has not opted in
+	default:
 		fmt.Fprintln(out, "\n[bnk-forge] bnk_forge.enabled=true — registering cluster ...")
-		if err := LaunchBNKForge(ctx, out, repo, p); err != nil {
+		err := LaunchBNKForge(ctx, out, repo, p)
+		switch {
+		case err == nil:
+			// success — message already printed by LaunchBNKForge
+		case errors.Is(err, bnkforge.ErrNotRunning):
+			fmt.Fprintln(out, "[bnk-forge] bnk-forge is not running — skipping. Start it manually and run `dpubnkctl bnk-forge launch` to register.")
+		default:
 			fmt.Fprintf(out, "[bnk-forge] WARN: registration failed: %v\n", err)
 			fmt.Fprintln(out, "[bnk-forge] Continuing — run `dpubnkctl bnk-forge launch` later to retry.")
 		}
