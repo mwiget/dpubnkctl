@@ -157,6 +157,13 @@ spec:
           from: Same
 `, name, address, port)
 	if withRoute {
+		// BNK 2.3 tightened Gateway API conformance: an HTTPRoute with
+		// no `hostnames:` no longer matches catch-all traffic — TMM
+		// falls through to the "no virtual server" fallback and emits
+		// HTTP/1.0 500 "Server: BigIP" instead of routing to the
+		// backend. Always include at least one hostname; operators can
+		// curl with -H "Host: <hostname>" or set up DNS pointing at
+		// the gateway's spec.addresses value. See AGENTS.md gotcha #27.
 		fmt.Fprintf(b, `---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -165,6 +172,10 @@ metadata:
 spec:
   parentRefs:
     - name: %s
+  # Required on BNK 2.3 — without a hostname TMM returns HTTP 500.
+  # Curl with: -H "Host: %s.local"
+  hostnames:
+    - "%s.local"
   rules:
     - matches:
         - path:
@@ -173,6 +184,6 @@ spec:
       backendRefs:
         - name: %s
           port: %d
-`, name, name, backendName, backendPort)
+`, name, name, backendName, backendName, backendName, backendPort)
 	}
 }
