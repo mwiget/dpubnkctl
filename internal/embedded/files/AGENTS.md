@@ -124,12 +124,23 @@ spec:
 
 ## Pinned versions (for this dpubnkctl release)
 
-This binary builds for **BNK 2.2.0**:
-- DOCA / BFB: 2.9.2 (`bf-bundle-2.9.2-32_25.02_ubuntu-22.04_prod.bfb`)
-- F5 Lifecycle Operator chart: v2.9.27-0.2.10
-- Kubernetes: 1.29
+This binary builds for **BNK 2.3.0**:
+- DOCA / BFB: 3.2.0 (`bf-bundle-3.2.0-113_25.10_ubuntu-24.04_64k_prod.bfb`)
+- Release manifest: 2.3.0-3.2598.3-0.0.170
+  (F5 Lifecycle Operator + CIS + cert-gen versions resolved at deploy
+   time from this chart — see `dpubnkctl release-manifest pull`)
+- Kubernetes: 1.30.14
 - containerd: 1.7.23, runc: 1.2.1, pause: 3.10
 - Default DPU MTU: 9000, Pod MTU: 8900
 
 A different BNK release ships a different `dpubnkctl` binary with different
 pins. Do not mix.
+
+### Licensing in 2.3 (changed from 2.2)
+
+In 2.2 the JWT and TEMM cert chain lived inside FLO chart values; in 2.3
+the JWT goes into a `License` custom resource (`apiVersion: k8s.f5net.com/v1`)
+and the TEMM endpoint is derived by the F5 Cluster-Wide Controller (CWC)
+from the JWT's `jku` header — operators no longer pass it. The CWC's
+own API certs are pre-created via the `f5-cert-gen` helm chart (pulled
+from the release manifest) before FLO is installed.
