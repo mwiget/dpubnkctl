@@ -54,7 +54,7 @@ Per topology:
 - **Each DPU runs LAG or non-LAG.** LAG bonds p0+p1 into one fabric uplink (single VLAN trunk on the switch side); non-LAG uses p0 + p1 as two independent uplinks with `vlans[].uplink: p0|p1`.
 - **No fixed upper bound on hosts/DPUs.** The schema and pipeline accept arbitrary host + DPU counts; specific shapes have been exercised against bare-metal labs of the topologies listed above.
 
-Pinned to BNK 2.2.0 / Kubernetes 1.32.8 / DOCA 2.9.2 / FLO v2.9.27-0.2.10. A different BNK release ships a different `dpubnkctl` build.
+Pinned to BNK 2.3.0 / Kubernetes 1.30.14 / DOCA 3.2.0 / release manifest 2.3.0-3.2598.3-0.0.170 (FLO chart resolved at deploy time). A different BNK release ships a different `dpubnkctl` build.
 
 ## Two operating modes
 
@@ -79,21 +79,31 @@ The binary doesn't ship an LLM — you choose the model and endpoint
 ## Versioning
 
 This binary is **per-BNK-release.** Building from `main` today targets
-**BNK 2.2.0** with these pins:
+**BNK 2.3.0** with these pins:
 
 | Component | Version |
 |-----------|---------|
-| DOCA / BFB | 2.9.2 (`bf-bundle-2.9.2-32_25.02_ubuntu-22.04_prod.bfb`) |
-| F5 Lifecycle Operator chart | v2.9.27-0.2.10 |
+| DOCA / BFB | 3.2.0 (`bf-bundle-3.2.0-113_25.10_ubuntu-24.04_64k_prod.bfb`) |
+| F5 Lifecycle Operator chart | resolved at deploy time from release manifest |
+| Release manifest | 2.3.0-3.2598.3-0.0.170 |
 | cert-manager | v1.16.2 |
-| Kubernetes | 1.32.8 (kubespray v2.28.1) |
+| Kubernetes | 1.30.14 (kubespray v2.28.1) |
 | containerd | 1.7.23 |
 | runc | 1.2.1 |
 | pause image | 3.10 |
 | DPU MTU / Pod MTU | 9000 / 8900 |
-| CNE manifest | 2.2.0-3.2226.0-0.0.385 |
 
 A different BNK release ships a different `dpubnkctl` build. Do not mix.
+**Maintenance fixes for BNK 2.2.0 land on the `release-2.2.0` branch.**
+
+### 2.2 → 2.3 in one sentence
+
+Licensing moved out of FLO chart values into a `License` CR
+(`k8s.f5net.com/v1`); the F5 Cluster-Wide Controller (CWC) reads the
+TEMM endpoint from the JWT's `jku` header so operators no longer split
+prod-vs-tst at the FLO layer. FLO + CIS + cert-gen chart versions
+are resolved at deploy time from F5's `f5-bigip-k8s-manifest` chart
+rather than pinned in this binary. See `MIGRATING-2.3.0.md`.
 
 ## Self-contained binary
 
@@ -104,7 +114,7 @@ embedded inside it via `go:embed`:
 - `AGENTS.md`, `CLAUDE.md`, and the three persona files dropped into the
   PoC repo on `dpubnkctl init`
 - `bf.conf` templates (LAG + non-LAG) for the BFB flash
-- FLO Helm values (prod + tst), CNEInstance, F5SPKVlan, NAD manifests
+- FLO Helm values, License CR template, CNEInstance, F5SPKVlan, NAD manifests
 - Pinned component versions (BFB image, FLO chart, kubespray, k8s,
   containerd, runc, pause)
 
@@ -124,7 +134,7 @@ On the operator workstation (where you run `dpubnkctl`):
 
 | Tool / resource | Why | Notes |
 |---|---|---|
-| **Docker Engine** *or* **Podman** | Runs the pinned `kubespray:v2.28.1` and `alpine/k8s:1.32.8` containers — used by `cluster up`, `cluster reset`, `cluster join-dpus`, `deploy *`, `destroy *`. Docker is tried first, then podman. | Daemon (docker) / binary (podman) must respond to `version`. Install: https://docs.docker.com/engine/install/ or https://podman.io/docs/installation |
+| **Docker Engine** *or* **Podman** | Runs the pinned `kubespray:v2.28.1` and `alpine/k8s:1.31.5` containers — used by `cluster up`, `cluster reset`, `cluster join-dpus`, `deploy *`, `destroy *`. Docker is tried first, then podman. | Daemon (docker) / binary (podman) must respond to `version`. Install: https://docs.docker.com/engine/install/ or https://podman.io/docs/installation |
 | **git** | `dpubnkctl init` git-inits the PoC repo (skippable with `--no-git`) | Any recent version |
 | **Mgmt network** with outbound to: `content.mellanox.com`, `github.com`, `quay.io`, `repo.f5.com`, `registry-1.docker.io` | BFB image, cert-manager manifests, kubespray + alpine/k8s images, FLO Helm chart and BNK container images | Pulled at runtime; not embedded. The mgmt network typically has internet; the data-plane usually doesn't (AGENTS.md #23). |
 | **SSH access** to every host and DPU BMC | All probes, flash, and config are SSH/Redfish-driven; no `ssh` binary needed (Go stdlib) | Operator's private key referenced from `keys/` in the PoC repo |
@@ -295,7 +305,7 @@ and need the matching RSA modulus baked into the template.
 
 **Not embedded — fetched at runtime over the mgmt network:**
 
-- BFB image (`bf-bundle-2.9.2-...bfb`) — downloaded once, cached in
+- BFB image (`bf-bundle-3.2.0-...bfb`) — downloaded once, cached in
   `~/.cache/dpubnkctl/bfb/`. Default URL is pinned but overridable in
   `poc.yaml.provisioning.bfb_url`.
 - `cert-manager.yaml` from `github.com/cert-manager/cert-manager`
