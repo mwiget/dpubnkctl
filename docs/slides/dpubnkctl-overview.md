@@ -86,11 +86,18 @@ style: |
     --color-fg-default: #e2e8f0;
     --color-fg-muted: #cbd5e1;
   }
-  section table { border-collapse: collapse; margin: 12px 0; font-size: 18px; width: 100%; background: #0b1220; color: #e2e8f0; }
+  /* Marp ships `table { display: block; width: max-content }` which
+     collapses tables to the widest cell's natural content, leaving
+     ~half the slide unused. Force full-width table display. */
+  section table { display: table !important; border-collapse: collapse !important; margin: 14px 0 !important; font-size: 20px !important; width: 100% !important; max-width: 100% !important; background: #0b1220; color: #e2e8f0; table-layout: auto; }
   section table tr { background: #0b1220 !important; border-top: 1px solid #1e293b !important; }
   section table tr:nth-child(2n) { background: #131c2e !important; }
-  section table th { background: #1e293b !important; color: #f8fafc !important; padding: 8px 12px !important; text-align: left; border: 1px solid #334155 !important; font-weight: 600; }
-  section table td { padding: 7px 12px !important; border: 1px solid #1e293b !important; color: #cbd5e1 !important; vertical-align: top; background: transparent !important; }
+  section table th { background: #1e293b !important; color: #f8fafc !important; padding: 10px 14px !important; text-align: left; border: 1px solid #334155 !important; font-weight: 600; font-size: 18px !important; }
+  section table td { padding: 9px 14px !important; border: 1px solid #1e293b !important; color: #cbd5e1 !important; vertical-align: top; background: transparent !important; }
+  /* Dense slides still get a smaller body, but tables get a readable
+     17px (was 14px — unreadable on a projector). */
+  section.dense table { font-size: 17px !important; }
+  section.dense table th { font-size: 16px !important; }
 
   blockquote {
     border-left: 4px solid #60a5fa;
@@ -537,24 +544,24 @@ These all closed in v2.2.0. Future PoCs start with stronger defaults — see nex
 
 <!-- _class: dense -->
 
-## Audit closeout — v2.2.0 round (15 items)
+## Audit closeout — v2.2.0 round (14 items)
 
-| #  | Item                                              | Resolution kind   |
-|----|---------------------------------------------------|-------------------|
-| 1  | validate phase-blind (FAR/JWT blocking provision) | refactor          |
-| 2  | cluster_apiserver_address not cross-checked       | new validate rule |
-| 3  | network.vlans[] silently dropped role/tag         | strict yaml load  |
-| 4  | tmfifo_ip didn't catch wrong /30                  | new validate rule |
-| 5  | cluster join-dpus not idempotent                  | code fix          |
-| 6  | kubelet stayed dead on join failure               | code fix          |
-| 7  | deploy cne raced FLO crd-installer                | two-step wait     |
-| 8  | deploy network returned mid-DS-flap               | rollout-status    |
-| 9  | post-flash SF aux device race                     | readiness probe   |
-| 10 | kubespray "ip var" error opaque                   | pre-flight        |
-| 11 | ghost mlx5_core PF needed reboot                  | pre-flight        |
-| 12 | doc-specialist promised non-existent --pdf        | persona fix       |
-| 14 | no Gateway scaffolding (BNK 2.2.0 has no IPAM)    | new subcommand    |
-| 15 | provision exit-0-on-timeout misleading            | grace + hard fail |
+| Audit finding | Resolution |
+|---|---|
+| **#1** validate phase-blind (FAR/JWT blocking provision) | refactor |
+| **#2** `cluster_apiserver_address` not cross-checked | new validate rule |
+| **#3** `network.vlans[]` silently dropped role/tag | strict yaml load |
+| **#4** `tmfifo_ip` didn't catch wrong `/30` | new validate rule |
+| **#5** `cluster join-dpus` not idempotent | code fix |
+| **#6** kubelet stayed dead on join failure | code fix |
+| **#7** `deploy cne` raced FLO crd-installer | two-step wait |
+| **#8** `deploy network` returned mid-DS-flap | `rollout-status` |
+| **#9** post-flash SF aux-device race | readiness probe |
+| **#10** kubespray "ip var" error opaque | pre-flight |
+| **#11** ghost mlx5_core PF needed reboot | pre-flight |
+| **#12** doc-specialist promised non-existent `--pdf` | persona fix |
+| **#14** no Gateway scaffolding (BNK 2.2 has no IPAM) | new subcommand |
+| **#15** provision exit-0-on-timeout misleading | grace + hard fail |
 
 Each item has a journal-entry reference in its commit message — future engineers can read the failure narrative.
 
@@ -588,19 +595,19 @@ Prod/tst auto-detection is the cleanest single user-facing change. Drop a tst JW
 
 ## 2.3 migration — 8 new audit items
 
-Same agentic loop as the 2.2.0 round. The 2.3 e2e on homelab found 8 new gotchas; all closed in the `feat/bnk-2.3.0` branch before the release-2.3.0 cut.
+Same agentic loop as the 2.2.0 round. The 2.3 e2e on homelab found 9 new gotchas; all closed in the `feat/bnk-2.3.0` branch before the release-2.3.0 cut.
 
-| # | Item | Where caught |
-|---|------|--------------|
-| 25 | DOCA 3.2 BFB pre-ships `kubernetes.sources` (v1.34); apt resolves the higher version | `cluster join-dpus` first run |
-| — | `versions.k8s: 1.30.14` typed in poc.yaml makes apt URL `v1.30.14/deb` → silently 1.34 | Same |
-| — | `gen_cert.sh` emits 1-space-indented YAML; YAML injection mangled it | `deploy flo` step 10 |
-| — | kubectl 1.30 lacks `--for=create` (added in 1.31) | `deploy cne` step 3 |
-| — | License `Registering` state not in switch; default 5min wait too short | `deploy cne` step 6 |
-| 26 | Multus first-start race on worker1-bf3 (loopback-only delegate) | Post-deploy smoke |
-| — | License auto-detects prod vs tst from JWT `jku` — Phase 3 hypothesis | Verified live |
-| 27 | BNK 2.3 HTTPRoutes require `hostnames:` (Gateway-API conformance) | Smoke `curl` |
-| 28 | cne-controller doesn't re-push Gateway/Route config to late-joining TMM | Smoke `curl` |
+| Audit finding | Where caught |
+|---|---|
+| **#25** DOCA 3.2 BFB pre-ships `kubernetes.sources` (v1.34); apt resolves the higher version | `cluster join-dpus` 1st run |
+| Hand-typed `versions.k8s: 1.30.14` makes apt URL `v1.30.14/deb` → silently 1.34 | same |
+| `gen_cert.sh` emits 1-space-indented YAML; my injection mangled it | `deploy flo` step 10 |
+| kubectl 1.30 lacks `--for=create` (added in 1.31) | `deploy cne` step 3 |
+| License `Registering` state not in switch; default 5min wait too short | `deploy cne` step 6 |
+| **#26** Multus first-start race on one DPU (loopback-only delegate) | Post-deploy smoke |
+| License auto-detects prod vs tst from JWT `jku` — Phase 3 hypothesis confirmed | Verified live |
+| **#27** BNK 2.3 HTTPRoutes require `hostnames:` (Gateway-API conformance) | Smoke `curl` |
+| **#28** cne-controller doesn't re-push Gateway/Route to a late-joining TMM | Smoke `curl` |
 
 Each surfaced live, was diagnosed, fixed, captured in a Conventional Commit + `AGENTS.md` gotcha.
 
