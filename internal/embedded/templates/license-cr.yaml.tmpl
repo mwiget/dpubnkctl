@@ -1,0 +1,8 @@
+apiVersion: k8s.f5net.com/v1
+kind: License
+metadata:
+  name: {{.Name}}
+  namespace: {{.Namespace}}
+spec:
+  operationMode: "{{.OperationMode}}"
+  jwt: "{{.JWT}}"

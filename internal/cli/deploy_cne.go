@@ -17,18 +17,20 @@ import (
 )
 
 type deployCNEFlags struct {
-	pocDir          string
-	yolo            bool
-	confirmDeploy   string
-	skipPull        bool
-	cneReadyTimeout time.Duration
+	pocDir              string
+	yolo                bool
+	confirmDeploy       string
+	skipPull            bool
+	cneReadyTimeout     time.Duration
+	licenseReadyTimeout time.Duration
+	licenseMode         string
 }
 
 func newDeployCNECmd() *cobra.Command {
 	f := &deployCNEFlags{}
 	cmd := &cobra.Command{
 		Use:   "cne",
-		Short: "Apply CNEInstance + F5SPKVlan CRs + BNK GatewayClass (DESTRUCTIVE)",
+		Short: "Apply CNEInstance + F5SPKVlan CRs + BNK GatewayClass + License CR (DESTRUCTIVE)",
 		Long: `Phase 4b.2 — drives FLO to deploy the BNK data plane:
 
   1. Render + apply CNEInstance with dpu_enabled=true (FLO sees this
@@ -40,7 +42,12 @@ func newDeployCNECmd() *cobra.Command {
   3. Render + apply the GatewayClass (upstream Gateway-API v1) with the
      F5 CNE controllerName so FLO picks up Gateway objects that
      reference it.
-  4. Wait for the CNEInstance to report Ready (TMM pods up).
+  4. Wait for the CNEInstance to report Available.
+  5. Apply the License CR (k8s.f5net.com/v1) with the JWT from
+     poc.yaml.bnk.jwt_ref. CWC validates against the JWT-derived TEMM
+     endpoint and flips .status.state to Active. (Disconnected-mode
+     customers stay at PendingVerification — run the manual licensing
+     curl ritual from F5's docs to finish.)
 
 Required gates:
   --yolo                    acknowledge cluster writes
@@ -54,6 +61,8 @@ Required gates:
 	cmd.Flags().StringVar(&f.confirmDeploy, "confirm-deploy", "", "Must equal poc.yaml.metadata.name (typo guard)")
 	cmd.Flags().BoolVar(&f.skipPull, "skip-pull", false, "Skip docker pull of alpine/k8s image")
 	cmd.Flags().DurationVar(&f.cneReadyTimeout, "cne-ready-timeout", 15*time.Minute, "How long to wait for CNEInstance Ready")
+	cmd.Flags().DurationVar(&f.licenseReadyTimeout, "license-ready-timeout", 5*time.Minute, "How long to wait for the License CR to reach Active")
+	cmd.Flags().StringVar(&f.licenseMode, "license-mode", "connected", "License CR operationMode: connected or disconnected")
 	return cmd
 }
 
@@ -217,13 +226,74 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 		fmt.Fprintln(out, "      CNEInstance Available.")
 	}
 
+	// 6. License CR. New in 2.3: the JWT no longer lives in FLO chart
+	// values; it goes into a License custom resource (k8s.f5net.com/v1)
+	// in the shared-component namespace. CWC watches the CR, validates
+	// the JWT, contacts the TEMM endpoint derived from the JWT's jku
+	// header (so prod vs tst is auto), and updates .status.state →
+	// PendingVerification → Active.
+	//
+	// The License CRD is installed by FLO's crd-installer reconciliation
+	// (same pattern as F5SPKVlan in step 3). Two-step wait again so the
+	// kubectl apply doesn't race the CRD's appearance.
+	jwtPath := resolveRef(repo, p.BNK.JWTRef)
+	if _, err := os.Stat(jwtPath); err != nil {
+		fmt.Fprintf(out, "[6/6] License CR — JWT not at %s, skipping (deploy flo will have warned)\n", jwtPath)
+		fmt.Fprintln(out, "\nDONE. BNK platform deployed (no license applied). `kubectl get pods -A` to inspect.")
+		return nil
+	}
+	jwt, err := readJWT(jwtPath)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "[6/6] Applying License CR (mode=%s) ...\n", f.licenseMode)
+	fmt.Fprintln(out, "      Waiting for license CRD ...")
+	if err := r.Kubectl(ctx, "wait", "--for=create",
+		"crd/licenses.k8s.f5net.com", "--timeout=3m"); err != nil {
+		return fmt.Errorf("license CRD never created (FLO crd-installer didn't reconcile it?): %w", err)
+	}
+	if err := r.Wait(ctx, "", "Established",
+		"crd/licenses.k8s.f5net.com", 3*time.Minute); err != nil {
+		return fmt.Errorf("license CRD did not become Established: %w", err)
+	}
+	licenseYAML, err := deploy.RenderLicenseCR(deploy.LicenseInputs{
+		Namespace:     deploy.SharedComponentNamespace,
+		OperationMode: f.licenseMode,
+		JWT:           jwt,
+	})
+	if err != nil {
+		return err
+	}
+	// Persist the rendered License CR for audit; mode 0600 since it
+	// embeds the raw JWT.
+	licenseRendered := filepath.Join(repo, "artifacts", "license-cr-rendered.yaml")
+	if err := os.WriteFile(licenseRendered, []byte(licenseYAML), 0o600); err != nil {
+		return err
+	}
+	if err := r.Apply(ctx, licenseYAML); err != nil {
+		return fmt.Errorf("apply license CR: %w", err)
+	}
+	fmt.Fprintln(out, "      License CR applied; waiting for state=Active ...")
+	if err := deploy.WaitForLicenseActive(ctx, r,
+		deploy.LicenseCRName, deploy.SharedComponentNamespace,
+		f.licenseReadyTimeout); err != nil {
+		if errors.Is(err, deploy.ErrLicensePendingVerification) {
+			fmt.Fprintln(out, "      WARN: license stuck at PendingVerification — disconnected-mode operator action required (see F5 docs §pg-install-bnk-dpu-kubernetes-flo-install-license-your-cluster-flo).")
+		} else {
+			fmt.Fprintf(out, "      WARN: license did not reach Active within %s — `kubectl -n %s describe license %s` (%v)\n",
+				f.licenseReadyTimeout, deploy.SharedComponentNamespace, deploy.LicenseCRName, err)
+		}
+	} else {
+		fmt.Fprintln(out, "      License Active.")
+	}
+
 	p.Status.Deploy = "completed"
 	p.Status.LastPhaseAt = time.Now().UTC()
 	if err := savePoC(repo, p, out); err != nil {
 		return err
 	}
 	appendDeployJournal(repo, p.Metadata.Name, "", "BNK DEPLOYED", "")
-	fmt.Fprintln(out, "\nDONE. BNK platform deployed. `kubectl get pods -A` to inspect TMM, CNE controller, and FLO.")
+	fmt.Fprintln(out, "\nDONE. BNK platform deployed. `kubectl get pods -A` to inspect TMM, CNE controller, FLO, and license.")
 	return nil
 }
 
