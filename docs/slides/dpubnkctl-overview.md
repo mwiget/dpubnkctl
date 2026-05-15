@@ -34,9 +34,27 @@ style: |
   section.dense blockquote { font-size: 15px; padding: 3px 10px; }
   section.dense table { font-size: 14px; }
   /* Constrain embedded screenshots so they leave room for the
-     surrounding text on the same slide. */
-  section img { max-height: 360px; max-width: 100%; height: auto; }
+     surrounding text on the same slide; render as a centered block
+     so they don't squeeze the surrounding paragraph width. */
+  section img { display: block; margin: 8px auto; max-height: 360px; max-width: 100%; height: auto; }
   section.dense img { max-height: 380px; }
+  /* Make code blocks span the full content width (Marp's default
+     ships them narrower than the surrounding prose). */
+  pre { width: 100%; box-sizing: border-box; }
+  /* High-contrast syntax-highlight palette on the dark code
+     background. The Marp default uses dim blues that don't read
+     well against #0b1220; force a 3-token palette tuned for it. */
+  pre code, pre code * { color: #e2e8f0; }
+  pre code .hljs-keyword,
+  pre code .hljs-built_in,
+  pre code .hljs-name,
+  pre code .hljs-type { color: #93c5fd; }
+  pre code .hljs-string,
+  pre code .hljs-attr,
+  pre code .hljs-number,
+  pre code .hljs-literal { color: #fde68a; }
+  pre code .hljs-comment,
+  pre code .hljs-meta { color: #94a3b8; font-style: italic; }
 ---
 
 <!-- _class: lead -->
