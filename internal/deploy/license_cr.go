@@ -82,6 +82,14 @@ func WaitForLicenseActive(ctx context.Context, r *Runner, name, namespace string
 		switch state {
 		case "Active":
 			return nil
+		case "Registering":
+			// CWC is talking to F5's licensing server to register the
+			// cluster's digital asset. First-time registration on a
+			// connected-mode cluster — takes 5-15 minutes. Keep polling.
+			if time.Now().After(deadline) {
+				return fmt.Errorf("license %s/%s stuck at Registering after %s (CWC could not complete device registration; check `kubectl -n %s describe license %s` for the CWC error)",
+					namespace, name, timeout, namespace, name)
+			}
 		case "PendingVerification":
 			// disconnected-mode customers stay here forever until they
 			// run the manual curl-the-licensing-server ritual. Bubble

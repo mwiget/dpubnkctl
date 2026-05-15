@@ -61,7 +61,12 @@ Required gates:
 	cmd.Flags().StringVar(&f.confirmDeploy, "confirm-deploy", "", "Must equal poc.yaml.metadata.name (typo guard)")
 	cmd.Flags().BoolVar(&f.skipPull, "skip-pull", false, "Skip docker pull of alpine/k8s image")
 	cmd.Flags().DurationVar(&f.cneReadyTimeout, "cne-ready-timeout", 15*time.Minute, "How long to wait for CNEInstance Ready")
-	cmd.Flags().DurationVar(&f.licenseReadyTimeout, "license-ready-timeout", 5*time.Minute, "How long to wait for the License CR to reach Active")
+	// License registration with F5's licensing server (Connected mode)
+	// takes 5-15 minutes on a first-time deploy — CWC has to register a
+	// new digital asset before the license can flip to Active. Default
+	// 15 min covers the slow path; operators can shorten when they
+	// know they're re-applying.
+	cmd.Flags().DurationVar(&f.licenseReadyTimeout, "license-ready-timeout", 15*time.Minute, "How long to wait for the License CR to reach Active")
 	cmd.Flags().StringVar(&f.licenseMode, "license-mode", "connected", "License CR operationMode: connected or disconnected")
 	return cmd
 }
