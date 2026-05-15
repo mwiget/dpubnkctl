@@ -5,32 +5,63 @@ import (
 	"testing"
 )
 
-func TestRenderFLOValues_ProdInjectsJWT(t *testing.T) {
-	out, err := RenderFLOValues("prod", "EYJ.test.token")
+func TestRenderFLOValues_Defaults(t *testing.T) {
+	out, err := RenderFLOValues(FLOInputs{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, `jwt: "EYJ.test.token"`) {
-		t.Errorf("JWT not substituted in prod values")
-	}
-	if !strings.Contains(out, "product.apis.f5.com") {
-		t.Errorf("expected prod TEEM URL in prod values")
-	}
-	if strings.Contains(out, "product-tst") {
-		t.Errorf("prod values leaked tst URLs")
+	for _, want := range []string{
+		"namespace: f5-operators",
+		"sharedComponentNamespace: " + SharedComponentNamespace,
+		"clusterIssuer: bnk-ca-cluster-issuer",
+		"containerPlatform: Generic",
+		"name: far-secret",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q\n--- got ---\n%s", want, out)
+		}
 	}
 }
 
-func TestRenderFLOValues_TstSwitchesURLs(t *testing.T) {
-	out, err := RenderFLOValues("tst", "EYJ.tst.token")
+func TestRenderFLOValues_NoLicenseBlock(t *testing.T) {
+	out, err := RenderFLOValues(FLOInputs{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "product-tst.apis.f5networks.net") {
-		t.Errorf("expected tst TEEM URL")
+	// In 2.3 the license + TEMM cert chain MUST NOT be in chart values.
+	// Anything resembling those is a regression to the 2.2 shape.
+	for _, banned := range []string{
+		"jwt:",
+		"teemCertUrl",
+		"teemEntitlementUrl",
+		"product.apis.f5.com",
+		"product-tst",
+		"licenseserverrootca",
+		"modulus:",
+	} {
+		if strings.Contains(out, banned) {
+			t.Errorf("FLO values leaked %q from the 2.2 shape:\n%s", banned, out)
+		}
 	}
-	if !strings.Contains(out, `jwt: "EYJ.tst.token"`) {
-		t.Errorf("tst JWT not substituted")
+}
+
+func TestRenderFLOValues_HonorsOverrides(t *testing.T) {
+	out, err := RenderFLOValues(FLOInputs{
+		Namespace:                "f5-bnk",
+		SharedComponentNamespace: "f5-utils",
+		ClusterIssuer:            "selfsigned-cluster-issuer",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"namespace: f5-bnk",
+		"sharedComponentNamespace: f5-utils",
+		"clusterIssuer: selfsigned-cluster-issuer",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
 	}
 }
 

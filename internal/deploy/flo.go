@@ -8,28 +8,42 @@ import (
 	"github.com/mwiget/dpubnkctl/internal/embedded"
 )
 
-// FLOInputs are substituted into the embedded FLO values templates.
+// FLOInputs are substituted into the embedded FLO values template.
+//
+// In 2.3 the prod/tst-specific TEMM cert chain + URLs are GONE — the
+// F5 Cluster-Wide Controller (CWC) reads the TEMM endpoint from the
+// JWT's `jku` header at runtime, so a single template serves both
+// environments. Operators still drop a tst JWT into keys/.jwt; the
+// downstream behavior differs without any operator-supplied config.
 type FLOInputs struct {
-	JWT string // raw JWT (single line)
+	Namespace                string // FLO release namespace (default f5-operators)
+	SharedComponentNamespace string // CWC + license + observer namespace (default f5-cne-core)
+	ClusterIssuer            string // cert-manager ClusterIssuer FLO uses for internal CAs
 }
 
-// RenderFLOValues picks the prod or tst template based on jwtType
-// and substitutes the JWT.
-func RenderFLOValues(jwtType, jwt string) (string, error) {
-	tmplName := "templates/flo-values.yaml.tmpl"
-	if jwtType == "tst" {
-		tmplName = "templates/flo-values-tst.yaml.tmpl"
+// RenderFLOValues substitutes the embedded flo-values.yaml.tmpl. Caller
+// fills in any non-default fields; zero values fall back to the F5
+// docs canonical names.
+func RenderFLOValues(in FLOInputs) (string, error) {
+	if in.Namespace == "" {
+		in.Namespace = "f5-operators"
 	}
-	raw, err := embedded.Templates.ReadFile(tmplName)
+	if in.SharedComponentNamespace == "" {
+		in.SharedComponentNamespace = SharedComponentNamespace
+	}
+	if in.ClusterIssuer == "" {
+		in.ClusterIssuer = "bnk-ca-cluster-issuer"
+	}
+	raw, err := embedded.Templates.ReadFile("templates/flo-values.yaml.tmpl")
 	if err != nil {
-		return "", fmt.Errorf("load %s: %w", tmplName, err)
+		return "", fmt.Errorf("load flo-values.yaml.tmpl: %w", err)
 	}
 	tmpl, err := template.New("flo").Parse(string(raw))
 	if err != nil {
 		return "", err
 	}
 	var out bytes.Buffer
-	if err := tmpl.Execute(&out, FLOInputs{JWT: jwt}); err != nil {
+	if err := tmpl.Execute(&out, in); err != nil {
 		return "", err
 	}
 	return out.String(), nil
