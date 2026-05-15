@@ -10,8 +10,8 @@ import (
 
 // FLOInputs are substituted into the embedded FLO values template.
 //
-// In 2.3 the prod/tst-specific TEMM cert chain + URLs are GONE — the
-// F5 Cluster-Wide Controller (CWC) reads the TEMM endpoint from the
+// In 2.3 the prod/tst-specific TEEM cert chain + URLs are GONE — the
+// F5 Cluster-Wide Controller (CWC) reads the TEEM endpoint from the
 // JWT's `jku` header at runtime, so a single template serves both
 // environments. Operators still drop a tst JWT into keys/.jwt; the
 // downstream behavior differs without any operator-supplied config.

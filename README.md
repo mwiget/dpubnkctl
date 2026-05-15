@@ -100,7 +100,7 @@ A different BNK release ships a different `dpubnkctl` build. Do not mix.
 
 Licensing moved out of FLO chart values into a `License` CR
 (`k8s.f5net.com/v1`); the F5 Cluster-Wide Controller (CWC) reads the
-TEMM endpoint from the JWT's `jku` header so operators no longer split
+TEEM endpoint from the JWT's `jku` header so operators no longer split
 prod-vs-tst at the FLO layer. FLO + CIS + cert-gen chart versions
 are resolved at deploy time from F5's `f5-bigip-k8s-manifest` chart
 rather than pinned in this binary. See `MIGRATING-2.3.0.md`.

@@ -460,7 +460,7 @@ break the 2.2 deploy shape:
 
 | What changed | 2.2.0 | 2.3.0 |
 |---|---|---|
-| **License location** | JWT + TEMM URLs + x5c chain inside `flo-values.yaml` (separate prod/tst templates) | `License` CR (`k8s.f5net.com/v1`) in `f5-cne-core` namespace; CWC auto-detects prod/tst from JWT `jku` |
+| **License location** | JWT + TEEM URLs + x5c chain inside `flo-values.yaml` (separate prod/tst templates) | `License` CR (`k8s.f5net.com/v1`) in `f5-cne-core` namespace; CWC auto-detects prod/tst from JWT `jku` |
 | **Chart versions** | FLO chart pinned in `version.go` (`v2.9.27-0.2.10`) | Pulled at deploy time from F5's `f5-bigip-k8s-manifest` release-manifest chart (`2.3.0-3.2598.3-0.0.170`) |
 | **CWC TLS material** | Implicit in FLO chart | Operator runs `f5-cert-gen` helm chart + applies two Secrets before CWC starts |
 

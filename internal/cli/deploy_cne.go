@@ -44,7 +44,7 @@ func newDeployCNECmd() *cobra.Command {
      reference it.
   4. Wait for the CNEInstance to report Available.
   5. Apply the License CR (k8s.f5net.com/v1) with the JWT from
-     poc.yaml.bnk.jwt_ref. CWC validates against the JWT-derived TEMM
+     poc.yaml.bnk.jwt_ref. CWC validates against the JWT-derived TEEM
      endpoint and flips .status.state to Active. (Disconnected-mode
      customers stay at PendingVerification — run the manual licensing
      curl ritual from F5's docs to finish.)
@@ -234,7 +234,7 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 	// 6. License CR. New in 2.3: the JWT no longer lives in FLO chart
 	// values; it goes into a License custom resource (k8s.f5net.com/v1)
 	// in the shared-component namespace. CWC watches the CR, validates
-	// the JWT, contacts the TEMM endpoint derived from the JWT's jku
+	// the JWT, contacts the TEEM endpoint derived from the JWT's jku
 	// header (so prod vs tst is auto), and updates .status.state →
 	// PendingVerification → Active.
 	//

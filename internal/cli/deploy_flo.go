@@ -140,7 +140,7 @@ func runDeployFLO(ctx context.Context, out io.Writer, f *deployFLOFlags) error {
 		return err
 	}
 
-	// 3. Inspect JWT (diagnostic only in 2.3 — the TEMM endpoint is
+	// 3. Inspect JWT (diagnostic only in 2.3 — the TEEM endpoint is
 	// derived by CWC from the JWT's jku at runtime, see AGENTS.md #15).
 	fmt.Fprintln(out, "[3/10] Inspecting JWT (diagnostic) ...")
 	info, err := deploy.InspectJWT(jwtPath)
@@ -204,7 +204,7 @@ func runDeployFLO(ctx context.Context, out io.Writer, f *deployFLOFlags) error {
 	fmt.Fprintln(out, "      far-secret in place.")
 
 	// 8. Render FLO values + helm install. Single template in 2.3 (no
-	// prod/tst split — the license/TEMM block moved to the License CR
+	// prod/tst split — the license/TEEM block moved to the License CR
 	// which CWC reconciles after CNEInstance brings it up).
 	fmt.Fprintln(out, "[8/10] Rendering FLO values + helm install ...")
 	values, err := deploy.RenderFLOValues(deploy.FLOInputs{

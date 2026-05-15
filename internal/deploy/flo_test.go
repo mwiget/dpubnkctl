@@ -28,7 +28,7 @@ func TestRenderFLOValues_NoLicenseBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// In 2.3 the license + TEMM cert chain MUST NOT be in chart values.
+	// In 2.3 the license + TEEM cert chain MUST NOT be in chart values.
 	// Anything resembling those is a regression to the 2.2 shape.
 	for _, banned := range []string{
 		"jwt:",

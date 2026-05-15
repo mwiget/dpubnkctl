@@ -156,7 +156,7 @@ the new BFB. Two surprises worth knowing:
 15. **In BNK 2.3, the JWT lives in a `License` CR — NOT in FLO chart values.** The
     license-out-of-flo-values refactor (commit 6a2b9f8) drops the
     `license:` block from `flo-values.yaml.tmpl` entirely. `RenderFLOValues`
-    no longer takes a JWT or a jwtType. The CWC reads the TEMM endpoint
+    no longer takes a JWT or a jwtType. The CWC reads the TEEM endpoint
     from the JWT's `jku` header at runtime, so prod and tst clusters use
     the same template. The classifier `internal/deploy/license.go::InspectJWT`
     is retained but is now **diagnostic-only** — its output appears in the

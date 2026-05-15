@@ -22,10 +22,10 @@ fluentbit_sidecar:
   image:
     name: f5-fluentbit
 
-# BNK 2.3 removes the license / TEMM cert chain from this chart. Licensing
+# BNK 2.3 removes the license / TEEM cert chain from this chart. Licensing
 # is a separate `License` CR in the shared-component namespace, applied
 # after CNEInstance reconciles. The F5 Cluster-Wide Controller (CWC)
-# derives the TEMM endpoint from the JWT's `jku` header, so neither
+# derives the TEEM endpoint from the JWT's `jku` header, so neither
 # prod nor tst customers need to embed cert material here.
 
 "f5-spk-crds-common":

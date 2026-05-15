@@ -138,9 +138,9 @@ pins. Do not mix.
 
 ### Licensing in 2.3 (changed from 2.2)
 
-In 2.2 the JWT and TEMM cert chain lived inside FLO chart values; in 2.3
+In 2.2 the JWT and TEEM cert chain lived inside FLO chart values; in 2.3
 the JWT goes into a `License` custom resource (`apiVersion: k8s.f5net.com/v1`)
-and the TEMM endpoint is derived by the F5 Cluster-Wide Controller (CWC)
+and the TEEM endpoint is derived by the F5 Cluster-Wide Controller (CWC)
 from the JWT's `jku` header — operators no longer pass it. The CWC's
 own API certs are pre-created via the `f5-cert-gen` helm chart (pulled
 from the release manifest) before FLO is installed.

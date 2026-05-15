@@ -66,10 +66,10 @@ strictly a superset of the 2.2 schema for these fields.
    (Audited fix #11 from the 2.2 PoC; carries over to 2.3.)
 
 3. **Licensing moved.** The JWT no longer lives in `flo-values.yaml`.
-   `deploy flo` installs an empty FLO chart (no license, no TEMM
+   `deploy flo` installs an empty FLO chart (no license, no TEEM
    URLs, no x5c chain). After `deploy cne` brings up CWC, the binary
    applies a `License` CR (`k8s.f5net.com/v1`) into the
-   `f5-cne-core` namespace. CWC validates the JWT against the TEMM
+   `f5-cne-core` namespace. CWC validates the JWT against the TEEM
    endpoint derived from the JWT's `jku` header — so **prod vs tst
    is now automatic**; no per-environment template selection.
 
