@@ -15,6 +15,20 @@ type JoinCommand struct {
 	Raw string // verbatim line, e.g. `kubeadm join 192.168.68.66:6443 --token X --discovery-token-ca-cert-hash sha256:Y`
 }
 
+// normalizeK8sMinor trims a possibly-full k8s version like "1.30.14" or
+// "v1.30.14" down to the major.minor "1.30" expected by the pkgs.k8s.io
+// apt repo path. Callers may pass either form (the binary-pinned
+// version.K8sVersion is already "1.30", but a hand-written poc.yaml
+// might use the full version).
+func normalizeK8sMinor(v string) string {
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	parts := strings.SplitN(v, ".", 3)
+	if len(parts) < 2 {
+		return v
+	}
+	return parts[0] + "." + parts[1]
+}
+
 // FetchJoinCommand SSHes to the given control-plane host and asks kubeadm
 // for a fresh worker join command. The token has a short TTL (default
 // 24h) — fetch close in time to actually using it.
@@ -45,6 +59,13 @@ func FetchJoinCommand(ctx context.Context, cp *ssh.Client, publicAPIServerAddr s
 // InstallKubeBinaries installs kubelet/kubeadm/kubectl on the DPU OS
 // matching the cluster's k8s minor version (e.g. 1.32). Idempotent —
 // re-runs are cheap once apt has the repo.
+//
+// k8sMinor must be a major.minor pair (e.g. "1.30"). If the caller
+// passes a full version like "1.30.14", we strip the patch. Without
+// this normalization, `pkgs.k8s.io/core:/stable:/v1.30.14/deb/` resolves
+// somewhere unexpected and apt installs the latest kubeadm — which
+// then refuses to join an older cluster ("only supports v >= 1.33.0").
+// Discovered in the 2.3 homelab e2e (Phase 6).
 func InstallKubeBinaries(ctx context.Context, dpu *ssh.Client, k8sMinor string) error {
 	// pkgs.k8s.io organizes by minor (v1.32, v1.31, ...) — the patch
 	// version comes from the apt resolver. We apt-mark hold AFTER install
@@ -53,6 +74,7 @@ func InstallKubeBinaries(ctx context.Context, dpu *ssh.Client, k8sMinor string) 
 	// the unhold, `apt-get install` is a no-op against that pinned
 	// version and the DPU joins with a kubelet too old for the cluster.
 	// (AGENTS.md #10.)
+	k8sMinor = normalizeK8sMinor(k8sMinor)
 	repoRel := "v" + k8sMinor
 	script := strings.Join([]string{
 		"set -e",
