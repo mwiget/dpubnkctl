@@ -100,6 +100,47 @@ No fancy tooling — stdlib + cobra + yaml.v3 + golang.org/x/crypto/ssh + sftp.
     Found on the 2.3 homelab e2e (this branch); same race exists on
     2.2 but bites less often.
 
+### f5-cne-controller doesn't re-push Gateways to a late-joining TMM
+
+28. **A TMM pod that joins the cluster after a Gateway has been applied
+    ends up with zero virtual servers programmed.** The cne-controller
+    pushes TMM config on Gateway/HTTPRoute create/update events, not
+    on TMM-pod-Ready events. Symptoms with two DPUs:
+
+      * `kubectl get gateway demo-gw` — `Programmed=True`
+      * `kubectl get httproute demo-gw` — `Accepted+ResolvedRefs`
+      * Both `f5-tmm` pods `READY 6/6` with `2/2` readiness gates True
+      * `curl http://<gw-vip>/` → `HTTP/1.0 500 Server: BigIP`
+        (LACP hashes ~50% of flows to the un-programmed TMM)
+
+    Test which TMM is un-programmed (BNK 2.3 path):
+
+      `kubectl -n default logs <tmm-pod> -c f5-tmm | grep -i "virtual"`
+
+    The early TMM logs `virtual server 'default-demo-gw-...' added`;
+    the late TMM has no such log line.
+
+    Workarounds, in order of cheapness:
+      a) `kubectl delete httproute demo-gw && kubectl delete gateway
+         demo-gw && kubectl apply -f <yaml>` — controller re-pushes to
+         every TMM currently in the cluster. ~10s.
+      b) `dpubnkctl gateway resync` — same idea, walks every Gateway
+         in the cluster, delete-and-reapplies each in place. Use after
+         any TMM crash / node add / multus race recovery.
+
+    What does NOT help:
+      - `kubectl rollout restart deploy/f5-cne-controller` (verified —
+        the controller, on startup, doesn't re-push existing CRs to
+        TMMs)
+
+    With the multus auto-rotation now in `deploy network` (gotcha #26),
+    the most common trigger (a TMM that scheduled late because its
+    node's multus was broken) no longer fires. The gotcha can still
+    surface from a TMM crash, a node added post-deploy, or a FLO
+    rolling-update.
+
+    Upstream issue draft: see `docs/upstream/f5-cne-controller-tmm-resync-on-join.md`.
+
 ### Gateway API conformance in 2.3 — HTTPRoute hostnames required
 
 27. **BNK 2.3 HTTPRoutes need `hostnames:` to match traffic.** The 2.3

@@ -89,6 +89,7 @@ var runtimeRequiredCommands = []string{
 	"dpubnkctl deploy",
 	"dpubnkctl destroy",
 	"dpubnkctl release-manifest pull",
+	"dpubnkctl gateway resync",
 }
 
 func commandNeedsRuntime(path string) bool {
