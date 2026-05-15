@@ -70,9 +70,27 @@ style: |
   pre code .hljs-string, pre code .hljs-attr, pre code .hljs-number, pre code .hljs-literal { color: #fde68a; }
   pre code .hljs-comment, pre code .hljs-meta { color: #94a3b8; font-style: italic; }
 
-  table { border-collapse: collapse; margin: 12px 0; font-size: 18px; width: 100%; }
-  th { background: #1e293b; color: #f8fafc; padding: 7px 12px; text-align: left; border-bottom: 2px solid #475569; font-weight: 600; }
-  td { padding: 6px 12px; border-bottom: 1px solid #1e293b; color: #cbd5e1; vertical-align: top; }
+  /* Marp's built-in github-markdown sheet drives table background +
+     border colors through CSS variables that default to WHITE. Pin
+     them to the dark palette so tables don't render as light squares
+     on the dark slide. */
+  :root {
+    --bgColor-default: #0b1220;
+    --bgColor-muted: #131c2e;
+    --borderColor-default: #334155;
+    --borderColor-muted: #1e293b;
+    --color-canvas-default: #0b1220;
+    --color-canvas-subtle: #131c2e;
+    --color-border-default: #334155;
+    --color-border-muted: #1e293b;
+    --color-fg-default: #e2e8f0;
+    --color-fg-muted: #cbd5e1;
+  }
+  section table { border-collapse: collapse; margin: 12px 0; font-size: 18px; width: 100%; background: #0b1220; color: #e2e8f0; }
+  section table tr { background: #0b1220 !important; border-top: 1px solid #1e293b !important; }
+  section table tr:nth-child(2n) { background: #131c2e !important; }
+  section table th { background: #1e293b !important; color: #f8fafc !important; padding: 8px 12px !important; text-align: left; border: 1px solid #334155 !important; font-weight: 600; }
+  section table td { padding: 7px 12px !important; border: 1px solid #1e293b !important; color: #cbd5e1 !important; vertical-align: top; background: transparent !important; }
 
   blockquote {
     border-left: 4px solid #60a5fa;
