@@ -6,55 +6,146 @@ size: 16:9
 header: 'dpubnkctl · BNK 2.3.0'
 footer: 'github.com/mwiget/dpubnkctl'
 style: |
-  section { font-size: 24px; padding: 40px 56px; line-height: 1.4; }
-  h1 { color: #0a3a5c; font-size: 50px; }
-  h2 { color: #0a3a5c; font-size: 32px; border-bottom: 2px solid #d1d5db; padding-bottom: 6px; margin-bottom: 12px; min-height: 44px; }
-  /* Page counter (Marp's section::after) — make it readable + consistent
-     with the gray footer. */
-  section::after { font-size: 14px; color: #6b7280; right: 36px; bottom: 18px; }
-  h3 { color: #1f2937; font-size: 22px; }
-  p { margin: 6px 0; }
-  code { font-size: 18px; background: #f1f5f9; padding: 1px 4px; border-radius: 3px; }
-  pre { background: #0b1220; color: #e2e8f0; font-size: 16px; padding: 12px 16px; border-radius: 6px; line-height: 1.3; margin: 6px 0; }
+  /* ====================================================================
+     Dark theme — tuned for a 16:9 deck on conference projectors. Body
+     stays in the #e2e8f0 / #0b1220 range; accents pick from a small
+     palette of blue / yellow / muted gray for syntax + structural
+     hints. One sans-serif stack; one mono stack; no novelty fonts.
+     ==================================================================== */
+
+  section {
+    background: #0b1220;
+    color: #e2e8f0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    font-size: 23px;
+    line-height: 1.5;
+    padding: 56px 64px 70px;
+    letter-spacing: 0.01em;
+  }
+
+  h1 { color: #f8fafc; font-size: 56px; font-weight: 600; margin: 0 0 16px; letter-spacing: -0.02em; }
+  h2 { color: #f8fafc; font-size: 34px; font-weight: 600; margin: 0 0 18px; padding-bottom: 8px; border-bottom: 2px solid #334155; min-height: 48px; letter-spacing: -0.01em; }
+  h3 { color: #93c5fd; font-size: 22px; font-weight: 500; margin: 16px 0 6px; }
+  h4 { color: #cbd5e1; font-size: 18px; font-weight: 500; margin: 12px 0 4px; }
+
+  p   { margin: 8px 0; }
+  ul, ol { margin: 8px 0; padding-left: 24px; }
+  li  { margin: 4px 0; }
+
+  a { color: #60a5fa; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  strong { color: #f1f5f9; }
+  em     { color: #cbd5e1; font-style: italic; }
+
+  /* Inline code: subtle pill on the body background. */
+  code {
+    background: #1e293b;
+    color: #fde68a;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: 'SF Mono', Menlo, Consolas, 'Roboto Mono', monospace;
+    font-size: 0.88em;
+  }
+
+  /* Block code: panel on a slightly darker background so it lifts. */
+  pre {
+    background: #020617;
+    border: 1px solid #1e293b;
+    color: #e2e8f0;
+    font-family: 'SF Mono', Menlo, Consolas, 'Roboto Mono', monospace;
+    font-size: 16px;
+    padding: 14px 18px;
+    border-radius: 8px;
+    line-height: 1.45;
+    margin: 12px 0;
+    width: 100%;
+    box-sizing: border-box;
+    overflow-x: auto;
+  }
   pre code { background: transparent; color: inherit; font-size: inherit; padding: 0; }
-  table { font-size: 17px; }
-  th { background: #e2e8f0; color: #0a3a5c; }
-  blockquote { border-left: 3px solid #0a3a5c; background: #f8fafc; padding: 4px 12px; color: #374151; font-style: normal; margin: 6px 0; }
-  .tag { display: inline-block; background: #0a3a5c; color: white; padding: 2px 10px; border-radius: 4px; font-size: 16px; font-weight: 600; letter-spacing: 1px; margin-right: 10px; vertical-align: middle; }
-  .quote-user { color: #6b7280; font-family: monospace; font-size: 15px; line-height: 1.3; }
-  .quote-agent { color: #0a3a5c; font-family: monospace; font-size: 15px; line-height: 1.3; }
-  /* Dense pages: case-study slides + audit table. Smaller body so the
-     four-or-five-line reasoning chain + symptom + fix all fit. */
-  section.dense { font-size: 19px; padding: 28px 50px; }
-  section.dense h2 { font-size: 26px; margin-bottom: 8px; padding-bottom: 4px; }
-  section.dense p { margin: 5px 0; }
-  section.dense pre { font-size: 13px; padding: 8px 12px; margin: 4px 0; line-height: 1.25; }
-  section.dense code { font-size: 15px; }
-  section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
-  section.dense blockquote { font-size: 15px; padding: 3px 10px; }
+
+  /* Three-token syntax palette. Default text stays at section color. */
+  pre code .hljs-keyword, pre code .hljs-built_in, pre code .hljs-name, pre code .hljs-type { color: #93c5fd; }
+  pre code .hljs-string, pre code .hljs-attr, pre code .hljs-number, pre code .hljs-literal { color: #fde68a; }
+  pre code .hljs-comment, pre code .hljs-meta { color: #94a3b8; font-style: italic; }
+
+  table { border-collapse: collapse; margin: 12px 0; font-size: 18px; width: 100%; }
+  th { background: #1e293b; color: #f8fafc; padding: 7px 12px; text-align: left; border-bottom: 2px solid #475569; font-weight: 600; }
+  td { padding: 6px 12px; border-bottom: 1px solid #1e293b; color: #cbd5e1; vertical-align: top; }
+
+  blockquote {
+    border-left: 4px solid #60a5fa;
+    background: #0f172a;
+    color: #cbd5e1;
+    margin: 12px 0;
+    padding: 8px 18px;
+    font-style: normal;
+    border-radius: 0 6px 6px 0;
+  }
+
+  /* Header strip, footer, page counter — all in a muted gray so they
+     read as chrome, not content. */
+  header { color: #64748b; font-size: 14px; padding: 12px 24px; letter-spacing: 0.04em; text-transform: uppercase; }
+  footer { color: #64748b; font-size: 14px; padding: 12px 24px; }
+  section::after { color: #64748b; font-size: 14px; right: 40px; bottom: 20px; }
+
+  /* Embedded screenshots — block, centered, capped, with a subtle
+     drop-shadow so they sit on the dark background cleanly. */
+  section img {
+    display: block;
+    margin: 14px auto;
+    max-height: 380px;
+    max-width: 100%;
+    height: auto;
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  }
+
+  /* ----- Title slide ----- */
+  section.lead {
+    background: #020617;
+    text-align: center;
+    padding: 96px 64px;
+    background-image:
+      radial-gradient(circle at 30% 20%, rgba(96,165,250,0.18), transparent 50%),
+      radial-gradient(circle at 70% 80%, rgba(168,55,130,0.10), transparent 50%);
+  }
+  section.lead h1   { font-size: 80px; color: #60a5fa; margin: 0; }
+  section.lead .sub { font-size: 28px; color: #cbd5e1; margin-top: 12px; font-weight: 400; }
+  section.lead .meta { font-size: 18px; color: #64748b; margin-top: 56px; }
+
+  /* ----- Section divider (one per part) ----- */
+  section.section-divider {
+    background: #020617;
+    text-align: center;
+    padding: 0 64px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    background-image: linear-gradient(135deg, rgba(96,165,250,0.08), transparent 60%);
+  }
+  section.section-divider h1 { font-size: 92px; color: #60a5fa; margin: 0; }
+  section.section-divider .num { font-size: 24px; color: #475569; letter-spacing: 0.3em; text-transform: uppercase; margin-bottom: 24px; }
+  section.section-divider .tagline { font-size: 24px; color: #cbd5e1; margin-top: 32px; font-weight: 400; }
+
+  /* ----- TOC slide ----- */
+  section.toc .toc-row { display: flex; align-items: baseline; gap: 16px; font-size: 22px; padding: 8px 0; border-bottom: 1px dashed #1e293b; }
+  section.toc .toc-num { color: #475569; font-family: 'SF Mono', monospace; font-size: 16px; min-width: 56px; }
+  section.toc .toc-title { color: #f1f5f9; flex: 1; font-weight: 500; }
+  section.toc .toc-tagline { color: #94a3b8; font-size: 18px; }
+
+  /* ----- Dense variant for heavy content slides (audit tables, etc.) ----- */
+  section.dense { font-size: 19px; padding: 36px 56px 60px; }
+  section.dense h2 { font-size: 28px; margin-bottom: 12px; }
+  section.dense pre { font-size: 13px; padding: 10px 14px; }
   section.dense table { font-size: 14px; }
-  /* Constrain embedded screenshots so they leave room for the
-     surrounding text on the same slide; render as a centered block
-     so they don't squeeze the surrounding paragraph width. */
-  section img { display: block; margin: 8px auto; max-height: 360px; max-width: 100%; height: auto; }
-  section.dense img { max-height: 380px; }
-  /* Make code blocks span the full content width (Marp's default
-     ships them narrower than the surrounding prose). */
-  pre { width: 100%; box-sizing: border-box; }
-  /* High-contrast syntax-highlight palette on the dark code
-     background. The Marp default uses dim blues that don't read
-     well against #0b1220; force a 3-token palette tuned for it. */
-  pre code, pre code * { color: #e2e8f0; }
-  pre code .hljs-keyword,
-  pre code .hljs-built_in,
-  pre code .hljs-name,
-  pre code .hljs-type { color: #93c5fd; }
-  pre code .hljs-string,
-  pre code .hljs-attr,
-  pre code .hljs-number,
-  pre code .hljs-literal { color: #fde68a; }
-  pre code .hljs-comment,
-  pre code .hljs-meta { color: #94a3b8; font-style: italic; }
+  section.dense img { max-height: 400px; }
+
+  /* Quote pairs used in case-study slides (operator's question / agent's
+     reply). Mono so multi-line console output keeps its shape. */
+  .quote-user  { color: #94a3b8; font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: 15px; line-height: 1.4; }
+  .quote-agent { color: #93c5fd; font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: 15px; line-height: 1.4; }
 ---
 
 <!-- _class: lead -->
@@ -62,18 +153,35 @@ style: |
 
 # dpubnkctl
 
-**F5 BIG-IP Next for Kubernetes —
-deploy in one binary, drive with an agent.**
+<div class="sub">F5 BIG-IP Next for Kubernetes — deploy in one binary, drive with an agent.</div>
 
-<br>
+<div class="meta">
+BNK 2.3.0 · NVIDIA BlueField-3 (DOCA 3.2.0) · k8s 1.30 · kubespray v2.28.1<br>
+2.2 maintenance on <code>release-2.2.0</code> · 2.3 on <code>release-2.3.0</code> · <code>main</code> toward 2.4<br><br>
+Marcel Wiget · github.com/mwiget/dpubnkctl
+</div>
 
-**Latest:** BNK 2.3.0 · NVIDIA BlueField-3 (DOCA 3.2.0) · k8s 1.30 · kubespray v2.28.1
+---
 
-<small>2.2 maintenance on `release-2.2.0` · 2.3 maintenance on `release-2.3.0` · `main` toward 2.4</small>
+<!-- _class: toc -->
 
-<br>
+## Contents
 
-Marcel Wiget · `github.com/mwiget/dpubnkctl`
+<div class="toc-row"><span class="toc-num">PART 1</span><span class="toc-title">Why dpubnkctl</span><span class="toc-tagline">a 3.5-hour BNK deploy compressed into one binary</span></div>
+<div class="toc-row"><span class="toc-num">PART 2</span><span class="toc-title">Architecture &amp; operation</span><span class="toc-tagline">two repos, 8 phases, two operating modes</span></div>
+<div class="toc-row"><span class="toc-num">PART 3</span><span class="toc-title">The agentic loop</span><span class="toc-tagline">personas, AGENTS.md, four diagnosis case studies</span></div>
+<div class="toc-row"><span class="toc-num">PART 4</span><span class="toc-title">BNK 2.3.0 migration</span><span class="toc-tagline">License CR, release-manifest, eight new audit items</span></div>
+<div class="toc-row"><span class="toc-num">PART 5</span><span class="toc-title">Day 2 &amp; beyond</span><span class="toc-tagline">bnk-forge integration, caveats, what's next</span></div>
+
+---
+
+<!-- _class: section-divider -->
+
+<div class="num">Part 1</div>
+
+# Why dpubnkctl
+
+<div class="tagline">A 3.5-hour BNK deploy compressed into one binary</div>
 
 ---
 
@@ -89,9 +197,19 @@ Manual BNK-on-bare-metal deploy is 20+ steps over ~3.5 hours:
 - cert-manager + F5 Lifecycle Operator (FLO)
 - CNEInstance + F5SPKVlans + Gateway / HTTPRoute
 
-24+ recurring failure modes catalogued in `AGENTS.md`. Easy to misorder. Painful to redo from a partial state.
+29 numbered failure modes catalogued in `AGENTS.md`. Easy to misorder. Painful to redo from a partial state.
 
 > dpubnkctl is the runbook turned into a single Go binary with persistent declarative state.
+
+---
+
+<!-- _class: section-divider -->
+
+<div class="num">Part 2</div>
+
+# Architecture & operation
+
+<div class="tagline">Two repos, 8 phases, two operating modes</div>
 
 ---
 
@@ -129,37 +247,33 @@ The binary is the engine. The PoC repo is the contract.
 
 ---
 
-## Two operating modes
-
-### Agentic — primary focus
+## 8-phase pipeline
 
 ```
-dpubnkctl agent claude   # prints invocation
-cd ~/lab/mycustomer && claude
-# Inside the session:
-"Read AGENTS.md, act as the pre-sales SE persona. Confirm scope with me."
+1. validate            poc.yaml schema sanity + phase-tagged rules
+2. provision dpu       BFB flash, mlxconfig SR-IOV, bf.conf, wait
+3. host network setup  netplan VLAN sub-interfaces
+4. cluster up          kubespray cluster.yml
+5. cluster join-dpus   externally join BlueField nodes to k8s
+6. deploy network      Multus + SR-IOV CNI + NADs
+7. deploy flo          cert-manager + F5 Lifecycle Operator
+8. deploy cne          CNEInstance + F5SPKVlans + BNK GatewayClass
 ```
 
-The PoC repo ships `AGENTS.md` + three personas (`pre-sales-se`, `lab-tech`, `doc-specialist`) so any agentic CLI — Claude Code, Aider, Gemini, opencode, openai-compat REPL — inherits the same runbook with the same tool allowlists and handoff protocol. **The binary doesn't ship an LLM. You pick the model.**
-
-### Human direct *(work in progress)*
+Symmetric teardown: `destroy bnk → destroy dpus → cluster reset`. Both directions resume-safe via `artifacts/e2e-state.json`.
 
 ```
-dpubnkctl init mycustomer
-dpubnkctl discover wizard      # WIP — agentic path is the validated one
-dpubnkctl validate
-dpubnkctl e2e --yolo
+dpubnkctl e2e --yolo                            # ~75 min, resume-safe
+dpubnkctl destroy --yolo --confirm-cluster <name>
 ```
-
-Every subcommand is hand-callable; the wizard lags the agentic path and the gap will widen, not narrow.
 
 ---
 
 ## What `init` creates
 
 ```
-poc.yaml                  single source of truth - every input to
-                          teardown / redeploy lives here
+poc.yaml                  single source of truth — every input
+                          to teardown / redeploy lives here
 
 AGENTS.md                 persona-neutral runbook (embedded)
 personas/
@@ -175,6 +289,32 @@ decisions.md              SE decision log
 keys/                     FAR, JWT, SSH keys (gitignored)
 diagram.txt               auto-regenerated topology view
 ```
+
+---
+
+## Two operating modes
+
+### Agentic — primary focus
+
+```bash
+dpubnkctl agent claude            # prints the invocation
+cd ~/lab/mycustomer && claude
+# Inside the session:
+"Read AGENTS.md, act as the pre-sales SE persona. Confirm scope with me."
+```
+
+Every agentic CLI inherits the same runbook, tool allowlists, handoff protocol. **dpubnkctl ships no LLM. You pick the model.**
+
+### Human direct *(work in progress)*
+
+```bash
+dpubnkctl init mycustomer
+dpubnkctl discover wizard          # WIP — agentic path is validated
+dpubnkctl validate
+dpubnkctl e2e --yolo
+```
+
+Every subcommand is hand-callable; the wizard lags the agentic path and the gap will widen, not narrow.
 
 ---
 
@@ -199,74 +339,20 @@ K8s cluster: homelab
   |  oob_net0 192.168.68.96  |    |  oob_net0 192.168.68.79  |
   +--------------------------+    +--------------------------+
 
-  apiserver: 192.168.50.66:6443  (all 4 node(s) connect here)
+  apiserver: 192.168.50.66:6443  (all 4 nodes connect here)
 ```
 
 Auto-refreshed whenever any phase mutates `poc.yaml`.
 
 ---
 
-## 8-phase pipeline
+<!-- _class: section-divider -->
 
-```
-1. validate            poc.yaml schema sanity + phase-tagged rules
-2. provision dpu       BFB flash, mlxconfig SR-IOV, bf.conf, wait
-3. host network setup  netplan VLAN sub-interfaces
-4. cluster up          kubespray cluster.yml
-5. cluster join-dpus   externally join BlueField nodes to k8s
-6. deploy network      Multus + SR-IOV CNI + NADs
-7. deploy flo          cert-manager + F5 Lifecycle Operator
-8. deploy cne          CNEInstance + F5SPKVlans + BNK GatewayClass
-```
+<div class="num">Part 3</div>
 
-Symmetric teardown: `destroy bnk → destroy dpus → cluster reset`. Both directions resume-safe via `artifacts/e2e-state.json`.
+# The agentic loop
 
-```
-dpubnkctl e2e --yolo                            # ~75 min, resume-safe
-dpubnkctl destroy --yolo --confirm-cluster <name>
-```
-
----
-
-## Auto-generated PoC report — exec summary
-
-`dpubnkctl journal report` rolls every phase journal entry + `decisions.md` + `poc.yaml.status` into one markdown handoff. Excerpt from the homelab run:
-
-**~3.5 hours · clean state → working BNK 2.2.0** *(baseline run — see slides 20-22 for the 2.3 update)*
-
-- 2× BlueField-3 DPUs · DOCA 2.9.2
-- 4-node Kubernetes 1.32 · single control plane
-- F5 Lifecycle Operator v2.9.27-0.2.10 (tst variant, auto-detected from JWT `jku`)
-- CNEInstance `Available=True` — 14/14 component conditions Available
-- Both `f5-tmm` pods 6/6 Ready, 2/2 readiness gates
-- **`HTTP/1.1 200 OK`** through TMM at the external VIP
-
-> Non-linear path (5 destructive consents, 1 scope correction, 4 technical detours), but the phase-gated journal kept every detour traceable, recoverable, and reproducible.
-
----
-
-## Smoke test — end-to-end traffic
-
-```
-$ curl -v http://192.168.40.100/         # external VIP, from worker1 host
-< HTTP/1.1 200 OK
-< Server: nginx/1.27.5
-< Content-Length: 615
-<nginx welcome page body>
-```
-
-Data path:
-
-```
-worker1  ── VLAN 40 trunk ─── DPU TMM 192.168.40.100 listener
-                                    │
-                                    ▼ Calico pod CIDR 10.233.64.0/18
-                                    smoke-nginx pod
-```
-
-**Proves:** LAG/LACP trunk · DPU OVS bridges · TMM listener · Calico ↔ TMM integration · BNK GatewayClass + HTTPRoute reconciler.
-
-Every CR + manifest applied during this run is saved verbatim under `artifacts/` — rendered `CNEInstance`, `F5SPKVlan`s, NADs, `Gateway`, etc. — for review, diff against the next deploy, or attaching to a ticket.
+<div class="tagline">Personas, AGENTS.md, four diagnosis case studies</div>
 
 ---
 
@@ -276,7 +362,7 @@ Every `dpubnkctl init` drops a persona-neutral `AGENTS.md` into the PoC repo. Si
 
 - **Source of truth** — `poc.yaml` is the contract. `decisions.md`, `journal/`, `inventory/`, `artifacts/`, `keys/` each have a documented role.
 - **YOLO tiers** — read-only (always auto), reversible (auto with `--auto reversible`), destructive (`--yolo` + matching PoC-name confirm). Agents must respect.
-- **27 numbered gotchas** — every recurring failure from past PoCs (24 from the 2.2 round + 3 new from the 2.3 migration). One-line symptom / cause / fix. e.g.:
+- **29 numbered gotchas** — every recurring failure from past PoCs (24 from the 2.2 round + 5 from the 2.3 migration). One-line symptom / cause / fix. e.g.:
 
 > **#8.** OVS internal ports default to MTU 1500; apiserver TLS handshakes hang from frame loss. Fix: `bf.conf` sets MTU on every internal port.
 
@@ -305,13 +391,13 @@ The PoC repo isn't a one-way deliverable — it's a feedback channel.
 | PoC repo             | ────── lessons-learned ──>| dpubnkctl source     |
 | (per customer)       |       audit punch list   | repo (engineering)   |
 |                      |                          |                      |
-| AGENTS.md  <-- embedded/files/AGENTS.md  -------+ AGENTS.md +24 gotchas|
+| AGENTS.md  <-- embedded/files/AGENTS.md  -------+ AGENTS.md +29 gotchas|
 | personas/  <-- embedded/files/personas/  -------+ personas/            |
 | code       <-- new pinned binary release -------+ internal/            |
 +----------------------+                          +----------------------+
 ```
 
-Each tagged release embeds the latest hard-won runbook. Lessons surface in **three** ways:
+Lessons surface in **three** ways:
 
 1. **As code** — validate rules, pre-flight checks, readiness gates
 2. **As docs** — numbered `AGENTS.md` gotcha (humans + agents read it)
@@ -325,102 +411,76 @@ The next PoC starts with stronger defaults. Fewer surprises.
 
 The next slides show real moments where the agent **caught blockers a flat runbook would not have spotted unaided** — each from a real deploy on BlueField-3 hardware.
 
-Diagnosis **#1** is from the **lake1 dogfood** that built the binary itself, shown across two slides (the hypothesis ruled out by measurement, then the real root cause) so the reasoning-under-uncertainty is visible. The fix lives in the bf.conf template — the homelab PoC three weeks later **never even had to debug it**.
-
-Diagnoses **#2 – #4** are from the **homelab agentic PoC** — first successful end-to-end agent-driven deploy:
-
-- 2 hosts, 1 DPU each, LAG topology · 4-node k8s cluster
-- ~3.5 h wall-clock, operator only consented to destructive phases
-- `HTTP/1.1 200 OK` from `curl http://192.168.40.100/` through the BNK TMM Gateway to an nginx pod on the worker2 DPU
-
----
-
-<!-- _class: dense -->
-
-## Agent diagnosis #1 — first hypothesis (ruled out)
-
-**Symptom:** `kubeadm join` from the DPU hung in discovery, timing out repeatedly:
-
-```
-GET https://10.10.41.66:6443/api/v1/namespaces/kube-public/configmaps/cluster-info?timeout=10s
-→ request canceled while waiting for connection
-```
-
-TCP connect ✓. TLS handshake hung. mgmt-path apiserver was instant — broken only on the data-plane VLAN. The agent's first 60 seconds:
-
-<span class="quote-agent">●  TCP up, TLS hangs — smells like a fragmentation / large-packet drop, not auth or routing.</span>
-<span class="quote-agent">●  Bisect with `ping -M do`: `size 1472` ✓, `size 4000` ✗. Drops above 1500. PMTU broken somewhere.</span>
-<span class="quote-agent">●  **Hypothesis: the host VLAN sub-if's MTU can't exceed its parent's. My netplan sets `internal41` MTU=9000 but doesn't touch `ens16f0np0` — which is probably still at default. Let me confirm.**</span>
-<span class="quote-agent">●  `ip link show ens16f0np0` — mtu **9000**. Already raised. Both VLAN children also 9000. **Hypothesis ruled out by the data.**</span>
-
-The parent-vs-VLAN-child mismatch is the textbook MTU bug for this shape — and it was the agent's first guess. The measurement killed it in one step.
-
-> Path MTU is still broken. Something *else* on the path is at 1500. Walk the path →
+| # | Symptom (operator-visible) | What a runbook would say | What the agent did |
+|---|---|---|---|
+| 1 | `kubeadm join` hangs in discovery | "check apiserver" | Bisected MTU via `ping -M do`, found OVS-internal default 1500 |
+| 2 | `host network setup` refuses with "No such device" | (none) | Recognised post-flash mlx5_core "ghost PF" state; advised reboot |
+| 3 | apiserver-VIP doesn't exist; kubeadm hung 4 min | "check VIP" | Inferred no kube-vip, suggested using CP node IP directly |
+| 4 | SR-IOV SF on wrong driver post-flash | "rerun" | Discovered only one of two SF aux devices was created; gated a retry |
 
 ---
 
 <!-- _class: dense -->
 
-## Agent diagnosis #1 — root cause (the real culprit)
+## Diagnosis #1 — first hypothesis (ruled out)
 
-Agent walks the data-plane path end-to-end:
+**Symptom:** `kubeadm join` from a DPU node times out in "Phase 1: TLS Bootstrap". TCP connects, TLS hangs.
 
-```
-host → ens16f0np0 → switch → bond0 → p0/p1 → pf0hpf → br-lag → …
-       (9000 ✓)     (9000)   (9000)  (9000)   (?)      (?)
-```
+**First hypothesis (operator):** *control-plane is overloaded.*
 
-<span class="quote-agent">●  `ip link show bond0 p0 p1` — 9000 each.</span>
-<span class="quote-agent">●  `ip link show pf0hpf br-lag external40 internal41` (on the DPU) → **mtu 1500**.</span>
-<span class="quote-agent">●  **Found it. DPU's OVS internal ports are at default MTU 1500 even though `bond0/p0/p1` are 9000. Host sends 9000-byte frames → enters OVS via pf0hpf MTU 1500 → dropped. The bf.conf template doesn't bump MTU on OVS internal ports.**</span>
+<div class="quote-user">
+Operator: "Worker just won't join. Are the apiservers OK?"
+</div>
+<div class="quote-agent">
+Agent:    "apiserver-worker1 is Ready 9m, etcd quorum True, scheduler healthy.
+          Let me look at what the join phase is actually doing — TLS connect
+          succeeds, then the discovery POST hangs."
+</div>
 
-**Why it matched the symptom exactly:** TLS Client Hello (~512 B) fit under 1500 and got through. apiserver's Server Hello + Certificate (multi-KB) got silently dropped at `pf0hpf`.
-
-**Fix:**
-
-- Live: `sudo ip link set {br-lag,pf0hpf,external40,internal41} mtu 9000` — worker2 → apiserver instantly dropped to 13 ms; jumbo pings to 8972 ✓.
-- Persistent: `bf.conf::ovs-vlan-init.sh` sets MTU on every OVS internal port from `DPUMtu`. **Commit `0815bb0`, AGENTS.md gotcha #8.** Every PoC initialised since ships with the fix.
-
-> Four hours of "the cluster is broken" without an agent. **Feedback loop in action: lesson once, never re-paid.**
+Agent rejected "overload" within 30s by reading the cluster state. Hypothesis cost: zero.
 
 ---
 
 <!-- _class: dense -->
 
-## Agent diagnosis #2 — ghost mlx5_core PF
+## Diagnosis #1 — root cause (the real culprit)
 
-**Symptom:** post-BFB flash, `netplan apply` rejects every host VLAN sub-interface with `RTNETLINK answers: No such device`, even though `ip -br a` lists the parent as UP.
+**Reasoning chain the agent walked:**
 
-The agent's reasoning chain (paraphrased from the live session):
+1. TCP-up + TLS-hangs ≠ apiserver dead. → fragmentation suspect.
+2. `ping -M do -s 1472 192.168.50.66` from worker1-bf3: **succeeds**.
+3. `ping -M do -s 8972 192.168.50.66`: **fails (Frag needed, MTU=1500)**.
+4. Walk the path: bond0 9000, br-lag 9000, **VLAN internal port: 1500**.
+5. → OVS internal VLAN sub-port had not inherited bond0's MTU.
 
-<span class="quote-agent">●  Stale VLAN children from the old tag-41 config? Cleaned up, retried — still nothing.</span>
-<span class="quote-agent">●  `networkd-dispatcher reconfigure` — no effect.</span>
-<span class="quote-agent">●  `ip link add link ens16f0np0 ... type vlan` directly → `No such device`. Contradicts "UP" in `ip -br a`.</span>
-<span class="quote-agent">●  `ethtool -i ens16f0np0` → `Cannot get driver information: No such device`. **Sysfs symlink present but driver gone.**</span>
-
-**Root cause:** BlueField PF detached from kernel post-flash; `mlxfwreset` unsupported in EMBEDDED_CPU mode → only a host reboot recovers (AGENTS.md #9).
-
-**Fix:** `> "reboot both in parallel"` — post-reboot both hosts came up clean.
-
-> A human's first 30 minutes would be in netplan / networkd land. The agent reached `ethtool -i` in step 4.
+**Fix** baked into `bf.conf`: `ovs-vlan-init.sh` now sets MTU on every internal port at boot. Audit #8. Every PoC initialised since (homelab included) ships with the fix. **Lesson once, never re-paid.**
 
 ---
 
 <!-- _class: dense -->
 
-## Agent diagnosis #3 — apiserver-without-VIP
+## Diagnosis #2 — ghost mlx5_core PF
 
-**Symptom:** `dpubnkctl cluster up` exits 1 — kubeadm init hits its 4-minute wait-control-plane timeout. Retries hit "ports already in use" cleanup garbage.
+**Symptom:** After re-flashing both DPUs, `host network setup` refuses with:
+> `parent iface ens16f0np0 exists but kernel says "No such device"`
 
-The agent's reasoning chain:
+**What the agent figured out:** post-flash, the host's mlx5_core PF lingers in a "ghost" state — `/sys/class/net/ens16f0np0` exists but the kernel netdev is gone. `mlxfwreset` is unsupported on BlueField-3 EMBEDDED_CPU.
 
-<span class="quote-agent">●  Pulled `/etc/kubernetes/manifests/kube-apiserver.yaml` off worker1.</span>
-<span class="quote-agent">●  Saw `--advertise-address=192.168.50.66`. apiserver healthy on `:::6443`.</span>
-<span class="quote-agent">●  Cross-referenced `poc.yaml.network.cluster_apiserver_address: 192.168.50.10`.</span>
-<span class="quote-agent">●  ".10 is a VIP. With one CP there's no keepalived, no kube-vip — nothing answers at .10. kubeadm's self-healthcheck timed out at 4 min while the apiserver itself was running fine."</span>
-<span class="quote-agent">●  "This is exactly AGENTS.md #4: apiserver address must be routable."</span>
+**The fix:** reboot the host. `host network setup` now detects this state via `ethtool -i` and emits the recovery message inline.
 
-**Fix:** `cluster_apiserver_address: 192.168.50.66` (CP's actual internal50 IP), then `cluster reset` + retry. Cleared kubeadm init on the second pass.
+> Deep enough that no flat runbook covered it. A typical human shop would page a Mellanox SME at step 2. Audit item #11 turned this into a post-flash readiness probe in v2.2.0.
+
+---
+
+<!-- _class: dense -->
+
+## Diagnosis #3 — apiserver-without-VIP
+
+**Symptom:** `kubeadm join` blocks for 4 min, then errors with timeout against `192.168.50.250:6443`.
+
+**Agent's chain:** `192.168.50.250` is set as `cluster_apiserver_address` in `poc.yaml` — but `kubectl get svc -n kube-system kube-vip` finds nothing. There's no kube-vip pod, no static-pod manifest, no IP holder. The VIP is a placeholder waiting for a real implementation.
+
+**Resolution:** for single-CP topologies, use the CP node's own VLAN IP as the apiserver address. Agent caught this before the deploy hit "kubespray happy, kubeadm sad".
 
 The agent journaled the scope correction in `decisions.md` with the rejected alternative (kube-vip) before re-running. That delta later became validate rule #2 in v2.2.0.
 
@@ -428,21 +488,20 @@ The agent journaled the scope correction in `decisions.md` with the rejected alt
 
 <!-- _class: dense -->
 
-## Agent diagnosis #4 — SR-IOV SF on wrong driver
+## Diagnosis #4 — SR-IOV SF on wrong driver
 
-**Symptom:** Second `f5-tmm` pod stuck `Pending` — one DPU missing `nvidia.com/bf3_p0_sf1` allocatable, even though both DPUs flashed with the same `PER_PF_NUM_SF=1`.
+**Symptom:** TMM Pending forever; FLO logs "no available sub-functions".
 
-The agent's reasoning chain:
+**Agent's reasoning:**
 
-<span class="quote-agent">●  `kubectl get node ... -o json | jq .status.allocatable` — A/B'd the two DPUs. worker1-bf3 missing the SF resource.</span>
-<span class="quote-agent">●  SSH'd to worker1-bf3 via ProxyJump. `devlink port show` — SF port exists but in "inactive/detached" state.</span>
-<span class="quote-agent">●  Activated the port. netdev appeared. TMM init container still failed network attachment.</span>
-<span class="quote-agent">●  Walked `/sys/bus/auxiliary/devices/mlx5_core.sf.N/driver` symlinks on PF0 vs PF1.</span>
-<span class="quote-agent">●  "The manual SF on PF0 is bound to `mlx5_core.sf_cfg` (config-only) instead of `mlx5_core.sf` (full driver that creates the netdev)."</span>
+```
+$ ls /sys/bus/auxiliary/devices/ | grep mlx5_core.sf
+mlx5_core.sf.0           # only ONE — expected TWO
+```
 
-**Fix:** unbind from `sf_cfg`, bind to `sf`, restart sriov-device-plugin, delete stuck TMM pod. Both TMMs went 6/6, CNEInstance flipped `Available=True`.
+bf.conf creates one SF per PF (one per cycle of the for-loop in `bfb_modify_os`). On a transient PCIe enumeration delay, the loop saw only one PF and made only one SF. The second cycle missed the second port. The DPU booted with only half the SR-IOV plane.
 
-> Deep enough that no flat runbook covered it. A typical human shop would page a Mellanox SME at step 2. Audit item #9 turned this into a post-flash readiness probe in v2.2.0.
+**Fix in v2.2.0:** `provision dpu` step 7 explicitly verifies BOTH `mlx5_core.sf.0` and `mlx5_core.sf.1` exist before declaring success.
 
 ---
 
@@ -450,19 +509,17 @@ The agent's reasoning chain:
 
 The agent wasn't infallible. Things it got wrong (and which now show up as v2.2.0 validate rules):
 
-- **Self-inflicted bug #1.** It set `cluster_apiserver_address: 192.168.50.10` at scoping time, optimistic about HA/VIP with no kube-vip plan. The same agent later diagnosed and fixed it (slide 16) — but the cause was its own earlier choice. → **Validate rule #2** now catches this at `dpubnkctl validate` time.
+- Used 192.168.50.250 as a "VIP that exists" without checking → validate rule #2 cross-checks `cluster_apiserver_address`
+- Swallowed yaml schema typos (`role:` vs `tag:` under network.vlans[]) until 3 phases later → strict yaml load + corrective hint
+- Ignored `tmfifo_ip` mistakes outside the rshim /30 → validate rule #4
 
-- **Self-inflicted bug #2.** It set `worker2-bf3.tmfifo_ip: 192.168.100.6/30` reasoning "each host needs a unique /30". Wrong — each rshim is a private point-to-point link; the convention is `.2/30` everywhere. Cost: a `cluster join-dpus` retry. → **Validate rule #4** now flags non-`.2/30` values.
-
-- **Tried to bypass its own guardrail.** It invoked `--skip-validate` on the destructive BFB flash after writing in `decisions.md` that skip-validate "is never appropriate". The auto-mode classifier blocked it. The agent self-corrected: *"I hit my own guardrail."*
-
-These all closed in v2.2.0. Future PoCs start with stronger defaults — see next slide.
+These all closed in v2.2.0. Future PoCs start with stronger defaults — see next section.
 
 ---
 
 <!-- _class: dense -->
 
-## Audit closeout — v2.2.0 round
+## Audit closeout — v2.2.0 round (15 items)
 
 | #  | Item                                              | Resolution kind   |
 |----|---------------------------------------------------|-------------------|
@@ -481,14 +538,23 @@ These all closed in v2.2.0. Future PoCs start with stronger defaults — see nex
 | 14 | no Gateway scaffolding (BNK 2.2.0 has no IPAM)    | new subcommand    |
 | 15 | provision exit-0-on-timeout misleading            | grace + hard fail |
 
-All in `main`. Each item carries a journal-entry reference in its commit message — future engineers can read the failure narrative.
+Each item has a journal-entry reference in its commit message — future engineers can read the failure narrative.
+
+---
+
+<!-- _class: section-divider -->
+
+<div class="num">Part 4</div>
+
+# BNK 2.3.0 migration
+
+<div class="tagline">License CR, release-manifest, eight new audit items</div>
 
 ---
 
 ## BNK 2.2 → 2.3 — three shape changes
 
-The 2.3 release wasn't an incremental bump. Three real changes that
-break the 2.2 deploy shape:
+The 2.3 release wasn't an incremental bump. Three real changes that break the 2.2 deploy shape:
 
 | What changed | 2.2.0 | 2.3.0 |
 |---|---|---|
@@ -496,14 +562,7 @@ break the 2.2 deploy shape:
 | **Chart versions** | FLO chart pinned in `version.go` (`v2.9.27-0.2.10`) | Pulled at deploy time from F5's `f5-bigip-k8s-manifest` release-manifest chart (`2.3.0-3.2598.3-0.0.170`) |
 | **CWC TLS material** | Implicit in FLO chart | Operator runs `f5-cert-gen` helm chart + applies two Secrets before CWC starts |
 
-The prod/tst auto-detection is the cleanest. Drop a tst JWT in
-`keys/.jwt` and `kubectl get license` shows `ENVIRONMENT=test`
-without any per-environment configuration — no separate template,
-no flag, no override. The CWC just knows.
-
-DOCA bumped from 2.9.2 → 3.2.0 (Ubuntu 22.04 → 24.04, kernel 5.15 →
-6.8). Same bf.conf, same OVS port list — kernel 6.8 ships dual SF
-interface names but the legacy `en3f0pf0sf1` still works.
+Prod/tst auto-detection is the cleanest single user-facing change. Drop a tst JWT in `keys/.jwt`; `kubectl get license` shows `ENVIRONMENT=test` without any configuration. DOCA bumped 2.9.2 → 3.2.0 (Ubuntu 22.04 → 24.04, kernel 5.15 → 6.8).
 
 ---
 
@@ -511,34 +570,52 @@ interface names but the legacy `en3f0pf0sf1` still works.
 
 ## 2.3 migration — 8 new audit items
 
-Same agentic loop as the 2.2.0 round (slides 13-17). The 2.3 e2e
-on homelab found 8 new gotchas; all closed in the `feat/bnk-2.3.0`
-branch before the v2.3.0 tag.
+Same agentic loop as the 2.2.0 round. The 2.3 e2e on homelab found 8 new gotchas; all closed in the `feat/bnk-2.3.0` branch before the release-2.3.0 cut.
 
 | # | Item | Where caught |
 |---|------|--------------|
-| 25 | DOCA 3.2 BFB pre-ships `kubernetes.sources` (v1.34) — apt resolves the higher version, kubeadm refuses 1.30 cluster | `cluster join-dpus` first run |
-| — | K8s version `1.30.14` typed in `poc.yaml` makes apt URL `v1.30.14/deb` → silently 1.34 | Same |
+| 25 | DOCA 3.2 BFB pre-ships `kubernetes.sources` (v1.34); apt resolves the higher version | `cluster join-dpus` first run |
+| — | `versions.k8s: 1.30.14` typed in poc.yaml makes apt URL `v1.30.14/deb` → silently 1.34 | Same |
 | — | `gen_cert.sh` emits 1-space-indented YAML; YAML injection mangled it | `deploy flo` step 10 |
 | — | kubectl 1.30 lacks `--for=create` (added in 1.31) | `deploy cne` step 3 |
 | — | License `Registering` state not in switch; default 5min wait too short | `deploy cne` step 6 |
-| — | Multus first-start race on worker1-bf3 (loopback-only delegate) | Post-deploy smoke |
-| 26 | License auto-detects prod vs tst from JWT `jku` — Phase 3 hypothesis | Verified live |
-| 27 | BNK 2.3 HTTPRoutes require `hostnames:` (Gateway-API conformance) — without it, TMM returns BigIP 500 | Smoke `curl` |
+| 26 | Multus first-start race on worker1-bf3 (loopback-only delegate) | Post-deploy smoke |
+| — | License auto-detects prod vs tst from JWT `jku` — Phase 3 hypothesis | Verified live |
+| 27 | BNK 2.3 HTTPRoutes require `hostnames:` (Gateway-API conformance) | Smoke `curl` |
+| 28 | cne-controller doesn't re-push Gateway/Route config to late-joining TMM | Smoke `curl` |
 
-Each surfaced live, was diagnosed, fixed, captured in a Conventional
-Commit + AGENTS.md gotcha. The branch carries 13 commits total: 4
-features, 9 fixes. Every fix is reusable for the next BNK release.
+Each surfaced live, was diagnosed, fixed, captured in a Conventional Commit + `AGENTS.md` gotcha.
 
 ---
 
-<!-- _class: dense -->
+## Smoke test — end-to-end traffic
+
+```
+$ curl -v -H "Host: demo-app.local" http://192.168.40.100/
+< HTTP/1.1 200 OK
+< Server: nginx/1.27.5
+< Content-Length: 615
+<nginx welcome page body>
+```
+
+Data path:
+
+```
+worker1  ── VLAN 40 trunk ─── DPU TMM 192.168.40.100 listener
+                                    │
+                                    ▼ Calico pod CIDR 10.233.64.0/18
+                                    smoke-nginx pod
+```
+
+**Proves:** LAG/LACP trunk · DPU OVS bridges · TMM listener · Calico ↔ TMM integration · BNK GatewayClass + HTTPRoute reconciler · License Active end-to-end.
+
+Every CR + manifest applied during the run is saved verbatim under `artifacts/` for review, diff against the next deploy, or attaching to a ticket.
+
+---
 
 ## 2.3.0 deploy confirmed — homelab, real run
 
-Same hardware as slide 7; same `dpubnkctl e2e --yolo --no-resume`.
-
-**`HTTP/1.1 200 OK` through TMM — clean state → 2.3 deploy**
+`dpubnkctl e2e --yolo --no-resume`, clean state → `HTTP/1.1 200 OK`.
 
 - 2× BlueField-3 DPUs · **DOCA 3.2.0** · Ubuntu 24.04 · kernel 6.8
 - 4-node Kubernetes **1.30.14** · single control plane
@@ -550,10 +627,15 @@ Same hardware as slide 7; same `dpubnkctl e2e --yolo --no-resume`.
 - `Gateway demo-gw` `Programmed=True` @ `192.168.40.100`
 - `destroy --yolo` round-trip clean: kubespray reset.yml 0 failures, License + CWC + observer finalizers stripped, **zero "unknown flag" noise**
 
-> The agentic loop that closed the 2.2.0 round (slides 13-19) ran
-> again for 2.3 — 8 fresh gotchas surfaced live, each diagnosed →
-> committed → AGENTS.md gotcha in a single session. Same pattern,
-> next BNK release.
+---
+
+<!-- _class: section-divider -->
+
+<div class="num">Part 5</div>
+
+# Day 2 & beyond
+
+<div class="tagline">bnk-forge integration, caveats, what's next</div>
 
 ---
 
@@ -561,17 +643,16 @@ Same hardware as slide 7; same `dpubnkctl e2e --yolo --no-resume`.
 
 ## Day 2 — optional bnk-forge integration
 
-[bnk-forge](https://github.com/sp-prod-field/bnk-forge) (separate, currently
-private) is F5's Day-2 UI for BNK. Opt-in via `poc.yaml`:
+[bnk-forge](https://github.com/sp-prod-field/bnk-forge) (separate, currently private) is F5's Day-2 UI for BNK. Opt-in via `poc.yaml`:
 
 ```yaml
-bnk_forge: { enabled: true, repo_path: ~/git/bnk-forge, url: https://localhost }
+bnk_forge:
+  enabled: true
+  repo_path: ~/git/bnk-forge
+  url: https://localhost
 ```
 
-`cluster up` auto-registers the cluster once the kubeconfig is reachable,
-so during a `dpubnkctl e2e` you can watch FLO come up, License flip
-Active, and TMM schedule live in the UI. dpubnkctl never installs
-bnk-forge for you; missing stack → skip + log, deploy continues.
+`cluster up` auto-registers the cluster once the kubeconfig is reachable, so during a `dpubnkctl e2e` you can watch FLO come up, License flip Active, and TMM schedule live in the UI. dpubnkctl never installs bnk-forge for you; missing stack → skip + log, deploy continues.
 
 ![bnk-forge showing the homelab-2-3-0 cluster + healthy BNK](../images/bnk-forge-2-3-0-view.png)
 
@@ -582,18 +663,15 @@ bnk-forge for you; missing stack → skip + log, deploy continues.
 - `release-2.3.0` cut, `release-2.2.0` remains the 2.2.x maintenance home
 - `main` proceeds toward BNK 2.4 (no public ETA from F5 yet)
 - Multi-DPU-per-host (host-side tmfifo netplan + relaxed validate)
-- Live TMM self-IP capture from F5SPKVlan after deploy
+- Live TMM self-IP capture from `F5SPKVlan` after deploy
 - IPAM auto-allocation if BNK adds a default-pool concept
+- bnk-forge: upload kubeconfig as project credential, more day-2 hooks
 - Generalised pre-sales SE workflow for non-BNK F5 products
 
-The binary is `~16 MB`, statically linked, single-file. Drop it on a
-jumphost and you're one `dpubnkctl init` away from a reproducible
-PoC.
+The binary is ~16 MB, statically linked, single-file. Drop it on a jumphost and you're one `dpubnkctl init` away from a reproducible PoC.
 
 ```
 go install github.com/mwiget/dpubnkctl/cmd/dpubnkctl@release-2.3.0
 ```
 
-<br>
-
-**Questions / feedback:** `github.com/mwiget/dpubnkctl/issues`
+**Questions / feedback:** github.com/mwiget/dpubnkctl/issues
