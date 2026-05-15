@@ -83,6 +83,15 @@ func InstallKubeBinaries(ctx context.Context, dpu *ssh.Client, k8sMinor string) 
 		// not be present at all (nothing to unhold), and apt-mark errors
 		// when given unknown packages.
 		"sudo -n apt-mark unhold kubelet kubeadm kubectl || true",
+		// DOCA 3.2 / Ubuntu 24.04 BFBs pre-ship
+		// /etc/apt/sources.list.d/kubernetes.sources (deb822 format)
+		// pointing at the LATEST k8s stable (e.g. v1.34). apt unions
+		// that with whatever we add as a legacy `.list` and resolves
+		// the highest available version — so without removing the
+		// pre-shipped source, `apt-get install kubeadm` pulls 1.34.x
+		// even though our `.list` says v1.30. Wipe both formats and
+		// rewrite the .list ourselves. See AGENTS.md gotcha #25.
+		"sudo -n rm -f /etc/apt/sources.list.d/kubernetes.sources /etc/apt/sources.list.d/kubernetes.list",
 		"sudo -n apt-get update -qq",
 		"sudo -n apt-get install -y -qq apt-transport-https ca-certificates curl gpg",
 		"sudo -n install -m 0755 -d /etc/apt/keyrings",
