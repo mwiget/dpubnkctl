@@ -76,6 +76,23 @@ func (r *Runner) Kubectl(ctx context.Context, args ...string) error {
 	return nil
 }
 
+// KubectlCapture runs kubectl and returns stdout WITHOUT streaming it
+// to r.Out. Useful when the caller wants to consume the output
+// programmatically (parse names, count rows, etc.) without spamming
+// the operator's terminal. Stderr is captured into the returned error.
+func (r *Runner) KubectlCapture(ctx context.Context, args ...string) (string, error) {
+	full := r.kubectlArgs(args...)
+	cmd := exec.CommandContext(ctx, "docker", full...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return stdout.String(), fmt.Errorf("kubectl %s: %w (stderr: %s)",
+			strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), nil
+}
+
 // Wait runs `kubectl wait` against an arbitrary selector with optional
 // extra flags (e.g. -l app=foo). Useful for rollout completion when the
 // resource name is chart-prefixed and unknown a priori.

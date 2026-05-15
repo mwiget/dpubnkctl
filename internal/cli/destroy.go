@@ -267,17 +267,34 @@ func destroyBNK(ctx context.Context, repo string, p *poc.PoC, out io.Writer, tim
 	return nil
 }
 
-// stripFinalizers patches `metadata.finalizers: []` on every CR of the
-// given kind in the given namespace. Best-effort; errors are streamed
-// to r.Out via the Runner but never fail the overall destroy.
+// stripFinalizers force-removes finalizers from every CR of the given
+// kind in the given namespace. Best-effort; errors are swallowed
+// because (a) the kind may not have a CRD installed at all when
+// destroy runs against a partial deploy, and (b) the namespace delete
+// that runs next will block on any CR that genuinely refuses to drop
+// its finalizer — surfacing that is more useful than the noise from
+// trying to patch nothing.
 //
-// Note: kubectl patch --all --type=merge applies the patch to every
-// matching object in one call. If the kind has no instances, the
-// --ignore-not-found flag absorbs it.
+// Previously this called `kubectl patch <kind> --all`, but `kubectl
+// patch` does not accept `--all` (only `delete`/`get` do). Each
+// invocation emitted `error: unknown flag: --all` for every empty
+// kind, ~30+ per destroy run. Now we enumerate with `get -o name`
+// (silently, via KubectlCapture) and patch each result individually.
+// See github.com/mwiget/dpubnkctl#1.
 func stripFinalizers(ctx context.Context, r *deploy.Runner, ns, kind string) {
-	_ = r.Kubectl(ctx, "-n", ns, "patch", kind,
-		"--type=merge", "-p", `{"metadata":{"finalizers":[]}}`,
-		"--all", "--ignore-not-found")
+	out, err := r.KubectlCapture(ctx, "-n", ns, "get", kind,
+		"-o", "name", "--ignore-not-found")
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		name := strings.TrimSpace(line)
+		if name == "" {
+			continue
+		}
+		_ = r.Kubectl(ctx, "-n", ns, "patch", name,
+			"--type=merge", "-p", `{"metadata":{"finalizers":[]}}`)
+	}
 }
 
 // timeoutFlag formats a duration as "5m" for helm's --timeout.
