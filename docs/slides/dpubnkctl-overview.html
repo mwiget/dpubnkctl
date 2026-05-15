@@ -289,16 +289,14 @@ cd ~/lab/mycustomer &amp;&amp; claude
 # Inside the session:
 &quot;Read AGENTS.md, act as the pre-sales SE persona. Confirm scope with me.&quot;
 </code></pre>
-<p>The PoC repo ships <code>AGENTS.md</code> + three personas — <code>pre-sales-se</code>, <code>lab-tech</code>, <code>doc-specialist</code> — so any agentic CLI (Claude Code, Aider, Gemini, opencode, openai-compat REPL) inherits the same runbook with the same tool allowlists and handoff protocol. <strong>The binary doesn't ship an LLM. You pick the model.</strong></p>
-<h3 id="human-direct-work-in-progress--discover-wizard-especially">Human direct <em>(work in progress — <code>discover wizard</code> especially)</em></h3>
+<p>The PoC repo ships <code>AGENTS.md</code> + three personas (<code>pre-sales-se</code>, <code>lab-tech</code>, <code>doc-specialist</code>) so any agentic CLI — Claude Code, Aider, Gemini, opencode, openai-compat REPL — inherits the same runbook with the same tool allowlists and handoff protocol. <strong>The binary doesn't ship an LLM. You pick the model.</strong></p>
+<h3 id="human-direct-work-in-progress">Human direct <em>(work in progress)</em></h3>
 <pre is="marp-pre" data-auto-scaling="downscale-only"><code>dpubnkctl init mycustomer
 dpubnkctl discover wizard      # WIP — agentic path is the validated one
 dpubnkctl validate
 dpubnkctl e2e --yolo
 </code></pre>
-<blockquote>
-<p>Every subcommand is callable by hand, but the day-to-day investment goes into the agentic flow. The non-agentic wizard exists for operators who need to deploy without an LLM in the loop; it lags the agentic experience and the gap will widen, not narrow.</p>
-</blockquote>
+<p>Every subcommand is hand-callable; the wizard lags the agentic path and the gap will widen, not narrow.</p>
 <footer>github.com/mwiget/dpubnkctl</footer>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="5" data-paginate="true" data-header="dpubnkctl · BNK 2.3.0" data-footer="github.com/mwiget/dpubnkctl" data-theme="default" data-style="section { font-size: 24px; padding: 40px 56px; line-height: 1.4; }

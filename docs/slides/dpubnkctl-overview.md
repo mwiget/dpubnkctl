@@ -110,9 +110,9 @@ cd ~/lab/mycustomer && claude
 "Read AGENTS.md, act as the pre-sales SE persona. Confirm scope with me."
 ```
 
-The PoC repo ships `AGENTS.md` + three personas — `pre-sales-se`, `lab-tech`, `doc-specialist` — so any agentic CLI (Claude Code, Aider, Gemini, opencode, openai-compat REPL) inherits the same runbook with the same tool allowlists and handoff protocol. **The binary doesn't ship an LLM. You pick the model.**
+The PoC repo ships `AGENTS.md` + three personas (`pre-sales-se`, `lab-tech`, `doc-specialist`) so any agentic CLI — Claude Code, Aider, Gemini, opencode, openai-compat REPL — inherits the same runbook with the same tool allowlists and handoff protocol. **The binary doesn't ship an LLM. You pick the model.**
 
-### Human direct *(work in progress — `discover wizard` especially)*
+### Human direct *(work in progress)*
 
 ```
 dpubnkctl init mycustomer
@@ -121,7 +121,7 @@ dpubnkctl validate
 dpubnkctl e2e --yolo
 ```
 
-> Every subcommand is callable by hand, but the day-to-day investment goes into the agentic flow. The non-agentic wizard exists for operators who need to deploy without an LLM in the loop; it lags the agentic experience and the gap will widen, not narrow.
+Every subcommand is hand-callable; the wizard lags the agentic path and the gap will widen, not narrow.
 
 ---
 
