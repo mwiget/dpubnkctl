@@ -11,7 +11,7 @@ Filenames in use:
 
 | File | Used by | What it shows |
 |---|---|---|
-| `bnk-forge-cluster.png` | slide deck (Day-2 integration) | bnk-forge's Cluster detail page after `dpubnkctl cluster up` registered the homelab cluster: connected status, K8s v1.30, 4 nodes, FLO healthy, CWC healthy |
+| `bnk-forge-2-3-0-view.png` | slide deck (Day-2 integration) | bnk-forge's view of the homelab-2-3-0 PoC after `dpubnkctl cluster up` registered the cluster: connected status, K8s v1.30, 4 nodes, FLO + CNE controller healthy |
 
 Add new images by:
 1. Drop the PNG in this folder

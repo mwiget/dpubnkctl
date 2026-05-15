@@ -564,7 +564,7 @@ bnk-forge for you; if the stack isn't running it logs a skip and
 deployment continues. `--skip-bnk-forge` on `cluster up` bypasses
 for a single run.
 
-![bnk-forge showing the homelab cluster + healthy BNK](../images/bnk-forge-cluster.png)
+![bnk-forge showing the homelab cluster + healthy BNK](../images/bnk-forge-2-3-0-view.png)
 
 ---
 
