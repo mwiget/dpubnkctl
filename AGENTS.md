@@ -265,6 +265,39 @@ the new BFB. Two surprises worth knowing:
 
 24. **BNK 2.2.0 Gateways require explicit `spec.addresses`.** There is no global IPAM pool in BNK 2.2.0 — applying a `Gateway` without `spec.addresses` leaves it at `Programmed=False, reason=AddressNotAssigned` forever. The f5-cne-controller does create per-Gateway `IPAMRange` CRs named `bnkgw-<ns>-<gatewayName>` for its own bookkeeping, but those are not user-supplied pools — they're internal accounting. (Manually-applied `IPAMRange`s with arbitrary names get rejected with `Failed to extract BnkGateway name`.) Use `dpubnkctl gateway example` to scaffold a Gateway pre-filled with `bnk.external_selfip`; `--smoke-test` adds a backend Deployment + Service for an end-to-end curl path.
 
+### bnk-forge integration (optional Day-2 hook)
+
+29. **`dpubnkctl bnk-forge launch` integrates the PoC with a local
+    bnk-forge install** (separate project, currently private at
+    https://github.com/sp-prod-field/bnk-forge). Operator-controlled via
+    `poc.yaml`:
+
+    ```yaml
+    bnk_forge:
+      enabled: true
+      repo_path: ~/git/bnk-forge
+      url: https://localhost
+      # admin_username/admin_password optional (default admin/changeme)
+    ```
+
+    When `enabled: true`, `cluster up` auto-fires the launch flow at
+    the tail of the phase — right after the localized kubeconfig is
+    written. This makes the project + cluster appear in bnk-forge's
+    UI **before** deploy-network/flo/cne run, so the operator (or a
+    troubleshooter) can watch FLO come up, License flip Active, and
+    TMM schedule live during the rest of the deployment.
+
+    Policy: dpubnkctl never installs bnk-forge for the operator.
+    If the local stack isn't running, the auto-hook skips with an
+    info message; the operator brings it up manually (`cd
+    ~/git/bnk-forge && make deploy`) and reruns `dpubnkctl bnk-forge
+    launch`. Bad credentials surface as a WARN; cluster-up still
+    succeeds either way. `--skip-bnk-forge` on `cluster up` bypasses
+    the hook for one-off runs.
+
+    Idempotent: project + cluster are ensure-or-skip, keyed by
+    `poc.metadata.name`. Safe to call any number of times.
+
 ### Destroy / cleanup
 
 21. **F5 sub-CRs leak finalizers when the parent CNEInstance is deleted.** FLO reliably removes the finalizer on its own CNEInstance, but `csrcs`/`cwcs`/`observers`/`rabbitmqs`/`otelcollectors`/`cnemanifests`/etc. get stuck on Terminating. `destroy bnk` force-deletes them and patches `metadata.finalizers: []`. Without this, namespace deletion hangs forever.

@@ -535,6 +535,39 @@ Same hardware as slide 7; same `dpubnkctl e2e --yolo --no-resume`.
 
 ---
 
+## Day 2 — optional bnk-forge integration
+
+[bnk-forge](https://github.com/sp-prod-field/bnk-forge) (separate project,
+currently private) is F5's Day-2 UI for BNK. A `bnk_forge:` block in
+`poc.yaml` and a single subcommand wire dpubnkctl deployments into it:
+
+```yaml
+bnk_forge:
+    enabled: true
+    repo_path: ~/git/bnk-forge   # operator's local clone
+    url: https://localhost
+```
+
+```
+dpubnkctl bnk-forge launch          # standalone
+```
+
+`cluster up` now also auto-fires the launch at the tail of the phase
+(once the kubeconfig is written + apiserver verified reachable), so a
+fresh `dpubnkctl e2e` makes the cluster visible in the bnk-forge UI
+**before** deploy-flo/cne run — useful for watching FLO come up,
+License flip Active, and TMM schedule live during deployment.
+
+What it does: project ensure-or-create, kubeconfig upload as a
+cluster, soft-fail on every error path. dpubnkctl never installs
+bnk-forge for you; if the stack isn't running it logs a skip and
+deployment continues. `--skip-bnk-forge` on `cluster up` bypasses
+for a single run.
+
+![bnk-forge showing the homelab cluster + healthy BNK](../images/bnk-forge-cluster.png)
+
+---
+
 ## Where next
 
 - `release-2.3.0` cut, `release-2.2.0` remains the 2.2.x maintenance home

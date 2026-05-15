@@ -136,6 +136,27 @@ This binary builds for **BNK 2.3.0**:
 A different BNK release ships a different `dpubnkctl` binary with different
 pins. Do not mix.
 
+### Optional: bnk-forge integration
+
+`poc.yaml` can opt the PoC into a local bnk-forge install (F5's Day-2
+UI, separate private project). Block shape:
+
+```yaml
+bnk_forge:
+  enabled: true
+  repo_path: ~/git/bnk-forge
+  url: https://localhost
+```
+
+When enabled, `cluster up` auto-registers the cluster with bnk-forge
+at the tail of the phase. The project + cluster appear in the UI
+before deploy-network/flo/cne run, useful for watching the rest of
+the pipeline come up live. dpubnkctl never installs bnk-forge; the
+operator runs `make deploy` in the bnk-forge clone themselves. If
+bnk-forge isn't running, the auto-hook skips cleanly and the
+deployment continues. `dpubnkctl bnk-forge launch` is the standalone
+command an operator can run later to register after the fact.
+
 ### Licensing in 2.3 (changed from 2.2)
 
 In 2.2 the JWT and TEEM cert chain lived inside FLO chart values; in 2.3

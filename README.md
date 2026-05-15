@@ -105,6 +105,33 @@ prod-vs-tst at the FLO layer. FLO + CIS + cert-gen chart versions
 are resolved at deploy time from F5's `f5-bigip-k8s-manifest` chart
 rather than pinned in this binary. See `MIGRATING-2.3.0.md`.
 
+## Optional: bnk-forge integration
+
+[bnk-forge](https://github.com/sp-prod-field/bnk-forge) (separate
+project, currently private) is F5's Day-2 UI for BNK. dpubnkctl can
+opt into it via a `bnk_forge:` block in `poc.yaml`:
+
+```yaml
+bnk_forge:
+    enabled: true
+    repo_path: ~/git/bnk-forge
+    url: https://localhost
+```
+
+With that block enabled, `cluster up` auto-registers the cluster
+(uploads the localized kubeconfig) with a project named after
+`poc.metadata.name`. The cluster + BNK come into view in the
+bnk-forge UI as soon as kubespray finishes — useful for watching the
+rest of the pipeline (FLO, CWC, License, TMM) come up live.
+
+dpubnkctl **never installs bnk-forge for you**. If the local stack
+isn't running, the auto-hook logs a clean skip and the deployment
+continues; bring it up manually with `make deploy` in the bnk-forge
+clone and run `dpubnkctl bnk-forge launch` to register after the
+fact.
+
+See AGENTS.md gotcha #29 for the full failure-mode rundown.
+
 ## Self-contained binary
 
 `dpubnkctl` is a single static Go binary. Ship just the binary — nothing
