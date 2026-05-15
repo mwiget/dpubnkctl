@@ -64,6 +64,25 @@ No fancy tooling — stdlib + cobra + yaml.v3 + golang.org/x/crypto/ssh + sftp.
 
 6. **Kubeconfig localization rewrites server URL + drops CA data + adds insecure-skip-tls-verify.** `cluster.LocalizeKubeconfig` handles all three so the kubeconfig that lands at `artifacts/kubeconfig` works from outside the cluster fabric. The apiserver cert SAN doesn't include the mgmt address — kubespray's `supplementary_addresses_in_ssl_keys` knob would extend it but isn't wired through poc.yaml yet, hence the `insecure-skip-tls-verify`. If you need a properly-trusted kubeconfig, add the mgmt address to the kubespray inventory's `supplementary_addresses_in_ssl_keys` before `cluster up`.
 
+### Gateway API conformance in 2.3 — HTTPRoute hostnames required
+
+27. **BNK 2.3 HTTPRoutes need `hostnames:` to match traffic.** The 2.3
+    release notes call out Gateway API Conformance as an enhancement.
+    In practice this means an HTTPRoute with only `matches.path` and
+    no `hostnames` list is treated as "no virtual server" by TMM, and
+    requests fall through to BIG-IP's fallback:
+
+      HTTP/1.0 500 Internal Server Error
+      Server: BigIP
+
+    (BNK 2.2 routed catch-all traffic to such routes; 2.3 doesn't.)
+
+    `dpubnkctl gateway example` now emits `hostnames: ["<app>.local"]`
+    by default. Operators curl with `-H "Host: <app>.local"` or set up
+    DNS pointing at the Gateway's `spec.addresses` value.
+
+    Found in the Phase 6 e2e smoke test on homelab-2-3-0 (this branch).
+
 ### Apt repo trap on DOCA 3.2 BFB (kubernetes.sources)
 
 25. **DOCA 3.2 / Ubuntu 24.04 BFBs pre-ship `/etc/apt/sources.list.d/kubernetes.sources`** (deb822
