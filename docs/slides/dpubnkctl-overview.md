@@ -8,7 +8,10 @@ footer: 'github.com/mwiget/dpubnkctl'
 style: |
   section { font-size: 24px; padding: 40px 56px; line-height: 1.4; }
   h1 { color: #0a3a5c; font-size: 50px; }
-  h2 { color: #0a3a5c; font-size: 32px; border-bottom: 2px solid #d1d5db; padding-bottom: 6px; margin-bottom: 12px; }
+  h2 { color: #0a3a5c; font-size: 32px; border-bottom: 2px solid #d1d5db; padding-bottom: 6px; margin-bottom: 12px; min-height: 44px; }
+  /* Page counter (Marp's section::after) — make it readable + consistent
+     with the gray footer. */
+  section::after { font-size: 14px; color: #6b7280; right: 36px; bottom: 18px; }
   h3 { color: #1f2937; font-size: 22px; }
   p { margin: 6px 0; }
   code { font-size: 18px; background: #f1f5f9; padding: 1px 4px; border-radius: 3px; }
@@ -52,7 +55,7 @@ Marcel Wiget · `github.com/mwiget/dpubnkctl`
 
 ---
 
-## <span class="tag">1</span>Why this exists
+## Why this exists
 
 Manual BNK-on-bare-metal deploy is 20+ steps over ~3.5 hours:
 
@@ -70,7 +73,7 @@ Manual BNK-on-bare-metal deploy is 20+ steps over ~3.5 hours:
 
 ---
 
-## <span class="tag">2</span>Two-repo architecture
+## Two-repo architecture
 
 ```
 +----------------------+
@@ -96,7 +99,7 @@ The binary is the engine. The PoC repo is the contract.
 
 ---
 
-## <span class="tag">3</span>Two operating modes
+## Two operating modes
 
 ### Human direct
 
@@ -120,7 +123,7 @@ The PoC repo ships `AGENTS.md` + three personas — `pre-sales-se`, `lab-tech`, 
 
 ---
 
-## <span class="tag">4</span>What `init` creates
+## What `init` creates
 
 ```
 poc.yaml                  single source of truth - every input to
@@ -143,7 +146,7 @@ diagram.txt               auto-regenerated topology view
 
 ---
 
-## <span class="tag">5</span>`diagram.txt` — homelab, real run
+## `diagram.txt` — homelab, real run
 
 ```
 K8s cluster: homelab
@@ -171,7 +174,7 @@ Auto-refreshed whenever any phase mutates `poc.yaml`.
 
 ---
 
-## <span class="tag">6</span>8-phase pipeline
+## 8-phase pipeline
 
 ```
 1. validate            poc.yaml schema sanity + phase-tagged rules
@@ -193,7 +196,7 @@ dpubnkctl destroy --yolo --confirm-cluster <name>
 
 ---
 
-## <span class="tag">7</span>Auto-generated PoC report — exec summary
+## Auto-generated PoC report — exec summary
 
 `dpubnkctl journal report` rolls every phase journal entry + `decisions.md` + `poc.yaml.status` into one markdown handoff. Excerpt from the homelab run:
 
@@ -210,7 +213,7 @@ dpubnkctl destroy --yolo --confirm-cluster <name>
 
 ---
 
-## <span class="tag">8</span>Smoke test — end-to-end traffic
+## Smoke test — end-to-end traffic
 
 ```
 $ curl -v http://192.168.40.100/         # external VIP, from worker1 host
@@ -235,7 +238,7 @@ Every CR + manifest applied during this run is saved verbatim under `artifacts/`
 
 ---
 
-## <span class="tag">9</span>Embedded `AGENTS.md` — the runbook
+## Embedded `AGENTS.md` — the runbook
 
 Every `dpubnkctl init` drops a persona-neutral `AGENTS.md` into the PoC repo. Single doc, agentic-CLI-agnostic. Three sections:
 
@@ -249,7 +252,7 @@ Agents read `AGENTS.md` first, every session. **New PoCs inherit every lesson th
 
 ---
 
-## <span class="tag">10</span>Three personas — separation of duties
+## Three personas — separation of duties
 
 Each persona has a **strict tool allowlist** + **NOT-allowed list** + a journal-based handoff protocol. Same constraints regardless of which agentic CLI runs.
 
@@ -261,7 +264,7 @@ The `journal/` directory is the handoff bus: SE consent → lab-tech executes + 
 
 ---
 
-## <span class="tag">11</span>The feedback loop
+## The feedback loop
 
 The PoC repo isn't a one-way deliverable — it's a feedback channel.
 
@@ -286,7 +289,7 @@ The next PoC starts with stronger defaults. Fewer surprises.
 
 ---
 
-## <span class="tag">12</span>Case study — four agent-diagnosed blockers
+## Case study — four agent-diagnosed blockers
 
 The next slides show real moments where the agent **caught blockers a flat runbook would not have spotted unaided** — each from a real deploy on BlueField-3 hardware.
 
@@ -302,7 +305,7 @@ Diagnoses **#2 – #4** are from the **homelab agentic PoC** — first successfu
 
 <!-- _class: dense -->
 
-## <span class="tag">13</span>Agent diagnosis #1 — first hypothesis (ruled out)
+## Agent diagnosis #1 — first hypothesis (ruled out)
 
 **Symptom:** `kubeadm join` from the DPU hung in discovery, timing out repeatedly:
 
@@ -326,7 +329,7 @@ The parent-vs-VLAN-child mismatch is the textbook MTU bug for this shape — and
 
 <!-- _class: dense -->
 
-## <span class="tag">14</span>Agent diagnosis #1 — root cause (the real culprit)
+## Agent diagnosis #1 — root cause (the real culprit)
 
 Agent walks the data-plane path end-to-end:
 
@@ -352,7 +355,7 @@ host → ens16f0np0 → switch → bond0 → p0/p1 → pf0hpf → br-lag → …
 
 <!-- _class: dense -->
 
-## <span class="tag">15</span>Agent diagnosis #2 — ghost mlx5_core PF
+## Agent diagnosis #2 — ghost mlx5_core PF
 
 **Symptom:** post-BFB flash, `netplan apply` rejects every host VLAN sub-interface with `RTNETLINK answers: No such device`, even though `ip -br a` lists the parent as UP.
 
@@ -373,7 +376,7 @@ The agent's reasoning chain (paraphrased from the live session):
 
 <!-- _class: dense -->
 
-## <span class="tag">16</span>Agent diagnosis #3 — apiserver-without-VIP
+## Agent diagnosis #3 — apiserver-without-VIP
 
 **Symptom:** `dpubnkctl cluster up` exits 1 — kubeadm init hits its 4-minute wait-control-plane timeout. Retries hit "ports already in use" cleanup garbage.
 
@@ -393,7 +396,7 @@ The agent journaled the scope correction in `decisions.md` with the rejected alt
 
 <!-- _class: dense -->
 
-## <span class="tag">17</span>Agent diagnosis #4 — SR-IOV SF on wrong driver
+## Agent diagnosis #4 — SR-IOV SF on wrong driver
 
 **Symptom:** Second `f5-tmm` pod stuck `Pending` — one DPU missing `nvidia.com/bf3_p0_sf1` allocatable, even though both DPUs flashed with the same `PER_PF_NUM_SF=1`.
 
@@ -411,7 +414,7 @@ The agent's reasoning chain:
 
 ---
 
-## <span class="tag">18</span>Honest caveats
+## Honest caveats
 
 The agent wasn't infallible. Things it got wrong (and which now show up as v2.2.0 validate rules):
 
@@ -427,7 +430,7 @@ These all closed in v2.2.0. Future PoCs start with stronger defaults — see nex
 
 <!-- _class: dense -->
 
-## <span class="tag">19</span>Audit closeout — v2.2.0 round
+## Audit closeout — v2.2.0 round
 
 | #  | Item                                              | Resolution kind   |
 |----|---------------------------------------------------|-------------------|
@@ -450,7 +453,7 @@ All in `main`. Each item carries a journal-entry reference in its commit message
 
 ---
 
-## <span class="tag">20</span>BNK 2.2 → 2.3 — three shape changes
+## BNK 2.2 → 2.3 — three shape changes
 
 The 2.3 release wasn't an incremental bump. Three real changes that
 break the 2.2 deploy shape:
@@ -472,7 +475,9 @@ interface names but the legacy `en3f0pf0sf1` still works.
 
 ---
 
-## <span class="tag">21</span>2.3 migration — 8 new audit items
+<!-- _class: dense -->
+
+## 2.3 migration — 8 new audit items
 
 Same agentic loop as the 2.2.0 round (slides 13-17). The 2.3 e2e
 on homelab found 8 new gotchas; all closed in the `feat/bnk-2.3.0`
@@ -495,7 +500,9 @@ features, 9 fixes. Every fix is reusable for the next BNK release.
 
 ---
 
-## <span class="tag">22</span>2.3.0 deploy confirmed — homelab, real run
+<!-- _class: dense -->
+
+## 2.3.0 deploy confirmed — homelab, real run
 
 Same hardware as slide 7; same `dpubnkctl e2e --yolo --no-resume`.
 
@@ -518,7 +525,7 @@ Same hardware as slide 7; same `dpubnkctl e2e --yolo --no-resume`.
 
 ---
 
-## <span class="tag">23</span>Where next
+## Where next
 
 - `release-2.3.0` cut, `release-2.2.0` remains the 2.2.x maintenance home
 - `main` proceeds toward BNK 2.4 (no public ETA from F5 yet)
