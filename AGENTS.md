@@ -97,7 +97,19 @@ No fancy tooling — stdlib + cobra + yaml.v3 + golang.org/x/crypto/ssh + sftp.
 
 ### License JWT
 
-15. **The JWT's `jku` URL is the authoritative signal for prod vs tst.** Real-world TST JWTs ship with `iss="F5 Inc."` + `kid="v1"` (the same `iss`/`kid` appear in *both* prod and tst tokens), so substring-matching "tst" in those is useless. What the JWT actually tells you is in `header.jku` — e.g. `https://product-tst.apis.f5networks.net/ee/v1/keys/jwks` for tst, `https://product.apis.f5.com/ee/v1/keys/jwks` for prod. That URL must match the `teemCertUrl` / `teemEntitlementUrl` / `teemInitialConfigUrl` block and the `modulus` / `x5c` chain baked into the FLO values, because each environment uses its own RSA signing key. Wrong template → "Unverifiable JWT: token signature is invalid: crypto/rsa". `claims.sub` starting with `TST-` is a strong secondary signal. The classifier (`internal/deploy/license.go::InspectJWT`) keys on `jku` first, `sub` second.
+15. **In BNK 2.3, the JWT lives in a `License` CR — NOT in FLO chart values.** The
+    license-out-of-flo-values refactor (commit 6a2b9f8) drops the
+    `license:` block from `flo-values.yaml.tmpl` entirely. `RenderFLOValues`
+    no longer takes a JWT or a jwtType. The CWC reads the TEMM endpoint
+    from the JWT's `jku` header at runtime, so prod and tst clusters use
+    the same template. The classifier `internal/deploy/license.go::InspectJWT`
+    is retained but is now **diagnostic-only** — its output appears in the
+    deploy_flo banner so operators can confirm the right JWT was picked
+    up, but it doesn't drive any code path. For the BNK 2.2 history of
+    how the prod/tst RSA signing keys / x5c chains lived in FLO chart
+    values, see `git log --all -- internal/embedded/templates/flo-values-tst.yaml.tmpl`.
+
+15a. **The JWT's `jku` URL is the authoritative signal for prod vs tst** (still true; the CWC uses it). Real-world TST JWTs ship with `iss="F5 Inc."` + `kid="v1"` (the same `iss`/`kid` appear in *both* prod and tst tokens), so substring-matching "tst" in those is useless. What the JWT actually tells you is in `header.jku` — e.g. `https://product-tst.apis.f5networks.net/ee/v1/keys/jwks` for tst, `https://product.apis.f5.com/ee/v1/keys/jwks` for prod. `claims.sub` starting with `TST-` is a strong secondary signal. The classifier keys on `jku` first, `sub` second.
 
 16. **JWT timestamps (`iat`, `f5_sat`) do NOT determine token validity.** Token validity is entirely server-side (revocation lists at the licensing endpoint). Observed example: a JWT with `iat` two years past and `f5_sat` a year past still activates successfully because the server still honors it. Do not debug "expired token" theories based on claim timestamps; the only thing that fails locally is RSA signature verification, which is determined by `jku` (see #15). If signature verification fails, the answer is almost always wrong-template, not expired-token.
 
