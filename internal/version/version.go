@@ -40,10 +40,17 @@ const (
 	KubesprayVersion = "v2.28.1"
 
 	// kubectl + helm — used during Phase 4 (BNK deploy). alpine/k8s
-	// bundles both with stable versioned tags. Bumped to match
-	// K8sVersionPinned so `kubectl` server-version skew stays in the
-	// supported ±1 minor window.
-	K8sToolsImage = "alpine/k8s:1.30.14"
+	// bundles both with stable versioned tags. Set ONE minor ahead of
+	// K8sVersionPinned for two reasons:
+	//   1. `kubectl wait --for=create` (used by deploy_cne to wait for
+	//      F5SPKVlan + License CRDs to appear) was added in kubectl
+	//      1.31. We don't want to push the server to 1.31 yet (BNK 2.3
+	//      release notes name 1.30.x as supported), but the kubectl
+	//      side can move forward — Kubernetes supports ±1 minor skew
+	//      between kubectl and the apiserver.
+	//   2. Newer kubectl handles deb822 apt source warnings + a few
+	//      `kubectl apply` server-side-apply edge cases better.
+	K8sToolsImage = "alpine/k8s:1.31.5"
 
 	// Cert-manager — required dependency for FLO + CWC. Version remains
 	// independent of the release manifest (jetstack repo, not F5's OCI).
