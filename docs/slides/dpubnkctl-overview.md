@@ -101,16 +101,7 @@ The binary is the engine. The PoC repo is the contract.
 
 ## Two operating modes
 
-### Human direct
-
-```
-dpubnkctl init mycustomer
-dpubnkctl discover wizard
-dpubnkctl validate
-dpubnkctl e2e --yolo
-```
-
-### Agentic
+### Agentic — primary focus
 
 ```
 dpubnkctl agent claude   # prints invocation
@@ -120,6 +111,17 @@ cd ~/lab/mycustomer && claude
 ```
 
 The PoC repo ships `AGENTS.md` + three personas — `pre-sales-se`, `lab-tech`, `doc-specialist` — so any agentic CLI (Claude Code, Aider, Gemini, opencode, openai-compat REPL) inherits the same runbook with the same tool allowlists and handoff protocol. **The binary doesn't ship an LLM. You pick the model.**
+
+### Human direct *(work in progress — `discover wizard` especially)*
+
+```
+dpubnkctl init mycustomer
+dpubnkctl discover wizard      # WIP — agentic path is the validated one
+dpubnkctl validate
+dpubnkctl e2e --yolo
+```
+
+> Every subcommand is callable by hand, but the day-to-day investment goes into the agentic flow. The non-agentic wizard exists for operators who need to deploy without an LLM in the loop; it lags the agentic experience and the gap will widen, not narrow.
 
 ---
 
