@@ -55,6 +55,7 @@ before driving a PoC.`,
 		newGatewayCmd(),
 		newTopologiesCmd(),
 		newReleaseManifestCmd(),
+		newBNKForgeCmd(),
 		newVersionCmd(),
 	)
 

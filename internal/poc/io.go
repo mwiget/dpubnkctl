@@ -67,6 +67,15 @@ func New(name string) *PoC {
 		Agent: Agent{
 			Default: "claude",
 		},
+		BNKForge: BNKForge{
+			// Disabled by default. Operators flip enabled=true once
+			// they have https://github.com/sp-prod-field/bnk-forge
+			// cloned locally and want bnk-forge integrated with this
+			// PoC. See `dpubnkctl bnk-forge launch`.
+			Enabled:  false,
+			RepoPath: "~/git/bnk-forge",
+			URL:      "https://localhost",
+		},
 	}
 }
 

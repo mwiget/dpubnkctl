@@ -27,6 +27,7 @@ type PoC struct {
 	BNK          BNK          `yaml:"bnk"`
 	Status       Status       `yaml:"status"`
 	Agent        Agent        `yaml:"agent"`
+	BNKForge     BNKForge     `yaml:"bnk_forge,omitempty"`
 }
 
 type Metadata struct {
@@ -250,4 +251,20 @@ type Status struct {
 type Agent struct {
 	LLMEndpoint string `yaml:"llm_endpoint,omitempty"`
 	Default     string `yaml:"default"` // claude | gemini | aider | openai
+}
+
+// BNKForge controls the optional `dpubnkctl bnk-forge launch` step that
+// installs (if needed) + starts the local bnk-forge stack and auto-
+// creates a project matching this PoC. The bnk-forge repository
+// (https://github.com/sp-prod-field/bnk-forge — currently private) must
+// be cloned locally; RepoPath points to it.
+type BNKForge struct {
+	Enabled       bool   `yaml:"enabled"`                // master switch
+	RepoPath      string `yaml:"repo_path,omitempty"`    // local clone, e.g. ~/git/bnk-forge
+	AutoLaunch    bool   `yaml:"auto_launch,omitempty"`  // chain from e2e after cluster up
+	URL           string `yaml:"url,omitempty"`          // default https://localhost
+	AdminUsername string `yaml:"admin_username,omitempty"` // default admin
+	AdminPassword string `yaml:"admin_password,omitempty"` // default changeme (dev-only)
+	ProjectColor  string `yaml:"project_color,omitempty"`  // default #0a3a5c
+	ProjectIcon   string `yaml:"project_icon,omitempty"`
 }
