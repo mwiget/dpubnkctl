@@ -231,6 +231,27 @@ func runDeployNetwork(ctx context.Context, out io.Writer, f *deployNetworkFlags)
 		}
 	}
 
+	// Rotate kube-multus-ds to flush any node where the first-start race
+	// produced a broken /etc/cni/net.d/00-multus.conf — observed on the
+	// 2.3 homelab e2e: a multus pod that booted before calico's
+	// install-cni initContainer dropped /etc/cni/net.d/10-calico.conflist
+	// recorded the loopback-only delegate set and never updated it.
+	// Symptoms: every subsequent pod scheduled to that node hangs in
+	// ContainerCreating with `multus ... missing network name`. A simple
+	// rollout-restart re-runs multus's setup on every node and picks up
+	// the now-present calico delegate. Cheap (~30s) and idempotent.
+	// (AGENTS.md #26 from the v2.3 audit round.)
+	fmt.Fprintln(out, "\nRotating kube-multus-ds to flush first-start CNI-race state ...")
+	if err := r.Kubectl(ctx, "rollout", "restart",
+		"-n", "kube-system", "ds/kube-multus-ds"); err != nil {
+		fmt.Fprintf(out, "      WARN: could not restart kube-multus-ds: %v\n", err)
+	} else if err := r.Kubectl(ctx, "rollout", "status",
+		"-n", "kube-system", "ds/kube-multus-ds", "--timeout=3m"); err != nil {
+		fmt.Fprintf(out, "      WARN: kube-multus-ds rotation did not converge: %v\n", err)
+	} else {
+		fmt.Fprintln(out, "      kube-multus-ds rotated; every node now has the calico delegate in /etc/cni/net.d/00-multus.conf.")
+	}
+
 	appendDeployJournal(repo, p.Metadata.Name, "", "NETWORK INSTALLED", "")
 	fmt.Fprintln(out, "\nDONE.  FLO should now reconcile the CNEInstance — re-check `kubectl get cneinstance -A` + `kubectl get pods -A`.")
 	return nil

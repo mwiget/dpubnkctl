@@ -64,6 +64,28 @@ No fancy tooling — stdlib + cobra + yaml.v3 + golang.org/x/crypto/ssh + sftp.
 
 6. **Kubeconfig localization rewrites server URL + drops CA data + adds insecure-skip-tls-verify.** `cluster.LocalizeKubeconfig` handles all three so the kubeconfig that lands at `artifacts/kubeconfig` works from outside the cluster fabric. The apiserver cert SAN doesn't include the mgmt address — kubespray's `supplementary_addresses_in_ssl_keys` knob would extend it but isn't wired through poc.yaml yet, hence the `insecure-skip-tls-verify`. If you need a properly-trusted kubeconfig, add the mgmt address to the kubespray inventory's `supplementary_addresses_in_ssl_keys` before `cluster up`.
 
+### Multus first-start race — broken /etc/cni/net.d/00-multus.conf
+
+26. **Multus pods that boot before calico's `install-cni` initContainer
+    finishes write a broken `/etc/cni/net.d/00-multus.conf`** containing
+    only the loopback delegate (no calico). Every subsequent pod on
+    that node then hangs in `ContainerCreating` with:
+
+      plugin type="multus" name="multus-cni-network" failed (add):
+      error adding container to network "": missing network name:
+
+    Cross-check with `cat /etc/cni/net.d/00-multus.conf | jq .delegates`:
+    a healthy node has the full calico delegate; a broken node has only
+    `[{type: loopback}]`.
+
+    Now handled automatically: `deploy_network.go` does a
+    `kubectl rollout restart ds/kube-multus-ds` at the tail of the
+    phase. Every multus pod re-runs setup with calico already present.
+    Cheap (~30s) and idempotent.
+
+    Found on the 2.3 homelab e2e (this branch); same race exists on
+    2.2 but bit less often.
+
 ### Gateway API conformance in 2.3 — HTTPRoute hostnames required
 
 27. **BNK 2.3 HTTPRoutes need `hostnames:` to match traffic.** The 2.3
