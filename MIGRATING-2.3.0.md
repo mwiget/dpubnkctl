@@ -1,8 +1,10 @@
 # Migrating from BNK 2.2.0 to 2.3.0
 
-This binary is per-BNK-release. Building from `main` after the
-`v2.3.0` tag targets BNK 2.3.0. Maintenance fixes for BNK 2.2.0
-land on the `release-2.2.0` branch.
+This binary is per-BNK-release. `main` carries the current BNK
+2.3.0 work plus all post-release maintenance. `release-2.3.0` is the
+2.3.x maintenance branch (currently the same tip as `main`). 2.2.x
+maintenance lives on `release-2.2.0`. Tags are not used — branch
+tips are the canonical reference for "latest for this BNK release".
 
 This document is for operators who have a BNK 2.2.0 PoC repo and want
 to redeploy it on 2.3.0 with the new `dpubnkctl`. **There is no
@@ -23,11 +25,11 @@ PF lands in the post-flash "ghost" state when the DPUs reflash on
 
 ## Swap the binary
 
-Install the new `v2.3.0` binary somewhere on `PATH` (replacing the
-2.2 one is fine — the binary embeds everything):
+Install the new 2.3-targeted binary somewhere on `PATH` (replacing
+the 2.2 one is fine — the binary embeds everything):
 
 ```bash
-go install github.com/mwiget/dpubnkctl/cmd/dpubnkctl@v2.3.0
+go install github.com/mwiget/dpubnkctl/cmd/dpubnkctl@release-2.3.0
 dpubnkctl version
 # expect:
 #   Targets    BNK 2.3.0

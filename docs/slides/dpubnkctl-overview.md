@@ -549,7 +549,7 @@ jumphost and you're one `dpubnkctl init` away from a reproducible
 PoC.
 
 ```
-go install github.com/mwiget/dpubnkctl/cmd/dpubnkctl@v2.3.0
+go install github.com/mwiget/dpubnkctl/cmd/dpubnkctl@release-2.3.0
 ```
 
 <br>
