@@ -64,6 +64,25 @@ No fancy tooling — stdlib + cobra + yaml.v3 + golang.org/x/crypto/ssh + sftp.
 
 6. **Kubeconfig localization rewrites server URL + drops CA data + adds insecure-skip-tls-verify.** `cluster.LocalizeKubeconfig` handles all three so the kubeconfig that lands at `artifacts/kubeconfig` works from outside the cluster fabric. The apiserver cert SAN doesn't include the mgmt address — kubespray's `supplementary_addresses_in_ssl_keys` knob would extend it but isn't wired through poc.yaml yet, hence the `insecure-skip-tls-verify`. If you need a properly-trusted kubeconfig, add the mgmt address to the kubespray inventory's `supplementary_addresses_in_ssl_keys` before `cluster up`.
 
+### DPU OS observations on DOCA 3.2.0 / Ubuntu 24.04 (BNK 2.3)
+
+The 2.2 → 2.3 reflash on the homelab (commit history starting at
+`0aa147e`) confirmed the existing `bf-lag.conf.tmpl` works as-is on
+the new BFB. Two surprises worth knowing:
+
+- **Kernel 6.8 ships both old + new SF interface names side-by-side.**
+  `ip link` shows `en3f0pf0sf1` AND `enp3s0f0s1` (likewise on PF1). The
+  bf.conf OVS port list still uses the legacy `en3f...` form and works
+  unchanged. Operators inspecting `ip link` should not be alarmed by
+  the duplicate; they're not separate netdevs, just two stable names
+  for the same auxiliary device.
+
+- **NIC firmware ratchet:** the BFB 3.2.0-113 upgrades the BF3 NIC
+  firmware to `32.47.1026` automatically during `bfb_post_install`.
+  Operators running mixed-version PoCs (some DPUs still on 2.9.2)
+  cannot roll back the firmware without explicit
+  `mlxfwmanager --downgrade`.
+
 ### DPU provisioning + join
 
 7a. **DPU first-boot may come up with no sshd host keys.** The BFB image ships `/var/lib/cloud/instances/nocloud/` pre-stamped from NVIDIA's image build, so cloud-init's `cc_ssh` module sees "Instance link already exists, not recreating it" and skips host-key generation. The fallback (Ubuntu's `ssh-keygen.service` or sshd's internal auto-regen) is racy — sometimes fires, sometimes doesn't, depending on first-boot ordering. When it doesn't, ssh.service restart-loops with `no hostkeys available -- exiting`. Symptom: dpubnkctl provision dpu's `[7/7] Waiting for second DPU boot` times out because sshd never starts. Fixed by `bfb_modify_os` running `chroot /mnt /usr/bin/ssh-keygen -A` so keys are baked into eMMC at flash time (commit `f9d3a59` or similar). Pre-fix DPUs: run `ssh-keygen -A` via rshim serial console (login as ubuntu, password at `keys/dpu_password.txt`).
