@@ -54,6 +54,7 @@ before driving a PoC.`,
 		newDiagramCmd(),
 		newGatewayCmd(),
 		newTopologiesCmd(),
+		newReleaseManifestCmd(),
 		newVersionCmd(),
 	)
 
@@ -87,6 +88,7 @@ var runtimeRequiredCommands = []string{
 	"dpubnkctl cluster join-dpus",
 	"dpubnkctl deploy",
 	"dpubnkctl destroy",
+	"dpubnkctl release-manifest pull",
 }
 
 func commandNeedsRuntime(path string) bool {

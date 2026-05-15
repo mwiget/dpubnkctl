@@ -55,7 +55,7 @@ func runClusterStatus(ctx context.Context, out io.Writer, pocDir string) error {
 	fmt.Fprintf(out, "PoC: %s   (BNK %s)\n", p.Metadata.Name, p.Metadata.BNKVersion)
 	fmt.Fprintln(out, "Versions (this dpubnkctl release):")
 	fmt.Fprintf(out, "  dpubnkctl   : %s   (targets BNK %s)\n", version.Version, version.BNKVersion)
-	fmt.Fprintf(out, "  FLO chart   : %s\n", version.FLOChartVer)
+	fmt.Fprintf(out, "  FLO chart   : %s\n", floChartLabel(p))
 	fmt.Fprintf(out, "  CNE manifest: %s\n", version.CNEManifestVersion)
 	fmt.Fprintln(out)
 

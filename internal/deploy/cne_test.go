@@ -47,7 +47,7 @@ func TestRenderCNEInstance_DPUEnabled(t *testing.T) {
 	}
 	for _, want := range []string{
 		"kind: CNEInstance",
-		`manifestVersion: "2.2.0-3.2226.0-0.0.385"`,
+		`manifestVersion: "2.3.0-3.2598.3-0.0.170"`,
 		"enabled: true", // dpu.enabled
 		`deploymentSize: "Large"`, // 2 DPUs → Large
 		"- sf-external",
