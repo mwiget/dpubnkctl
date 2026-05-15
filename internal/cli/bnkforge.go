@@ -2,9 +2,12 @@ package cli
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -93,23 +96,68 @@ func runBNKForgeLaunch(ctx context.Context, out io.Writer, f *bnkForgeLaunchFlag
 	}
 	fmt.Fprintln(out, "  ok (token cached for the rest of this run)")
 
-	fmt.Fprintln(out, "\n[3/3] Ensuring a project named", p.Metadata.Name, "exists ...")
-	if id, found, err := cli.FindProjectByName(ctx, p.Metadata.Name); err != nil {
+	fmt.Fprintln(out, "\n[3/4] Ensuring a project named", p.Metadata.Name, "exists ...")
+	projectID, found, err := cli.FindProjectByName(ctx, p.Metadata.Name)
+	if err != nil {
 		return fmt.Errorf("list projects: %w", err)
-	} else if found {
+	}
+	if found {
 		fmt.Fprintf(out, "  Project %q already exists (id=%d) — leaving in place.\n",
-			p.Metadata.Name, id)
-		fmt.Fprintf(out, "\nOpen: %s\n", cfg.URL)
-		return nil
+			p.Metadata.Name, projectID)
+	} else {
+		project := buildProjectFromPoC(p)
+		projectID, err = cli.CreateProject(ctx, project)
+		if err != nil {
+			return fmt.Errorf("create project: %w", err)
+		}
+		fmt.Fprintf(out, "  Created project %q (id=%d)\n", p.Metadata.Name, projectID)
 	}
 
-	project := buildProjectFromPoC(p)
-	id, err := cli.CreateProject(ctx, project)
-	if err != nil {
-		return fmt.Errorf("create project: %w", err)
+	fmt.Fprintln(out, "\n[4/4] Registering the cluster (kubeconfig) with the project ...")
+	if err := ensureProjectCluster(ctx, out, cli, repo, p, projectID); err != nil {
+		return fmt.Errorf("register cluster: %w", err)
 	}
-	fmt.Fprintf(out, "  Created project %q (id=%d)\n", p.Metadata.Name, id)
+
 	fmt.Fprintf(out, "\nOpen: %s\n", cfg.URL)
+	return nil
+}
+
+// ensureProjectCluster reads <repo>/artifacts/kubeconfig, base64-encodes
+// it, and POSTs to bnk-forge so the project sees the cluster. Idempotent:
+// if a cluster with the PoC's name already exists in the project, skip.
+func ensureProjectCluster(ctx context.Context, out io.Writer, cli *bnkforge.Client, repo string, p *poc.PoC, projectID int) error {
+	clusters, err := cli.ListProjectClusters(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	for _, c := range clusters {
+		if c.Name == p.Metadata.Name {
+			fmt.Fprintf(out, "  Cluster %q already registered in project (id=%d) — leaving in place.\n",
+				p.Metadata.Name, c.ID)
+			return nil
+		}
+	}
+
+	kubeconfigPath := filepath.Join(repo, "artifacts", "kubeconfig")
+	body, err := os.ReadFile(kubeconfigPath)
+	if err != nil {
+		return fmt.Errorf("read kubeconfig %s: %w (run `dpubnkctl cluster up` first)", kubeconfigPath, err)
+	}
+	encoded := base64.StdEncoding.EncodeToString(body)
+
+	region := p.Metadata.Customer
+	id, err := cli.CreateProjectCluster(ctx, projectID, bnkforge.Cluster{
+		Name:             p.Metadata.Name,
+		Kubeconfig:       encoded,
+		CloudProvider:    "on-prem",
+		Region:           region,
+		DefaultNamespace: "default",
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "  Registered cluster %q (id=%d). bnk-forge should now see the live nodes + BNK CRDs.\n",
+		p.Metadata.Name, id)
 	return nil
 }
 

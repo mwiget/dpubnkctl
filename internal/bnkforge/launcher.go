@@ -165,6 +165,77 @@ func (c *Client) FindProjectByName(ctx context.Context, name string) (int, bool,
 	return 0, false, nil
 }
 
+// Cluster mirrors bnk-forge's ClusterCreateRequest: a Kubernetes
+// cluster the project should manage. kubeconfig is the base64-encoded
+// YAML body of the localized kubeconfig dpubnkctl writes to
+// artifacts/kubeconfig.
+type Cluster struct {
+	Name             string `json:"name"`
+	Kubeconfig       string `json:"kubeconfig"` // base64-encoded YAML
+	CloudProvider    string `json:"cloud_provider,omitempty"`
+	Region           string `json:"region,omitempty"`
+	Context          string `json:"context,omitempty"`
+	DefaultNamespace string `json:"default_namespace,omitempty"`
+}
+
+// ListProjectClusters GETs /api/projects/{id}/k8s/clusters and returns
+// the list. Used to check whether the cluster we're about to register
+// already exists (idempotency).
+func (c *Client) ListProjectClusters(ctx context.Context, projectID int) ([]struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}, error) {
+	url := fmt.Sprintf("%s/api/projects/%d/k8s/clusters", c.BaseURL, projectID)
+	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("list project clusters %s: %s", resp.Status, truncate(string(raw), 200))
+	}
+	var out struct {
+		Clusters []struct {
+			ID   int    `json:"id"`
+			Name string `json:"name"`
+		} `json:"clusters"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out.Clusters, nil
+}
+
+// CreateProjectCluster POSTs /api/projects/{id}/k8s/clusters. Returns
+// the new cluster's id.
+func (c *Client) CreateProjectCluster(ctx context.Context, projectID int, k Cluster) (int, error) {
+	url := fmt.Sprintf("%s/api/projects/%d/k8s/clusters", c.BaseURL, projectID)
+	body, _ := json.Marshal(k)
+	req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		raw, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("create project cluster %s: %s", resp.Status, truncate(string(raw), 400))
+	}
+	var out struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return 0, fmt.Errorf("decode cluster-create response: %w", err)
+	}
+	return out.ID, nil
+}
+
 // CreateProject POSTs /api/projects with the given payload. Returns
 // the new project's id.
 func (c *Client) CreateProject(ctx context.Context, p Project) (int, error) {
