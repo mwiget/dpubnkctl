@@ -33,6 +33,10 @@ style: |
   section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
   section.dense blockquote { font-size: 15px; padding: 3px 10px; }
   section.dense table { font-size: 14px; }
+  /* Constrain embedded screenshots so they leave room for the
+     surrounding text on the same slide. */
+  section img { max-height: 360px; max-width: 100%; height: auto; }
+  section.dense img { max-height: 380px; }
 ---
 
 <!-- _class: lead -->
@@ -535,36 +539,23 @@ Same hardware as slide 7; same `dpubnkctl e2e --yolo --no-resume`.
 
 ---
 
+<!-- _class: dense -->
+
 ## Day 2 — optional bnk-forge integration
 
-[bnk-forge](https://github.com/sp-prod-field/bnk-forge) (separate project,
-currently private) is F5's Day-2 UI for BNK. A `bnk_forge:` block in
-`poc.yaml` and a single subcommand wire dpubnkctl deployments into it:
+[bnk-forge](https://github.com/sp-prod-field/bnk-forge) (separate, currently
+private) is F5's Day-2 UI for BNK. Opt-in via `poc.yaml`:
 
 ```yaml
-bnk_forge:
-    enabled: true
-    repo_path: ~/git/bnk-forge   # operator's local clone
-    url: https://localhost
+bnk_forge: { enabled: true, repo_path: ~/git/bnk-forge, url: https://localhost }
 ```
 
-```
-dpubnkctl bnk-forge launch          # standalone
-```
+`cluster up` auto-registers the cluster once the kubeconfig is reachable,
+so during a `dpubnkctl e2e` you can watch FLO come up, License flip
+Active, and TMM schedule live in the UI. dpubnkctl never installs
+bnk-forge for you; missing stack → skip + log, deploy continues.
 
-`cluster up` now also auto-fires the launch at the tail of the phase
-(once the kubeconfig is written + apiserver verified reachable), so a
-fresh `dpubnkctl e2e` makes the cluster visible in the bnk-forge UI
-**before** deploy-flo/cne run — useful for watching FLO come up,
-License flip Active, and TMM schedule live during deployment.
-
-What it does: project ensure-or-create, kubeconfig upload as a
-cluster, soft-fail on every error path. dpubnkctl never installs
-bnk-forge for you; if the stack isn't running it logs a skip and
-deployment continues. `--skip-bnk-forge` on `cluster up` bypasses
-for a single run.
-
-![bnk-forge showing the homelab cluster + healthy BNK](../images/bnk-forge-2-3-0-view.png)
+![bnk-forge showing the homelab-2-3-0 cluster + healthy BNK](../images/bnk-forge-2-3-0-view.png)
 
 ---
 
