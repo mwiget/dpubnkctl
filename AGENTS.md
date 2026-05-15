@@ -78,13 +78,27 @@ No fancy tooling — stdlib + cobra + yaml.v3 + golang.org/x/crypto/ssh + sftp.
     a healthy node has the full calico delegate; a broken node has only
     `[{type: loopback}]`.
 
-    Now handled automatically: `deploy_network.go` does a
-    `kubectl rollout restart ds/kube-multus-ds` at the tail of the
-    phase. Every multus pod re-runs setup with calico already present.
-    Cheap (~30s) and idempotent.
+    Two-step trap: even after multus rotates, the sriov-cni /
+    sriov-device-plugin pods that were stuck `ContainerCreating`
+    against the broken multus don't auto-recover — kubelet CRI
+    sandbox-creation backoff has grown exponentially and there's no
+    event that forces a retry.
+
+    Now **detect-and-fix** in `deploy_network.go` (no per-deploy tax
+    on healthy clusters):
+
+      1. Probe `kubectl -n kube-system get pods --field-selector=
+         status.phase=Pending` after the standard DS rollouts. A
+         healthy cluster returns empty — done. A race-hit cluster
+         returns one or more sriov-cni / sriov-device-plugin pods.
+      2. On detection only: rollout-restart `kube-multus-ds`,
+         `kube-sriov-cni-ds-amd64`, `kube-sriov-device-plugin-amd64`.
+         Wait for all three to converge.
+      3. Sweep any pod still in `Pending` and `kubectl delete` so
+         the kubelet retries against the fresh CNI state.
 
     Found on the 2.3 homelab e2e (this branch); same race exists on
-    2.2 but bit less often.
+    2.2 but bites less often.
 
 ### Gateway API conformance in 2.3 — HTTPRoute hostnames required
 
