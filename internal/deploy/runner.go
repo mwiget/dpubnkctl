@@ -50,14 +50,35 @@ func (r *Runner) CheckTools(ctx context.Context) error {
 
 // Apply pipes manifest YAML to `kubectl apply -f -`.
 func (r *Runner) Apply(ctx context.Context, manifest string) error {
+	return r.ApplyInNamespace(ctx, "", manifest)
+}
+
+// ApplyInNamespace pipes manifest YAML to `kubectl apply -n <ns> -f -`.
+// When namespace is empty, behaves like Apply. Use this when the
+// manifest body omits metadata.namespace — kubectl will apply the
+// `-n` value to namespace-scoped resources that don't carry one.
+func (r *Runner) ApplyInNamespace(ctx context.Context, namespace, manifest string) error {
 	args := r.kubectlArgs("apply", "-f", "-")
+	if namespace != "" {
+		// kubectlArgs already appended "apply -f -" — inject "-n ns"
+		// before "apply" so it lands as a kubectl flag, not an apply flag.
+		// kubectlArgs format: [..., "kubectl", "apply", "-f", "-"]
+		// Need: [..., "kubectl", "-n", ns, "apply", "-f", "-"]
+		// Find index of "kubectl" and splice.
+		for i, a := range args {
+			if a == "kubectl" {
+				args = append(args[:i+1], append([]string{"-n", namespace}, args[i+1:]...)...)
+				break
+			}
+		}
+	}
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Stdin = strings.NewReader(manifest)
 	var out bytes.Buffer
 	cmd.Stdout = io.MultiWriter(r.Out, &out)
 	cmd.Stderr = cmd.Stdout
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("kubectl apply: %w\n%s", err, out.String())
+		return fmt.Errorf("kubectl apply -n %q: %w\n%s", namespace, err, out.String())
 	}
 	return nil
 }

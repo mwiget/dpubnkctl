@@ -122,15 +122,11 @@ func GenerateCWCCerts(ctx context.Context, workDir, utilsNamespace string, out i
 // ApplyCWCCerts kubectl-applies the two manifests produced by
 // GenerateCWCCerts into the shared-component namespace.
 //
-// The secrets are namespace-scoped so the namespace must exist first.
-// (The caller — `deploy flo` — also creates the namespace, but we
-// re-apply a minimal Namespace manifest here so this helper is callable
-// independently.)
-//
-// gen_cert.sh emits manifests without a metadata.namespace field. We
-// inject the namespace before piping to kubectl apply so a re-run that
-// targets a different shared-component namespace doesn't silently land
-// secrets in `default`.
+// gen_cert.sh emits manifests without a metadata.namespace field (and
+// with 1-space indentation that doesn't play nicely with naive YAML
+// patches). Instead of rewriting the body, pass the namespace to
+// kubectl via `-n` — kubectl honors that for any namespace-scoped
+// resource whose metadata.namespace is unset.
 func ApplyCWCCerts(ctx context.Context, r *Runner, workDir, namespace string) error {
 	if namespace == "" {
 		namespace = SharedComponentNamespace
@@ -143,8 +139,7 @@ func ApplyCWCCerts(ctx context.Context, r *Runner, workDir, namespace string) er
 		if err != nil {
 			return fmt.Errorf("read %s: %w", name, err)
 		}
-		body = injectNamespace(body, namespace)
-		if err := r.Apply(ctx, string(body)); err != nil {
+		if err := r.ApplyInNamespace(ctx, namespace, string(body)); err != nil {
 			return fmt.Errorf("apply %s: %w", name, err)
 		}
 	}
