@@ -72,7 +72,18 @@ func runBNKForgeLaunch(ctx context.Context, out io.Writer, f *bnkForgeLaunchFlag
 	if !p.BNKForge.Enabled {
 		return errors.New("bnk_forge.enabled is false in poc.yaml — set it true to launch bnk-forge")
 	}
+	return LaunchBNKForge(ctx, out, repo, p)
+}
 
+// LaunchBNKForge runs the full bnk-forge integration for a loaded PoC:
+// ensure the local stack is running, authenticate, ensure the project
+// exists, ensure the cluster (kubeconfig) is registered. Exported so
+// other phases (e.g. `cluster up`) can chain it after they finish.
+//
+// The caller is responsible for honouring p.BNKForge.Enabled; this
+// function assumes it should run unconditionally (it's the caller's
+// gate, not ours).
+func LaunchBNKForge(ctx context.Context, out io.Writer, repo string, p *poc.PoC) error {
 	cfg := bnkforge.Config{
 		RepoPath:      p.BNKForge.RepoPath,
 		URL:           p.BNKForge.URL,
@@ -84,12 +95,12 @@ func runBNKForgeLaunch(ctx context.Context, out io.Writer, f *bnkForgeLaunchFlag
 	fmt.Fprintf(out, "bnk-forge URL: %s\n", cfg.URL)
 	fmt.Fprintf(out, "Repo path:     %s\n\n", cfg.RepoPath)
 
-	fmt.Fprintln(out, "[1/3] Ensuring bnk-forge is running ...")
+	fmt.Fprintln(out, "[1/4] Ensuring bnk-forge is running ...")
 	if err := bnkforge.EnsureRunning(ctx, cfg, out); err != nil {
 		return err
 	}
 
-	fmt.Fprintln(out, "\n[2/3] Authenticating to bnk-forge API ...")
+	fmt.Fprintln(out, "\n[2/4] Authenticating to bnk-forge API ...")
 	cli := bnkforge.NewClient(cfg)
 	if err := cli.Login(ctx, cfg.AdminUsername, cfg.AdminPassword); err != nil {
 		return fmt.Errorf("login: %w", err)

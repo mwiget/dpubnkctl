@@ -235,6 +235,18 @@ func runClusterUp(ctx context.Context, out io.Writer, f *clusterUpFlags) error {
 	}
 	appendClusterJournal(repo, p.Metadata.Name, "SUCCESS", logPath, "")
 
+	// 8. (Optional) Register the cluster with bnk-forge so the operator
+	//    can watch the rest of the deployment live in the UI. Soft-fail:
+	//    a missing bnk-forge clone or unreachable backend doesn't break
+	//    the cluster-up phase — the deployment can still proceed.
+	if p.BNKForge.Enabled {
+		fmt.Fprintln(out, "\n[bnk-forge] bnk_forge.enabled=true — registering cluster ...")
+		if err := LaunchBNKForge(ctx, out, repo, p); err != nil {
+			fmt.Fprintf(out, "[bnk-forge] WARN: registration failed: %v\n", err)
+			fmt.Fprintln(out, "[bnk-forge] Continuing — run `dpubnkctl bnk-forge launch` later to retry.")
+		}
+	}
+
 	fmt.Fprintln(out, "\nDONE.")
 	return nil
 }
