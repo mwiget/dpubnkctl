@@ -244,6 +244,29 @@ func destroyBNK(ctx context.Context, repo string, p *poc.PoC, out io.Writer, tim
 	_ = r.Helm(ctx, "uninstall", "flo", "--namespace", "f5-operators", "--ignore-not-found", "--wait", "--timeout", timeoutFlag(timeout))
 
 	// 5. Delete the namespaces and stragglers.
+	//
+	// 2.3 adds the shared-component namespace (f5-cne-core) that hosts
+	// CWC + License + observer. The License CR (k8s.f5net.com/v1) has
+	// its own finalizer chain managed by CWC. By the time we reach this
+	// step, CWC may already be terminating, so its watch can't clear
+	// the finalizer — strip it manually. CWC + observer + otelcollector
+	// + rabbitmq sub-CRs in the same namespace get the same treatment.
+	sharedNS := deploy.SharedComponentNamespace
+	sharedSubCRs := []struct{ Plural, Group string }{
+		{"licenses", "k8s.f5net.com"},
+		{"cwcs", "k8s.f5.com"},
+		{"observers", "k8s.f5.com"},
+		{"otelcollectors", "k8s.f5.com"},
+		{"rabbitmqs", "k8s.f5.com"},
+	}
+	fmt.Fprintf(out, "      → force-delete + strip CRs in %s (shared-component ns)\n", sharedNS)
+	for _, cr := range sharedSubCRs {
+		fqkind := cr.Plural + "." + cr.Group
+		_ = r.Kubectl(ctx, "-n", sharedNS, "delete", fqkind, "--all", "--ignore-not-found", "--wait=false", "--timeout=10s")
+		stripFinalizers(ctx, r, sharedNS, fqkind)
+	}
+	fmt.Fprintf(out, "      → delete %s namespace\n", sharedNS)
+	_ = r.Kubectl(ctx, "delete", "namespace", sharedNS, "--ignore-not-found", "--wait=false")
 	fmt.Fprintln(out, "      → delete f5-operators namespace")
 	_ = r.Kubectl(ctx, "delete", "namespace", "f5-operators", "--ignore-not-found", "--wait=false")
 	fmt.Fprintln(out, "      → delete cert-manager namespace")
