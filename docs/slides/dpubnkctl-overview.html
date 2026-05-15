@@ -63,7 +63,8 @@ section.dense table { font-size: 14px; }
 <p><strong>F5 BIG-IP Next for Kubernetes —<br />
 deploy in one binary, drive with an agent.</strong></p>
 <br />
-<p>BNK 2.3.0 · NVIDIA BlueField-3 (DOCA 3.2.0) · k8s 1.30 · kubespray v2.28.1</p>
+<p><strong>Latest:</strong> BNK 2.3.0 · NVIDIA BlueField-3 (DOCA 3.2.0) · k8s 1.30 · kubespray v2.28.1</p>
+<p><small>2.2 maintenance on <code>release-2.2.0</code> · 2.3 maintenance on <code>release-2.3.0</code> · <code>main</code> toward 2.4</small></p>
 <br />
 <p>Marcel Wiget · <code>github.com/mwiget/dpubnkctl</code></p>
 <footer>github.com/mwiget/dpubnkctl</footer>
@@ -116,7 +117,7 @@ section.dense code { font-size: 15px; }
 section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
 section.dense blockquote { font-size: 15px; padding: 3px 10px; }
 section.dense table { font-size: 14px; }
-;" data-marpit-pagination-total="23" data-size="16:9">
+;" data-marpit-pagination-total="24" data-size="16:9">
 <header>dpubnkctl · BNK 2.3.0</header>
 <h2 id="span-classtag1spanwhy-this-exists"><span class="tag">1</span>Why this exists</h2>
 <p>Manual BNK-on-bare-metal deploy is 20+ steps over ~3.5 hours:</p>
@@ -183,7 +184,7 @@ section.dense code { font-size: 15px; }
 section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
 section.dense blockquote { font-size: 15px; padding: 3px 10px; }
 section.dense table { font-size: 14px; }
-;" data-marpit-pagination-total="23" data-size="16:9">
+;" data-marpit-pagination-total="24" data-size="16:9">
 <header>dpubnkctl · BNK 2.3.0</header>
 <h2 id="span-classtag2spantwo-repo-architecture"><span class="tag">2</span>Two-repo architecture</h2>
 <pre is="marp-pre" data-auto-scaling="downscale-only"><code>+----------------------+
@@ -255,7 +256,7 @@ section.dense code { font-size: 15px; }
 section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
 section.dense blockquote { font-size: 15px; padding: 3px 10px; }
 section.dense table { font-size: 14px; }
-;" data-marpit-pagination-total="23" data-size="16:9">
+;" data-marpit-pagination-total="24" data-size="16:9">
 <header>dpubnkctl · BNK 2.3.0</header>
 <h2 id="span-classtag3spantwo-operating-modes"><span class="tag">3</span>Two operating modes</h2>
 <h3 id="human-direct">Human direct</h3>
@@ -321,7 +322,7 @@ section.dense code { font-size: 15px; }
 section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
 section.dense blockquote { font-size: 15px; padding: 3px 10px; }
 section.dense table { font-size: 14px; }
-;" data-marpit-pagination-total="23" data-size="16:9">
+;" data-marpit-pagination-total="24" data-size="16:9">
 <header>dpubnkctl · BNK 2.3.0</header>
 <h2 id="span-classtag4spanwhat-init-creates"><span class="tag">4</span>What <code>init</code> creates</h2>
 <pre is="marp-pre" data-auto-scaling="downscale-only"><code>poc.yaml                  single source of truth - every input to
@@ -391,7 +392,7 @@ section.dense code { font-size: 15px; }
 section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
 section.dense blockquote { font-size: 15px; padding: 3px 10px; }
 section.dense table { font-size: 14px; }
-;" data-marpit-pagination-total="23" data-size="16:9">
+;" data-marpit-pagination-total="24" data-size="16:9">
 <header>dpubnkctl · BNK 2.3.0</header>
 <h2 id="span-classtag5spandiagramtxt--homelab-real-run"><span class="tag">5</span><code>diagram.txt</code> — homelab, real run</h2>
 <pre is="marp-pre" data-auto-scaling="downscale-only"><code>K8s cluster: homelab
@@ -465,7 +466,7 @@ section.dense code { font-size: 15px; }
 section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
 section.dense blockquote { font-size: 15px; padding: 3px 10px; }
 section.dense table { font-size: 14px; }
-;" data-marpit-pagination-total="23" data-size="16:9">
+;" data-marpit-pagination-total="24" data-size="16:9">
 <header>dpubnkctl · BNK 2.3.0</header>
 <h2 id="span-classtag6span8-phase-pipeline"><span class="tag">6</span>8-phase pipeline</h2>
 <pre is="marp-pre" data-auto-scaling="downscale-only"><code>1. validate            poc.yaml schema sanity + phase-tagged rules
@@ -531,7 +532,7 @@ section.dense code { font-size: 15px; }
 section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
 section.dense blockquote { font-size: 15px; padding: 3px 10px; }
 section.dense table { font-size: 14px; }
-;" data-marpit-pagination-total="23" data-size="16:9">
+;" data-marpit-pagination-total="24" data-size="16:9">
 <header>dpubnkctl · BNK 2.3.0</header>
 <h2 id="span-classtag7spanauto-generated-poc-report--exec-summary"><span class="tag">7</span>Auto-generated PoC report — exec summary</h2>
 <p><code>dpubnkctl journal report</code> rolls every phase journal entry + <code>decisions.md</code> + <code>poc.yaml.status</code> into one markdown handoff. Excerpt from the homelab run:</p>
@@ -597,7 +598,7 @@ section.dense code { font-size: 15px; }
 section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
 section.dense blockquote { font-size: 15px; padding: 3px 10px; }
 section.dense table { font-size: 14px; }
-;" data-marpit-pagination-total="23" data-size="16:9">
+;" data-marpit-pagination-total="24" data-size="16:9">
 <header>dpubnkctl · BNK 2.3.0</header>
 <h2 id="span-classtag8spansmoke-test--end-to-end-traffic"><span class="tag">8</span>Smoke test — end-to-end traffic</h2>
 <pre is="marp-pre" data-auto-scaling="downscale-only"><code>$ curl -v http://192.168.40.100/         # external VIP, from worker1 host
@@ -664,14 +665,14 @@ section.dense code { font-size: 15px; }
 section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
 section.dense blockquote { font-size: 15px; padding: 3px 10px; }
 section.dense table { font-size: 14px; }
-;" data-marpit-pagination-total="23" data-size="16:9">
+;" data-marpit-pagination-total="24" data-size="16:9">
 <header>dpubnkctl · BNK 2.3.0</header>
 <h2 id="span-classtag9spanembedded-agentsmd--the-runbook"><span class="tag">9</span>Embedded <code>AGENTS.md</code> — the runbook</h2>
 <p>Every <code>dpubnkctl init</code> drops a persona-neutral <code>AGENTS.md</code> into the PoC repo. Single doc, agentic-CLI-agnostic. Three sections:</p>
 <ul>
 <li><strong>Source of truth</strong> — <code>poc.yaml</code> is the contract. <code>decisions.md</code>, <code>journal/</code>, <code>inventory/</code>, <code>artifacts/</code>, <code>keys/</code> each have a documented role.</li>
 <li><strong>YOLO tiers</strong> — read-only (always auto), reversible (auto with <code>--auto reversible</code>), destructive (<code>--yolo</code> + matching PoC-name confirm). Agents must respect.</li>
-<li><strong>24 numbered gotchas</strong> — every recurring failure from past PoCs. One-line symptom / cause / fix. e.g.:</li>
+<li><strong>27 numbered gotchas</strong> — every recurring failure from past PoCs (24 from the 2.2 round + 3 new from the 2.3 migration). One-line symptom / cause / fix. e.g.:</li>
 </ul>
 <blockquote>
 <p><strong>#8.</strong> OVS internal ports default to MTU 1500; apiserver TLS handshakes hang from frame loss. Fix: <code>bf.conf</code> sets MTU on every internal port.</p>
@@ -727,7 +728,7 @@ section.dense code { font-size: 15px; }
 section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
 section.dense blockquote { font-size: 15px; padding: 3px 10px; }
 section.dense table { font-size: 14px; }
-;" data-marpit-pagination-total="23" data-size="16:9">
+;" data-marpit-pagination-total="24" data-size="16:9">
 <header>dpubnkctl · BNK 2.3.0</header>
 <h2 id="span-classtag10spanthree-personas--separation-of-duties"><span class="tag">10</span>Three personas — separation of duties</h2>
 <p>Each persona has a <strong>strict tool allowlist</strong> + <strong>NOT-allowed list</strong> + a journal-based handoff protocol. Same constraints regardless of which agentic CLI runs.</p>
@@ -787,7 +788,7 @@ section.dense code { font-size: 15px; }
 section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
 section.dense blockquote { font-size: 15px; padding: 3px 10px; }
 section.dense table { font-size: 14px; }
-;" data-marpit-pagination-total="23" data-size="16:9">
+;" data-marpit-pagination-total="24" data-size="16:9">
 <header>dpubnkctl · BNK 2.3.0</header>
 <h2 id="span-classtag11spanthe-feedback-loop"><span class="tag">11</span>The feedback loop</h2>
 <p>The PoC repo isn't a one-way deliverable — it's a feedback channel.</p>
@@ -857,7 +858,7 @@ section.dense code { font-size: 15px; }
 section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
 section.dense blockquote { font-size: 15px; padding: 3px 10px; }
 section.dense table { font-size: 14px; }
-;" data-marpit-pagination-total="23" data-size="16:9">
+;" data-marpit-pagination-total="24" data-size="16:9">
 <header>dpubnkctl · BNK 2.3.0</header>
 <h2 id="span-classtag12spancase-study--four-agent-diagnosed-blockers"><span class="tag">12</span>Case study — four agent-diagnosed blockers</h2>
 <p>The next slides show real moments where the agent <strong>caught blockers a flat runbook would not have spotted unaided</strong> — each from a real deploy on BlueField-3 hardware.</p>
@@ -918,7 +919,7 @@ section.dense code { font-size: 15px; }
 section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
 section.dense blockquote { font-size: 15px; padding: 3px 10px; }
 section.dense table { font-size: 14px; }
-;" data-marpit-pagination-total="23" data-size="16:9">
+;" data-marpit-pagination-total="24" data-size="16:9">
 <header>dpubnkctl · BNK 2.3.0</header>
 
 <h2 id="span-classtag13spanagent-diagnosis-1--first-hypothesis-ruled-out"><span class="tag">13</span>Agent diagnosis #1 — first hypothesis (ruled out)</h2>
@@ -985,7 +986,7 @@ section.dense code { font-size: 15px; }
 section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
 section.dense blockquote { font-size: 15px; padding: 3px 10px; }
 section.dense table { font-size: 14px; }
-;" data-marpit-pagination-total="23" data-size="16:9">
+;" data-marpit-pagination-total="24" data-size="16:9">
 <header>dpubnkctl · BNK 2.3.0</header>
 
 <h2 id="span-classtag14spanagent-diagnosis-1--root-cause-the-real-culprit"><span class="tag">14</span>Agent diagnosis #1 — root cause (the real culprit)</h2>
@@ -1055,7 +1056,7 @@ section.dense code { font-size: 15px; }
 section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
 section.dense blockquote { font-size: 15px; padding: 3px 10px; }
 section.dense table { font-size: 14px; }
-;" data-marpit-pagination-total="23" data-size="16:9">
+;" data-marpit-pagination-total="24" data-size="16:9">
 <header>dpubnkctl · BNK 2.3.0</header>
 
 <h2 id="span-classtag15spanagent-diagnosis-2--ghost-mlx5_core-pf"><span class="tag">15</span>Agent diagnosis #2 — ghost mlx5_core PF</h2>
@@ -1120,7 +1121,7 @@ section.dense code { font-size: 15px; }
 section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
 section.dense blockquote { font-size: 15px; padding: 3px 10px; }
 section.dense table { font-size: 14px; }
-;" data-marpit-pagination-total="23" data-size="16:9">
+;" data-marpit-pagination-total="24" data-size="16:9">
 <header>dpubnkctl · BNK 2.3.0</header>
 
 <h2 id="span-classtag16spanagent-diagnosis-3--apiserver-without-vip"><span class="tag">16</span>Agent diagnosis #3 — apiserver-without-VIP</h2>
@@ -1183,7 +1184,7 @@ section.dense code { font-size: 15px; }
 section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
 section.dense blockquote { font-size: 15px; padding: 3px 10px; }
 section.dense table { font-size: 14px; }
-;" data-marpit-pagination-total="23" data-size="16:9">
+;" data-marpit-pagination-total="24" data-size="16:9">
 <header>dpubnkctl · BNK 2.3.0</header>
 
 <h2 id="span-classtag17spanagent-diagnosis-4--sr-iov-sf-on-wrong-driver"><span class="tag">17</span>Agent diagnosis #4 — SR-IOV SF on wrong driver</h2>
@@ -1248,7 +1249,7 @@ section.dense code { font-size: 15px; }
 section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
 section.dense blockquote { font-size: 15px; padding: 3px 10px; }
 section.dense table { font-size: 14px; }
-;" data-marpit-pagination-total="23" data-size="16:9">
+;" data-marpit-pagination-total="24" data-size="16:9">
 <header>dpubnkctl · BNK 2.3.0</header>
 <h2 id="span-classtag18spanhonest-caveats"><span class="tag">18</span>Honest caveats</h2>
 <p>The agent wasn't infallible. Things it got wrong (and which now show up as v2.2.0 validate rules):</p>
@@ -1314,7 +1315,7 @@ section.dense code { font-size: 15px; }
 section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
 section.dense blockquote { font-size: 15px; padding: 3px 10px; }
 section.dense table { font-size: 14px; }
-;" data-marpit-pagination-total="23" data-size="16:9">
+;" data-marpit-pagination-total="24" data-size="16:9">
 <header>dpubnkctl · BNK 2.3.0</header>
 
 <h2 id="span-classtag19spanaudit-closeout--v220-round"><span class="tag">19</span>Audit closeout — v2.2.0 round</h2>
@@ -1450,7 +1451,7 @@ section.dense code { font-size: 15px; }
 section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
 section.dense blockquote { font-size: 15px; padding: 3px 10px; }
 section.dense table { font-size: 14px; }
-;" data-marpit-pagination-total="23" data-size="16:9">
+;" data-marpit-pagination-total="24" data-size="16:9">
 <header>dpubnkctl · BNK 2.3.0</header>
 <h2 id="span-classtag20spanbnk-22-%E2%86%92-23--three-shape-changes"><span class="tag">20</span>BNK 2.2 → 2.3 — three shape changes</h2>
 <p>The 2.3 release wasn't an incremental bump. Three real changes that<br />
@@ -1538,7 +1539,7 @@ section.dense code { font-size: 15px; }
 section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
 section.dense blockquote { font-size: 15px; padding: 3px 10px; }
 section.dense table { font-size: 14px; }
-;" data-marpit-pagination-total="23" data-size="16:9">
+;" data-marpit-pagination-total="24" data-size="16:9">
 <header>dpubnkctl · BNK 2.3.0</header>
 <h2 id="span-classtag21span23-migration--8-new-audit-items"><span class="tag">21</span>2.3 migration — 8 new audit items</h2>
 <p>Same agentic loop as the 2.2.0 round (slides 13-17). The 2.3 e2e<br />
@@ -1648,9 +1649,81 @@ section.dense code { font-size: 15px; }
 section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
 section.dense blockquote { font-size: 15px; padding: 3px 10px; }
 section.dense table { font-size: 14px; }
-;" data-marpit-pagination-total="23" data-size="16:9">
+;" data-marpit-pagination-total="24" data-size="16:9">
 <header>dpubnkctl · BNK 2.3.0</header>
-<h2 id="span-classtag22spanwhere-next"><span class="tag">22</span>Where next</h2>
+<h2 id="span-classtag22span230-deploy-confirmed--homelab-real-run"><span class="tag">22</span>2.3.0 deploy confirmed — homelab, real run</h2>
+<p>Same hardware as slide 7; same <code>dpubnkctl e2e --yolo --no-resume</code>.</p>
+<p><strong><code>HTTP/1.1 200 OK</code> through TMM — clean state → 2.3 deploy</strong></p>
+<ul>
+<li>2× BlueField-3 DPUs · <strong>DOCA 3.2.0</strong> · Ubuntu 24.04 · kernel 6.8</li>
+<li>4-node Kubernetes <strong>1.30.14</strong> · single control plane</li>
+<li>F5 Lifecycle Operator <strong>v2.21.13-0.0.28</strong> (resolved at deploy time from <code>f5-bigip-k8s-manifest</code> 2.3.0-3.2598.3-0.0.170)</li>
+<li>License CR <strong><code>STATE=Active</code></strong> <code>ENVIRONMENT=test</code> <code>MODE=connected</code><br />
+↑ tst-vs-prod auto-detected from JWT <code>jku</code> — zero operator config</li>
+<li>CNEInstance <code>Available=True</code> — all component conditions met</li>
+<li>Both <code>f5-tmm</code> pods 6/6 Ready, 2/2 readiness gates</li>
+<li><code>Gateway demo-gw</code> <code>Programmed=True</code> @ <code>192.168.40.100</code></li>
+<li><code>destroy --yolo</code> round-trip clean: kubespray reset.yml 0 failures, License + CWC + observer finalizers stripped, <strong>zero &quot;unknown flag&quot; noise</strong></li>
+</ul>
+<blockquote>
+<p>The agentic loop that closed the 2.2.0 round (slides 13-19) ran<br />
+again for 2.3 — 8 fresh gotchas surfaced live, each diagnosed →<br />
+committed → AGENTS.md gotcha in a single session. Same pattern,<br />
+next BNK release.</p>
+</blockquote>
+<footer>github.com/mwiget/dpubnkctl</footer>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="24" data-paginate="true" data-header="dpubnkctl · BNK 2.3.0" data-footer="github.com/mwiget/dpubnkctl" data-theme="default" data-style="section { font-size: 24px; padding: 40px 56px; line-height: 1.4; }
+h1 { color: #0a3a5c; font-size: 50px; }
+h2 { color: #0a3a5c; font-size: 32px; border-bottom: 2px solid #d1d5db; padding-bottom: 6px; margin-bottom: 12px; }
+h3 { color: #1f2937; font-size: 22px; }
+p { margin: 6px 0; }
+code { font-size: 18px; background: #f1f5f9; padding: 1px 4px; border-radius: 3px; }
+pre { background: #0b1220; color: #e2e8f0; font-size: 16px; padding: 12px 16px; border-radius: 6px; line-height: 1.3; margin: 6px 0; }
+pre code { background: transparent; color: inherit; font-size: inherit; padding: 0; }
+table { font-size: 17px; }
+th { background: #e2e8f0; color: #0a3a5c; }
+blockquote { border-left: 3px solid #0a3a5c; background: #f8fafc; padding: 4px 12px; color: #374151; font-style: normal; margin: 6px 0; }
+.tag { display: inline-block; background: #0a3a5c; color: white; padding: 2px 10px; border-radius: 4px; font-size: 16px; font-weight: 600; letter-spacing: 1px; margin-right: 10px; vertical-align: middle; }
+.quote-user { color: #6b7280; font-family: monospace; font-size: 15px; line-height: 1.3; }
+.quote-agent { color: #0a3a5c; font-family: monospace; font-size: 15px; line-height: 1.3; }
+/* Dense pages: case-study slides + audit table. Smaller body so the
+   four-or-five-line reasoning chain + symptom + fix all fit. */
+section.dense { font-size: 19px; padding: 28px 50px; }
+section.dense h2 { font-size: 26px; margin-bottom: 8px; padding-bottom: 4px; }
+section.dense p { margin: 5px 0; }
+section.dense pre { font-size: 13px; padding: 8px 12px; margin: 4px 0; line-height: 1.25; }
+section.dense code { font-size: 15px; }
+section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
+section.dense blockquote { font-size: 15px; padding: 3px 10px; }
+section.dense table { font-size: 14px; }
+" lang="en-US" data-marpit-pagination="24" style="--paginate:true;--header:dpubnkctl · BNK 2.3.0;--footer:github.com/mwiget/dpubnkctl;--theme:default;--style:section { font-size: 24px; padding: 40px 56px; line-height: 1.4; }
+h1 { color: #0a3a5c; font-size: 50px; }
+h2 { color: #0a3a5c; font-size: 32px; border-bottom: 2px solid #d1d5db; padding-bottom: 6px; margin-bottom: 12px; }
+h3 { color: #1f2937; font-size: 22px; }
+p { margin: 6px 0; }
+code { font-size: 18px; background: #f1f5f9; padding: 1px 4px; border-radius: 3px; }
+pre { background: #0b1220; color: #e2e8f0; font-size: 16px; padding: 12px 16px; border-radius: 6px; line-height: 1.3; margin: 6px 0; }
+pre code { background: transparent; color: inherit; font-size: inherit; padding: 0; }
+table { font-size: 17px; }
+th { background: #e2e8f0; color: #0a3a5c; }
+blockquote { border-left: 3px solid #0a3a5c; background: #f8fafc; padding: 4px 12px; color: #374151; font-style: normal; margin: 6px 0; }
+.tag { display: inline-block; background: #0a3a5c; color: white; padding: 2px 10px; border-radius: 4px; font-size: 16px; font-weight: 600; letter-spacing: 1px; margin-right: 10px; vertical-align: middle; }
+.quote-user { color: #6b7280; font-family: monospace; font-size: 15px; line-height: 1.3; }
+.quote-agent { color: #0a3a5c; font-family: monospace; font-size: 15px; line-height: 1.3; }
+/* Dense pages: case-study slides + audit table. Smaller body so the
+   four-or-five-line reasoning chain + symptom + fix all fit. */
+section.dense { font-size: 19px; padding: 28px 50px; }
+section.dense h2 { font-size: 26px; margin-bottom: 8px; padding-bottom: 4px; }
+section.dense p { margin: 5px 0; }
+section.dense pre { font-size: 13px; padding: 8px 12px; margin: 4px 0; line-height: 1.25; }
+section.dense code { font-size: 15px; }
+section.dense .quote-agent { font-size: 14px; line-height: 1.3; }
+section.dense blockquote { font-size: 15px; padding: 3px 10px; }
+section.dense table { font-size: 14px; }
+;" data-marpit-pagination-total="24" data-size="16:9">
+<header>dpubnkctl · BNK 2.3.0</header>
+<h2 id="span-classtag23spanwhere-next"><span class="tag">23</span>Where next</h2>
 <ul>
 <li><code>release-2.3.0</code> cut, <code>release-2.2.0</code> remains the 2.2.x maintenance home</li>
 <li><code>main</code> proceeds toward BNK 2.4 (no public ETA from F5 yet)</li>

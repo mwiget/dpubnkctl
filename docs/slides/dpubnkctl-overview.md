@@ -42,7 +42,9 @@ deploy in one binary, drive with an agent.**
 
 <br>
 
-BNK 2.3.0 · NVIDIA BlueField-3 (DOCA 3.2.0) · k8s 1.30 · kubespray v2.28.1
+**Latest:** BNK 2.3.0 · NVIDIA BlueField-3 (DOCA 3.2.0) · k8s 1.30 · kubespray v2.28.1
+
+<small>2.2 maintenance on `release-2.2.0` · 2.3 maintenance on `release-2.3.0` · `main` toward 2.4</small>
 
 <br>
 
@@ -239,7 +241,7 @@ Every `dpubnkctl init` drops a persona-neutral `AGENTS.md` into the PoC repo. Si
 
 - **Source of truth** — `poc.yaml` is the contract. `decisions.md`, `journal/`, `inventory/`, `artifacts/`, `keys/` each have a documented role.
 - **YOLO tiers** — read-only (always auto), reversible (auto with `--auto reversible`), destructive (`--yolo` + matching PoC-name confirm). Agents must respect.
-- **24 numbered gotchas** — every recurring failure from past PoCs. One-line symptom / cause / fix. e.g.:
+- **27 numbered gotchas** — every recurring failure from past PoCs (24 from the 2.2 round + 3 new from the 2.3 migration). One-line symptom / cause / fix. e.g.:
 
 > **#8.** OVS internal ports default to MTU 1500; apiserver TLS handshakes hang from frame loss. Fix: `bf.conf` sets MTU on every internal port.
 
@@ -493,7 +495,30 @@ features, 9 fixes. Every fix is reusable for the next BNK release.
 
 ---
 
-## <span class="tag">22</span>Where next
+## <span class="tag">22</span>2.3.0 deploy confirmed — homelab, real run
+
+Same hardware as slide 7; same `dpubnkctl e2e --yolo --no-resume`.
+
+**`HTTP/1.1 200 OK` through TMM — clean state → 2.3 deploy**
+
+- 2× BlueField-3 DPUs · **DOCA 3.2.0** · Ubuntu 24.04 · kernel 6.8
+- 4-node Kubernetes **1.30.14** · single control plane
+- F5 Lifecycle Operator **v2.21.13-0.0.28** (resolved at deploy time from `f5-bigip-k8s-manifest` 2.3.0-3.2598.3-0.0.170)
+- License CR **`STATE=Active`** `ENVIRONMENT=test` `MODE=connected`
+  ↑ tst-vs-prod auto-detected from JWT `jku` — zero operator config
+- CNEInstance `Available=True` — all component conditions met
+- Both `f5-tmm` pods 6/6 Ready, 2/2 readiness gates
+- `Gateway demo-gw` `Programmed=True` @ `192.168.40.100`
+- `destroy --yolo` round-trip clean: kubespray reset.yml 0 failures, License + CWC + observer finalizers stripped, **zero "unknown flag" noise**
+
+> The agentic loop that closed the 2.2.0 round (slides 13-19) ran
+> again for 2.3 — 8 fresh gotchas surfaced live, each diagnosed →
+> committed → AGENTS.md gotcha in a single session. Same pattern,
+> next BNK release.
+
+---
+
+## <span class="tag">23</span>Where next
 
 - `release-2.3.0` cut, `release-2.2.0` remains the 2.2.x maintenance home
 - `main` proceeds toward BNK 2.4 (no public ETA from F5 yet)
