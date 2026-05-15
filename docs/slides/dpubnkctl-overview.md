@@ -3,7 +3,7 @@ marp: true
 theme: default
 paginate: true
 size: 16:9
-header: 'dpubnkctl · BNK 2.2.0'
+header: 'dpubnkctl · BNK 2.3.0'
 footer: 'github.com/mwiget/dpubnkctl'
 style: |
   section { font-size: 24px; padding: 40px 56px; line-height: 1.4; }
@@ -42,7 +42,7 @@ deploy in one binary, drive with an agent.**
 
 <br>
 
-BNK 2.2.0 · NVIDIA BlueField-3 · k8s 1.32 · kubespray v2.28.1
+BNK 2.3.0 · NVIDIA BlueField-3 (DOCA 3.2.0) · k8s 1.30 · kubespray v2.28.1
 
 <br>
 
@@ -72,7 +72,7 @@ Manual BNK-on-bare-metal deploy is 20+ steps over ~3.5 hours:
 
 ```
 +----------------------+
-| dpubnkctl source     |   single binary, BNK-2.2.0-pinned
+| dpubnkctl source     |   single binary, BNK-2.3.0-pinned
 |  - internal/         |   (DOCA, BFB, FLO, kubespray) -->
 |  - embedded/         |   stamped with `git describe`
 |    files/AGENTS.md
@@ -195,7 +195,7 @@ dpubnkctl destroy --yolo --confirm-cluster <name>
 
 `dpubnkctl journal report` rolls every phase journal entry + `decisions.md` + `poc.yaml.status` into one markdown handoff. Excerpt from the homelab run:
 
-**~3.5 hours · clean state → working BNK 2.2.0**
+**~3.5 hours · clean state → working BNK 2.2.0** *(baseline run — see slides 20-22 for the 2.3 update)*
 
 - 2× BlueField-3 DPUs · DOCA 2.9.2
 - 4-node Kubernetes 1.32 · single control plane
@@ -448,19 +448,66 @@ All in `main`. Each item carries a journal-entry reference in its commit message
 
 ---
 
-## <span class="tag">20</span>Where next
+## <span class="tag">20</span>BNK 2.2 → 2.3 — three shape changes
 
-- Cut `v2.2.0` branch from current main as BNK 2.3.0 work begins
-- More PoCs feed more audit items
+The 2.3 release wasn't an incremental bump. Three real changes that
+break the 2.2 deploy shape:
+
+| What changed | 2.2.0 | 2.3.0 |
+|---|---|---|
+| **License location** | JWT + TEMM URLs + x5c chain inside `flo-values.yaml` (separate prod/tst templates) | `License` CR (`k8s.f5net.com/v1`) in `f5-cne-core` namespace; CWC auto-detects prod/tst from JWT `jku` |
+| **Chart versions** | FLO chart pinned in `version.go` (`v2.9.27-0.2.10`) | Pulled at deploy time from F5's `f5-bigip-k8s-manifest` release-manifest chart (`2.3.0-3.2598.3-0.0.170`) |
+| **CWC TLS material** | Implicit in FLO chart | Operator runs `f5-cert-gen` helm chart + applies two Secrets before CWC starts |
+
+The prod/tst auto-detection is the cleanest. Drop a tst JWT in
+`keys/.jwt` and `kubectl get license` shows `ENVIRONMENT=test`
+without any per-environment configuration — no separate template,
+no flag, no override. The CWC just knows.
+
+DOCA bumped from 2.9.2 → 3.2.0 (Ubuntu 22.04 → 24.04, kernel 5.15 →
+6.8). Same bf.conf, same OVS port list — kernel 6.8 ships dual SF
+interface names but the legacy `en3f0pf0sf1` still works.
+
+---
+
+## <span class="tag">21</span>2.3 migration — 8 new audit items
+
+Same agentic loop as the 2.2.0 round (slides 13-17). The 2.3 e2e
+on homelab found 8 new gotchas; all closed in the `feat/bnk-2.3.0`
+branch before the v2.3.0 tag.
+
+| # | Item | Where caught |
+|---|------|--------------|
+| 25 | DOCA 3.2 BFB pre-ships `kubernetes.sources` (v1.34) — apt resolves the higher version, kubeadm refuses 1.30 cluster | `cluster join-dpus` first run |
+| — | K8s version `1.30.14` typed in `poc.yaml` makes apt URL `v1.30.14/deb` → silently 1.34 | Same |
+| — | `gen_cert.sh` emits 1-space-indented YAML; YAML injection mangled it | `deploy flo` step 10 |
+| — | kubectl 1.30 lacks `--for=create` (added in 1.31) | `deploy cne` step 3 |
+| — | License `Registering` state not in switch; default 5min wait too short | `deploy cne` step 6 |
+| — | Multus first-start race on worker1-bf3 (loopback-only delegate) | Post-deploy smoke |
+| 26 | License auto-detects prod vs tst from JWT `jku` — Phase 3 hypothesis | Verified live |
+| 27 | BNK 2.3 HTTPRoutes require `hostnames:` (Gateway-API conformance) — without it, TMM returns BigIP 500 | Smoke `curl` |
+
+Each surfaced live, was diagnosed, fixed, captured in a Conventional
+Commit + AGENTS.md gotcha. The branch carries 13 commits total: 4
+features, 9 fixes. Every fix is reusable for the next BNK release.
+
+---
+
+## <span class="tag">22</span>Where next
+
+- `release-2.3.0` cut, `release-2.2.0` remains the 2.2.x maintenance home
+- `main` proceeds toward BNK 2.4 (no public ETA from F5 yet)
 - Multi-DPU-per-host (host-side tmfifo netplan + relaxed validate)
 - Live TMM self-IP capture from F5SPKVlan after deploy
-- IPAM auto-allocation if BNK exposes a default-pool concept
+- IPAM auto-allocation if BNK adds a default-pool concept
 - Generalised pre-sales SE workflow for non-BNK F5 products
 
-The binary is `~16 MB`, statically linked, single-file. Drop it on a jumphost and you're one `dpubnkctl init` away from a reproducible PoC.
+The binary is `~16 MB`, statically linked, single-file. Drop it on a
+jumphost and you're one `dpubnkctl init` away from a reproducible
+PoC.
 
 ```
-go install github.com/mwiget/dpubnkctl/cmd/dpubnkctl@latest
+go install github.com/mwiget/dpubnkctl/cmd/dpubnkctl@v2.3.0
 ```
 
 <br>
