@@ -83,6 +83,18 @@ func InstallKubeBinaries(ctx context.Context, dpu *ssh.Client, k8sMinor string) 
 		// not be present at all (nothing to unhold), and apt-mark errors
 		// when given unknown packages.
 		"sudo -n apt-mark unhold kubelet kubeadm kubectl || true",
+		// Defensive: if a previous run installed the WRONG k8s minor
+		// (observed on the 2.3 e2e — a stale 1.34.x from before the
+		// kubernetes.sources cleanup landed), `apt-get install` below
+		// will be a no-op because the package is already "current".
+		// Compare dpkg's installed minor to our target; remove if they
+		// differ so the subsequent install pulls the right minor from
+		// the v" + k8sMinor + " apt repo.
+		fmt.Sprintf("CURRENT=$(dpkg-query -W -f='${Version}' kubeadm 2>/dev/null | cut -d. -f1,2 || true); "+
+			"if [ -n \"$CURRENT\" ] && [ \"$CURRENT\" != \"%s\" ]; then "+
+			"echo \"removing wrong-minor kubeadm $CURRENT (want %s)\"; "+
+			"sudo -n apt-get remove -y -qq kubelet kubeadm kubectl || true; "+
+			"fi", repoRel[1:], repoRel[1:]),
 		// DOCA 3.2 / Ubuntu 24.04 BFBs pre-ship
 		// /etc/apt/sources.list.d/kubernetes.sources (deb822 format)
 		// pointing at the LATEST k8s stable (e.g. v1.34). apt unions
