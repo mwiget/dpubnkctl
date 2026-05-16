@@ -360,6 +360,10 @@ func TestValidate_ShellSafeFields(t *testing.T) {
 			func(p *PoC) { p.Hosts[0].DataPlane.ParentIface = strings.Repeat("a", 16) }},
 		{"bfb_image_inject", "versions.bfb_image with quote", "bfb_image",
 			func(p *PoC) { p.Versions.BFBImage = "x'$(curl|sh)'.bfb" }},
+		{"pci_inject", "dpu.pci with semicolon", "pci",
+			func(p *PoC) { p.Hosts[0].DPUs[0].PCI = "0000:03:00.0; rm -rf /" }},
+		{"pci_malformed", "dpu.pci missing domain", "pci",
+			func(p *PoC) { p.Hosts[0].DPUs[0].PCI = "03:00.0" }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

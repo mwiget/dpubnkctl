@@ -258,7 +258,12 @@ func recoverGhostPF(ctx context.Context, c *ssh.Client, parentIface, tag string,
 		return nil
 	}
 
-	if strings.Contains(combined, "No such device") {
+	// Both recovery tiers run in sequence on the ghost-state path. We
+	// don't early-return on tier-1 success — the final re-check at the
+	// bottom is the single exit point that turns "ethtool now sees
+	// mlx5_core" into a clean return. This keeps tier-1 and tier-2
+	// flow-symmetric for readers.
+	if !ok && strings.Contains(combined, "No such device") {
 		fmt.Fprintf(out, "%s ghost mlx5_core PF detected on %s; attempting modprobe reload ...\n",
 			tag, parentIface)
 		if r := c.Run(ctx, "sudo -n bash -c 'modprobe -r mlx5_core 2>&1 || true; modprobe mlx5_core 2>&1'"); !r.OK() {
@@ -282,16 +287,15 @@ echo 1 | tee /sys/bus/pci/rescan >/dev/null'`
 					tag, r.ExitCode, strings.TrimSpace(r.Stdout+r.Stderr))
 			}
 			fmt.Fprintf(out, "%s   polling again for up to 60s ...\n", tag)
-			rescanOK, _ := pollUntilLive(time.Now().Add(60 * time.Second))
-			if rescanOK {
+			if rescanOK, _ := pollUntilLive(time.Now().Add(60 * time.Second)); rescanOK {
 				fmt.Fprintf(out, "%s   mlx5_core %s recovered after PCIe rescan.\n", tag, parentIface)
-				return nil
 			}
 		}
 	}
 
-	// Re-check after recovery attempts so the final error message
-	// reflects the latest state.
+	// Final re-check after recovery attempts. Single exit point so the
+	// error message reflects the latest state regardless of which tier
+	// (or no tier) actually fired.
 	ok, combined = ethtoolCheck()
 	if ok && strings.Contains(combined, "mlx5_core") {
 		return nil

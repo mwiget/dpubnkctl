@@ -281,9 +281,15 @@ func destroyBNK(ctx context.Context, repo string, p *poc.PoC, out io.Writer, tim
 	//    the force-clean step below is the real safety net.
 	fmt.Fprintln(out, "      → delete CNEInstance(s) cluster-wide")
 	_ = r.Kubectl(ctx, "delete", "cneinstance", "--all-namespaces", "--all", "--ignore-not-found", "--wait=false")
-	// Brief grace so FLO at least starts its termination work — accelerates
-	// the next steps when they're racing it.
-	time.Sleep(10 * time.Second)
+	// Brief grace so FLO at least starts its termination work —
+	// accelerates the next steps when they're racing it. Honour
+	// ctx.Done so a cancelled run unwinds promptly rather than waiting
+	// out the full 10s.
+	select {
+	case <-time.After(10 * time.Second):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 
 	// 3. Force-delete F5 sub-CRs in f5-operators (the orphans). List is
 	//    owned by internal/deploy/teardown.go; missing CRDs just no-op

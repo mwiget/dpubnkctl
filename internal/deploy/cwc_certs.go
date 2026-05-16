@@ -155,46 +155,6 @@ func ApplyCWCCerts(ctx context.Context, r *Runner, workDir, namespace string) er
 	return nil
 }
 
-// injectNamespace rewrites the "metadata:" block of each YAML doc in
-// body to include `namespace: <ns>` if it isn't already present. Cheap
-// line-oriented patch — assumes well-formed YAML with metadata indented
-// by 2 spaces (which gen_cert.sh produces). Not a general-purpose YAML
-// patcher; reads only the two files this helper generates.
-func injectNamespace(body []byte, ns string) []byte {
-	lines := strings.Split(string(body), "\n")
-	out := make([]string, 0, len(lines)+8)
-	inMeta := false
-	hasNS := false
-	flushMeta := func() {
-		if inMeta && !hasNS {
-			out = append(out, "  namespace: "+ns)
-		}
-		inMeta = false
-		hasNS = false
-	}
-	for _, l := range lines {
-		switch {
-		case strings.HasPrefix(l, "---") || strings.HasPrefix(l, "apiVersion:") || strings.HasPrefix(l, "kind:"):
-			flushMeta()
-			out = append(out, l)
-		case strings.HasPrefix(l, "metadata:"):
-			flushMeta()
-			inMeta = true
-			out = append(out, l)
-		case inMeta && strings.HasPrefix(l, "  namespace:"):
-			hasNS = true
-			out = append(out, l)
-		case inMeta && (strings.HasPrefix(l, "  ") || l == ""):
-			out = append(out, l)
-		default:
-			flushMeta()
-			out = append(out, l)
-		}
-	}
-	flushMeta()
-	return []byte(strings.Join(out, "\n"))
-}
-
 // PullAndApplyCWCCerts is the convenience one-shot used by `deploy flo`:
 // pull f5-cert-gen, generate the certs, apply them to the cluster.
 // workDir defaults to <poc>/artifacts/cwc-certs/.

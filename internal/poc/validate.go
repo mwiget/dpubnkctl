@@ -78,6 +78,11 @@ var safeIfaceRe = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,15}$`)
 // override can't escape.
 var safeBFBNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+\.bfb$`)
 
+// safePCIRe gates DPU.PCI — flows into `mlxconfig -d %s` inside the
+// readiness probe and `mlx5_core` driver paths. Canonical PCIe BDF
+// shape: `DDDD:BB:DD.F`, hex segments + a `.<func>` suffix.
+var safePCIRe = regexp.MustCompile(`^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$`)
+
 // defaultInternalCIDR is the placeholder that ships in `dpubnkctl init`
 // — it's a documented-safe RFC 2544 default, but the SE should confirm
 // it doesn't overlap the customer's existing ranges.
@@ -311,6 +316,13 @@ func ValidateForPhase(p *PoC, repoDir string, minPhase Phase) ValidationResult {
 func validateDPU(c *checker, d *DPU, ctx string) {
 	if d.PCI == "" {
 		c.err(PhaseProvision, "%s.pci is empty", ctx)
+	} else if !safePCIRe.MatchString(d.PCI) {
+		// d.PCI is interpolated into `mlxconfig -d %s` inside the
+		// readiness probe; a poc.yaml planted with metacharacters would
+		// run arbitrary commands as the SSH user. Canonical BDF shape
+		// also serves as a syntax check — typos like missing the domain
+		// prefix get caught here rather than at readiness time.
+		c.err(PhaseProvision, "%s.pci %q must match %s (canonical PCIe BDF, e.g. 0000:03:00.0)", ctx, d.PCI, safePCIRe.String())
 	}
 	switch d.Mode {
 	case "":

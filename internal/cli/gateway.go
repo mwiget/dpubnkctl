@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -241,7 +240,14 @@ docs/upstream/f5-cne-controller-tmm-resync-on-join.md.
 
 There is a brief gap (~3-8s per Gateway) during which the Gateway
 exists with Programmed=False. Existing client connections may break
-in that window. Don't run during production traffic.`,
+in that window. Don't run during production traffic.
+
+Note: this command is intentionally not gated by --yolo / --confirm-
+cluster. The blast radius is bounded (a few seconds of Programmed=
+False per Gateway, no cluster-state loss), it's expected to run
+multiple times per cluster lifecycle, and --dry-run is the
+recommended preview path. The runtime is by design distinct from
+destroy / cluster reset / deploy * which all do require both gates.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runGatewayResync(cmd.Context(), cmd.OutOrStdout(), f)
 		},
@@ -257,10 +263,22 @@ func runGatewayResync(ctx context.Context, out io.Writer, f *gatewayResyncFlags)
 	if err != nil {
 		return err
 	}
-	if _, err := poc.Load(repo); err != nil {
+	p, err := poc.Load(repo)
+	if err != nil {
 		return fmt.Errorf("not a PoC repo (%s): %w", repo, err)
 	}
-	kubeconfig := filepath.Join(repo, "artifacts", "kubeconfig")
+	// Run the cluster-phase validate so shell-exposed poc.yaml fields
+	// (Host.Name, parent_iface, etc.) that this command will reference
+	// via kubectl are screened the same way the rest of the CLI screens
+	// them. The two-gate destructive check is intentionally skipped —
+	// see the Long help for why.
+	if err := enforceValidateForPhase(out, p, repo, poc.PhaseCluster, false); err != nil {
+		return err
+	}
+	kubeconfig, err := requireKubeconfig(repo, "run `dpubnkctl cluster up` first")
+	if err != nil {
+		return err
+	}
 	r := &deploy.Runner{KubeconfigPath: kubeconfig, Out: prefixWriter{w: out, prefix: "      | "}}
 
 	// List Gateways. -A unless a single namespace was passed.

@@ -46,6 +46,14 @@ No fancy tooling — stdlib + cobra + yaml.v3 + golang.org/x/crypto/ssh + sftp.
 
 `--yolo` and `--confirm-cluster <NAME>` (matching `poc.yaml.metadata.name`). Pattern is identical across `cluster up`, `cluster reset`, `cluster join-dpus`, `host network setup`, `deploy network/flo/cne`, and `destroy bnk/dpus/`. **Never** add a destructive command without these gates.
 
+The one deliberate exception is `gateway resync` — its blast radius is bounded (a few seconds of Programmed=False per Gateway, no cluster-state loss) and it's expected to run multiple times per cluster lifecycle. Its long help calls out the exemption explicitly; if you add a similar Day-2 tool with bounded impact, document the exemption the same way.
+
+## SSH trust model
+
+dpubnkctl's SSH transport (`internal/ssh`) is TOFU-based per-PoC: `inventory/known_hosts` is created at 0600 on first connect, and every subsequent dial verifies against it. Concurrent TOFU-adds (cluster up fans out in parallel) are serialised by `knownHostsMu` so two goroutines can't race the O_APPEND write.
+
+DPU connections via ProxyJump deliberately skip per-DPU known_hosts because every DPU in every PoC answers at the same tmfifo address (192.168.100.2) — a shared known_hosts would collide the moment a second host's DPU connected. The trust boundary is the jumphost: its key IS pinned in `inventory/known_hosts`, and the DPU is only reachable through that already-verified jumphost. See `internal/cli/ssh_dpu.go::dpuSSHConfig` for the implementation.
+
 ---
 
 ## Recurring failure modes (gotchas that happen on every PoC)
