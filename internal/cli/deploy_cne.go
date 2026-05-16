@@ -270,9 +270,24 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 		return err
 	}
 	// Persist the rendered License CR for audit; mode 0600 since it
-	// embeds the raw JWT.
+	// embeds the raw JWT. Use OpenFile so a pre-existing file from a
+	// prior run gets truncated AND its mode reset to 0o600 — plain
+	// WriteFile keeps the existing inode's permissions if it predated
+	// us, which can leave a 0o644 JWT body readable to other local
+	// users on the jumphost.
 	licenseRendered := filepath.Join(repo, "artifacts", "license-cr-rendered.yaml")
-	if err := os.WriteFile(licenseRendered, []byte(licenseYAML), 0o600); err != nil {
+	lf, err := os.OpenFile(licenseRendered, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := lf.WriteString(licenseYAML); err != nil {
+		_ = lf.Close()
+		return err
+	}
+	if err := lf.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(licenseRendered, 0o600); err != nil {
 		return err
 	}
 	if err := r.Apply(ctx, licenseYAML); err != nil {
