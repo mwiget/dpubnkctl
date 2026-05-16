@@ -58,20 +58,26 @@ Pinned to BNK 2.3.0 / Kubernetes 1.30.14 / DOCA 3.2.0 / release manifest 2.3.0-3
 
 ## Two operating modes
 
-**Human:** run subcommands directly. `dpubnkctl --help`,
-`dpubnkctl init demo`, then walk the phases. For first-time onboarding
-without prior context, `dpubnkctl discover wizard` walks you through
-subnet + SSH credentials + per-host role assignment.
+Pick the one that matches your environment — both go end-to-end without
+any post-wizard hand-edits when the lab follows the conventions in
+`examples/`.
 
-**Agentic (BYO CLI):** `dpubnkctl init` drops `AGENTS.md` and three
+**Non-agentic** — `dpubnkctl wizard` walks you through subnet + SSH
+credentials + per-host role + customer + 2 VLAN tag/subnet pairs, then
+fills the rest of `poc.yaml` from documented conventions (per-host VLAN
+IPs from mgmt last-octet, per-DPU sequential IPs, self-IPs at `.100`,
+cluster apiserver address from first CP host, etc.). 6 operator answers
+in a typical lab; everything else accepts the default. See **Quick start
+(non-agentic)** below.
+
+**Agentic (BYO CLI)** — `dpubnkctl init` drops `AGENTS.md` and three
 persona files (`personas/pre-sales-se.md`, `personas/lab-tech.md`,
 `personas/doc-specialist.md`) into the PoC repo. Point Claude Code,
 Gemini, Aider, an OpenAI-compatible REPL, [pi](https://pi.dev/), or
-[opencode](https://opencode.ai/) at it via `dpubnkctl agent <cli>`.
-The agent reads AGENTS.md and conversationally walks the phases —
-the discover wizard equivalent comes for free, with much better
-context awareness (suggests sensible defaults from lab notes, records
-*why* each decision was made in `decisions.md`).
+[opencode](https://opencode.ai/) at it via `dpubnkctl agent <cli>`. The
+agent reads AGENTS.md and conversationally walks the phases, suggests
+defaults from lab notes, and records *why* each decision was made in
+`decisions.md`. See **Quick start (agentic)** below.
 
 The binary doesn't ship an LLM — you choose the model and endpoint
 (cloud or local vLLM) appropriate for your customer's compliance posture.
@@ -210,50 +216,104 @@ make smoke               # build + minimal end-to-end smoke (init + agent)
 make install             # → ~/.local/bin/dpubnkctl
 ```
 
-## Quick start
+## Quick start (non-agentic)
+
+The wizard-driven workflow. Six operator answers (subnet/range, SSH user,
+SSH key, role per discovered host, customer name) plus five Enter-presses
+for the network-design defaults gets you a deployable PoC. Tested against
+the homelab in `wizard-verify-log.txt`.
 
 ```bash
-# 1. Create a PoC repo with binary defaults + persona files + AGENTS.md.
-dpubnkctl init customer-x
+# 1. Create a fresh PoC repo. Creates ./customer-x/ with:
+#      poc.yaml, AGENTS.md, CLAUDE.md, personas/, journal/,
+#      inventory/, artifacts/, keys/, decisions.md, .gitignore
+#    Also auto-generates a random DPU OS password into
+#      keys/dpu_password.{hash,txt}
+dpubnkctl init customer-x --customer "Customer X"
 cd customer-x
 
-# 2a. Drop SSH key + FAR tarball + JWT into keys/ (gitignored).
-cp ~/.ssh/id_ed25519 keys/customer-x
-cp /downloads/f5-far-auth-key.tgz keys/
-cp /downloads/customer.jwt keys/.jwt
+# 2. Drop the three operator-supplied files into keys/
+cp /path/to/your-ssh-private-key        keys/id_ed25519
+cp /path/to/f5-far-auth-key.tgz         keys/f5-far-auth-key.tgz
+cp /path/to/license.jwt                 keys/.jwt
 
-# 2b. Either edit poc.yaml by hand OR auto-discover:
-dpubnkctl discover wizard          # interactive — prompts for subnet, etc.
-# or:
-dpubnkctl discover range 192.168.68.0/24 --ssh-user ubuntu --ssh-key keys/customer-x
+# 3. Run the wizard. Answers needed (defaults in brackets are usually fine):
+#      - subnet/range to scan          e.g. 192.168.68.0/24
+#      - SSH user                      [ubuntu]
+#      - SSH port                      [22]
+#      - SSH key path                  keys/id_ed25519
+#      - jumphost                      [blank]
+#      - role per discovered host      both | control-plane | worker
+#      - customer name                 [from --customer]
+#      - external VLAN tag/subnet      [40 / 192.168.40.0/24]
+#      - internal VLAN tag/subnet      [50 / 192.168.50.0/24]
+#      - node_ip_role                  [internal]
+#    Writes everything to poc.yaml plus inventory/<host>/discover.json
+#    per reachable host.
+dpubnkctl wizard
 
-# 2c. Walk network-design-checklist.md with the customer (LAG vs non-LAG,
-#     VLAN tags + IP subnets, MTU, cluster_apiserver_address, self-IPs).
-#     Record answers in poc.yaml, rationale in decisions.md.
-$EDITOR network-design-checklist.md poc.yaml decisions.md
+# 4. Confirm the PoC validates clean.
+dpubnkctl validate
 
-# 2d. Confirm poc.yaml is internally consistent + all referenced files exist.
-dpubnkctl validate                 # errors + warnings; non-zero exit on errors
+# 5. Run the full pipeline (60–90 min on real hardware).
+#    Per-phase logs land in reports/<timestamp>/logs/NN-<phase>.log.
+#    Resume-safe via artifacts/e2e-state.json (re-run e2e --yolo after
+#    a transient failure and it picks up where it left off).
+dpubnkctl e2e --yolo
 
-# 3. Phase through the deploy. All commands are idempotent + gated by
-#    --yolo + --confirm-cluster <name> for the destructive ones.
-#    `provision dpus` re-runs `validate` as a precheck.
-dpubnkctl provision dpus           # flash BFB, configure networking
-dpubnkctl host network setup       # data-plane VLAN sub-ifs on hosts
-dpubnkctl cluster up               # kubespray cluster.yml (~30 min)
-dpubnkctl cluster join-dpus        # DPUs join with --node-ip on data-plane
-dpubnkctl deploy network           # Multus + SR-IOV + NADs + local-path
-dpubnkctl deploy flo               # cert-manager + FLO + bnk-ca + far-secret
-dpubnkctl deploy cne               # CNEInstance + F5SPKVlans
-
-# 4. Tear down (same shape):
-dpubnkctl destroy                  # bnk → dpus → cluster reset
-
-# Or drive the whole thing conversationally:
-dpubnkctl agent claude             # prints Claude Code invocation
-dpubnkctl agent pi                 # prints pi (https://pi.dev/) invocation
-dpubnkctl agent opencode           # prints opencode invocation
+# 6. Tear down (symmetric — bnk → dpus → cluster reset):
+dpubnkctl destroy --yolo --confirm-cluster customer-x
 ```
+
+That's it. Every poc.yaml field the wizard doesn't ask is filled from
+documented conventions matching the shipped examples; review/tweak
+`poc.yaml` between step 3 and step 4 if your environment differs.
+
+## Quick start (agentic)
+
+The conversational workflow. The agent reads `AGENTS.md`, walks you
+through scope, populates `poc.yaml`, and records *why* each decision
+was made.
+
+```bash
+dpubnkctl init customer-x --customer "Customer X"
+cd customer-x
+
+# Drop the three operator-supplied files into keys/ (same as non-agentic):
+cp /path/to/your-ssh-private-key        keys/id_ed25519
+cp /path/to/f5-far-auth-key.tgz         keys/f5-far-auth-key.tgz
+cp /path/to/license.jwt                 keys/.jwt
+
+# Pick your agentic CLI; the binary prints the right invocation:
+dpubnkctl agent claude                  # Claude Code
+dpubnkctl agent gemini                  # Gemini
+dpubnkctl agent aider                   # Aider
+dpubnkctl agent pi                      # pi (https://pi.dev/)
+dpubnkctl agent opencode                # opencode (https://opencode.ai/)
+dpubnkctl agent openai-compat           # any OpenAI-compatible REPL
+
+# Then inside the agent session, e.g.:
+#   "Read AGENTS.md, act as the pre-sales SE persona. Confirm scope with me."
+```
+
+## Per-phase invocation (advanced)
+
+Both workflows above end with `dpubnkctl e2e --yolo` which runs every
+phase. If you'd rather drive phases one at a time (for diagnostics,
+partial reruns, or curriculum-style demos):
+
+```bash
+dpubnkctl provision dpus --yolo --confirm-flash <hostnames>
+dpubnkctl host network setup --yolo --confirm-cluster <name>
+dpubnkctl cluster up --yolo --confirm-cluster <name>
+dpubnkctl cluster join-dpus --yolo --confirm-cluster <name>
+dpubnkctl deploy network --yolo --confirm-deploy <name>
+dpubnkctl deploy flo --yolo --confirm-deploy <name>
+dpubnkctl deploy cne --yolo --confirm-deploy <name>
+```
+
+Every phase is idempotent and gated by `--yolo` plus a `--confirm-*
+<name>` that must equal `poc.yaml.metadata.name`.
 
 ## Repo layout (the binary itself)
 

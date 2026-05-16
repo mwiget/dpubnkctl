@@ -319,7 +319,7 @@ diagram.txt               auto-regenerated topology view
 
 ## Two operating modes
 
-### Agentic — primary focus
+### Agentic
 
 ```bash
 dpubnkctl agent claude            # prints the invocation
@@ -330,16 +330,48 @@ cd ~/lab/mycustomer && claude
 
 Every agentic CLI inherits the same runbook, tool allowlists, handoff protocol. **dpubnkctl ships no LLM. You pick the model.**
 
-### Human direct *(work in progress)*
+### Non-agentic — wizard-driven
 
 ```bash
-dpubnkctl init mycustomer
-dpubnkctl discover wizard          # WIP — agentic path is validated
-dpubnkctl validate
-dpubnkctl e2e --yolo
+dpubnkctl init mycustomer --customer "MyCustomer"
+cp <ssh-key> <far.tgz> <jwt>  mycustomer/keys/
+cd mycustomer && dpubnkctl wizard
+dpubnkctl validate && dpubnkctl e2e --yolo
 ```
 
-Every subcommand is hand-callable; the wizard lags the agentic path and the gap will widen, not narrow.
+6 operator answers + 5 Enter-presses on network-design defaults → deployable PoC. Both workflows have been validated end-to-end against the homelab.
+
+---
+
+## Non-agentic walkthrough — what the wizard asks
+
+| Prompt | Default | Notes |
+|---|---|---|
+| Subnet or range to scan | (required) | `192.168.68.0/24`, `192.168.68.66-71`, single IP |
+| SSH user | `ubuntu` | shared across the range |
+| SSH port | `22` | re-prompts on bad input |
+| SSH private key | `~/.ssh/id_ed25519` | must be readable |
+| Jumphost (optional) | blank | format `host[:port]` |
+| Role per discovered host | suggested | `both` \| `control-plane` \| `worker` \| `skip` |
+| Customer name | from `--customer` | for the final report |
+| External VLAN tag / subnet | `40` / `192.168.40.0/24` | north-south VLAN |
+| Internal VLAN tag / subnet | `50` / `192.168.50.0/24` | east-west / cluster VLAN |
+| `node_ip_role` | `internal` | which VLAN kubelet `--node-ip` binds to |
+
+---
+
+## Non-agentic walkthrough — what the wizard fills
+
+Auto-filled from documented conventions (no prompts):
+
+- `hosts[].data_plane.parent_iface` — Mellanox heuristic (`ens.*np0`)
+- `hosts[].data_plane.vlans[]` — IPs mirror mgmt last-octet (`.66` → `.40.66/24`, `.50.66/24`)
+- `hosts[].dpus[].{hostname, tmfifo_ip, vlans[]}` — `<host>-bf3`, `192.168.100.2/30`, sequential `.5/.6/.7`
+- `network.cluster_apiserver_address` — first CP host's internal-VLAN IP
+- `bnk.{external,internal}_selfip` — `.100` in each subnet
+- `topology` — `mode`, `lag`, `expected_hosts`, `expected_dpus_per_host` from merged `hosts[]`
+
+Re-running the wizard against an existing `poc.yaml` is non-destructive — operator edits are never clobbered.
 
 ---
 
