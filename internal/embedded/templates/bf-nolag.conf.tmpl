@@ -57,6 +57,20 @@ EOFSSH
     # eliminates the race. ssh-keygen -A is idempotent.
     chroot /mnt /usr/bin/ssh-keygen -A
 
+    # Belt-and-suspenders NOPASSWD sudo for ubuntu. cloud-init's
+    # users_groups module ALSO writes 90-cloud-init-users from the
+    # NoCloud user-data, but if the DPU restarts between useradd
+    # and the sudoers write (observed 2026-05-16 on worker2-bf3),
+    # the module flag is set to "once-per-instance done" and the
+    # sudoers file never lands — leaving cluster join-dpus failing
+    # with "sudo: a password is required". Writing it at flash time
+    # eliminates the race.
+    mkdir -p /mnt/etc/sudoers.d
+    cat > /mnt/etc/sudoers.d/91-dpubnkctl-ubuntu <<'EOFSUDO'
+ubuntu ALL=(ALL) NOPASSWD:ALL
+EOFSUDO
+    chmod 0440 /mnt/etc/sudoers.d/91-dpubnkctl-ubuntu
+
     cat << EOFRESOLVE > /mnt/etc/systemd/resolved.conf
 [Resolve]
 DNS={{.DNSServers}}
