@@ -201,40 +201,65 @@ func setupOneHost(ctx context.Context, out io.Writer, repo string, h *poc.Host, 
 	if err != nil {
 		return err
 	}
-	if !ok && strings.Contains(combined, "No such device") {
-		fmt.Fprintf(out, "%s ghost mlx5_core PF detected on %s; attempting `modprobe -r mlx5_core; modprobe mlx5_core` ...\n",
-			tag, dp.ParentIface)
-		// `|| true` on the unload so the reload runs even if a previous
-		// user (existing VLAN sub-iface, OVS bridge) holds the driver
-		// in a refcount > 0 state. modprobe in this case logs but
-		// continues; reload-without-unload is still a partial probe-
-		// retry that often clears the ghost state.
-		if r := c.Run(ctx, "sudo -n bash -c 'modprobe -r mlx5_core 2>&1 || true; modprobe mlx5_core 2>&1'"); !r.OK() {
-			fmt.Fprintf(out, "%s mlx5_core reload exit=%d: %s\n",
-				tag, r.ExitCode, strings.TrimSpace(r.Stdout+r.Stderr))
-		}
-		// Driver probe + udev rename + link up takes ~5-15s in practice.
-		// Poll for up to 30s rather than guessing a fixed sleep — a fixed
-		// 5s landed at the exact wrong moment in the May 16 homelab run
-		// (interface had renamed 4s prior but ethtool was still returning
-		// transient empty output as the link came up).
-		fmt.Fprintf(out, "%s polling ethtool -i %s for up to 30s ...\n", tag, dp.ParentIface)
-		deadline := time.Now().Add(30 * time.Second)
+	// Two-tier recovery if ghost detected:
+	//   1. `modprobe -r mlx5_core; modprobe mlx5_core` + 90s poll. Drives
+	//      a clean kernel re-probe of every mlx5 PCIe device. udev rename
+	//      adds another ~5-30s after the kernel probe completes — that's
+	//      why we poll 90s, not 30s. (The 30s ceiling in the previous fix
+	//      hit the deadline 4s before udev renamed on the May 16 run.)
+	//   2. If modprobe reload doesn't recover, fall through to a PCIe-
+	//      level remove+rescan via /sys/bus/pci. More targeted than
+	//      modprobe (per-device), and works when the driver is stuck on
+	//      one specific BDF.
+	pollUntilLive := func(deadline time.Time) bool {
+		iter := 0
 		for {
 			time.Sleep(2 * time.Second)
+			iter++
 			ok, combined, _ = ethtoolCheck()
 			if ok && strings.Contains(combined, "mlx5_core") {
-				fmt.Fprintf(out, "%s mlx5_core %s recovered after reload.\n", tag, dp.ParentIface)
-				break
+				fmt.Fprintf(out, "%s   %s live after %d polls.\n", tag, dp.ParentIface, iter)
+				return true
 			}
 			if time.Now().After(deadline) {
-				break
+				return false
+			}
+		}
+	}
+
+	if !ok && strings.Contains(combined, "No such device") {
+		fmt.Fprintf(out, "%s ghost mlx5_core PF detected on %s; attempting modprobe reload ...\n",
+			tag, dp.ParentIface)
+		if r := c.Run(ctx, "sudo -n bash -c 'modprobe -r mlx5_core 2>&1 || true; modprobe mlx5_core 2>&1'"); !r.OK() {
+			fmt.Fprintf(out, "%s   modprobe reload exit=%d: %s\n",
+				tag, r.ExitCode, strings.TrimSpace(r.Stdout+r.Stderr))
+		}
+		fmt.Fprintf(out, "%s   polling ethtool -i %s for up to 90s ...\n", tag, dp.ParentIface)
+		if pollUntilLive(time.Now().Add(90 * time.Second)) {
+			fmt.Fprintf(out, "%s   mlx5_core %s recovered after modprobe reload.\n", tag, dp.ParentIface)
+		} else {
+			fmt.Fprintf(out, "%s   still ghost after modprobe + 90s; trying PCIe remove+rescan ...\n", tag)
+			// Remove every BlueField (vendor 15b3) PCIe function, then
+			// rescan the bus. Forces a fresh enumeration + driver bind.
+			rescan := `sudo -n bash -c '
+for bdf in $(lspci -d 15b3: | awk "{print \$1}"); do
+  echo 1 | tee /sys/bus/pci/devices/0000:$bdf/remove >/dev/null 2>&1 || true
+done
+sleep 1
+echo 1 | tee /sys/bus/pci/rescan >/dev/null'`
+			if r := c.Run(ctx, rescan); !r.OK() {
+				fmt.Fprintf(out, "%s   PCIe rescan exit=%d: %s\n",
+					tag, r.ExitCode, strings.TrimSpace(r.Stdout+r.Stderr))
+			}
+			fmt.Fprintf(out, "%s   polling again for up to 60s ...\n", tag)
+			if pollUntilLive(time.Now().Add(60 * time.Second)) {
+				fmt.Fprintf(out, "%s   mlx5_core %s recovered after PCIe rescan.\n", tag, dp.ParentIface)
 			}
 		}
 	}
 	if !ok {
 		if strings.Contains(combined, "No such device") || strings.TrimSpace(combined) == "" {
-			return fmt.Errorf("parent iface %s did not recover after mlx5_core reload (30s poll) — reboot the host manually (BF3 EMBEDDED_CPU rules out mlxfwreset). See AGENTS.md #11", dp.ParentIface)
+			return fmt.Errorf("parent iface %s did not recover after modprobe reload + PCIe rescan — reboot the host manually (BF3 EMBEDDED_CPU rules out mlxfwreset). See AGENTS.md #11", dp.ParentIface)
 		}
 		return fmt.Errorf("ethtool -i %s failed: %s", dp.ParentIface, combined)
 	}
