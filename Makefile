@@ -38,6 +38,16 @@ smoke: build
 	@ls /tmp/dpubnkctl-smoke
 	@echo "--- agent claude ---"
 	./bin/dpubnkctl agent claude --poc /tmp/dpubnkctl-smoke
+	@echo "--- samples list ---"
+	./bin/dpubnkctl samples
+	@echo "--- init --sample two-node-homelab ---"
+	@rm -rf /tmp/dpubnkctl-smoke-sample
+	./bin/dpubnkctl init smoke-sample --sample two-node-homelab \
+	    --dir /tmp/dpubnkctl-smoke-sample --no-git
+	@grep -q "name: smoke-sample" /tmp/dpubnkctl-smoke-sample/poc.yaml \
+	    || (echo "ERR: --sample did not patch metadata.name" && exit 1)
+	@grep -q "CUSTOMIZE" /tmp/dpubnkctl-smoke-sample/poc.yaml \
+	    || (echo "ERR: CUSTOMIZE markers stripped" && exit 1)
 
 clean:
 	rm -rf bin/

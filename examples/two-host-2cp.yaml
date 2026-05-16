@@ -1,3 +1,5 @@
+# Description: Two hosts — both role=both (2 CPs, non-HA), 1 DPU each. Most common BNK lab shape.
+#
 # Two-host PoC, both hosts running control-plane AND worker (`role: both`).
 # Each host has one BlueField-3 DPU; the DPUs join as additional workers
 # externally. Most common BNK lab shape. Not HA-safe (etcd quorum survives

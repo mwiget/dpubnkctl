@@ -1,3 +1,5 @@
+# Description: Two hosts — host1 single control-plane, host2 worker-only, 1 DPU each.
+#
 # Two-host PoC with a single control plane (host1) and a worker-only
 # host (host2). DPUs from both hosts join as additional workers. Smaller
 # blast radius than `two-host-2cp.yaml` — losing host1 takes the cluster

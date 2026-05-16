@@ -1,3 +1,5 @@
+# Description: Single-node lab — 1 host (role=both) with 1 BlueField-3 DPU. Smallest end-to-end shape.
+#
 # Single-node PoC — one bare-metal host running both control plane and
 # worker, with one BlueField-3 DPU joining as an extra worker. Smallest
 # topology dpubnkctl can drive end-to-end; fits a laptop demo or a single

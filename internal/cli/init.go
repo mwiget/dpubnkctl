@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/mwiget/dpubnkctl/examples"
 	"github.com/mwiget/dpubnkctl/internal/embedded"
 	"github.com/mwiget/dpubnkctl/internal/poc"
 )
@@ -21,6 +22,7 @@ func newInitCmd() *cobra.Command {
 	var (
 		dir      string
 		customer string
+		sample   string
 		noGit    bool
 	)
 	cmd := &cobra.Command{
@@ -46,6 +48,12 @@ Initializes a git repo unless --no-git.`,
 			name := args[0]
 			if !validName(name) {
 				return fmt.Errorf("invalid PoC name %q: use [a-z0-9-]+", name)
+			}
+			// Reject an unknown --sample value before we create any
+			// directories — otherwise a typo leaves a half-built PoC
+			// skeleton behind that the operator has to rm by hand.
+			if sample != "" && examples.Find(sample) == nil {
+				return examples.ErrNotFound(sample)
 			}
 			target := dir
 			if target == "" {
@@ -98,11 +106,27 @@ Initializes a git repo unless --no-git.`,
 				return fmt.Errorf("generate DPU password: %w", err)
 			}
 
-			// Write poc.yaml with binary defaults.
-			p := poc.New(name)
-			p.Metadata.Customer = customer
-			if err := savePoC(abs, p, cmd.OutOrStdout()); err != nil {
-				return err
+			// Write poc.yaml. Default path uses binary defaults via
+			// poc.New; --sample swaps in a curated template instead,
+			// patching metadata.name (and metadata.customer if --customer
+			// was set) so the operator doesn't have to. CUSTOMIZE markers
+			// in the body survive — the patch is line-oriented to keep
+			// comments intact.
+			if sample != "" {
+				s := examples.Find(sample)
+				if s == nil {
+					return examples.ErrNotFound(sample)
+				}
+				body := patchSampleMetadata(s.Body, name, customer)
+				if err := os.WriteFile(filepath.Join(abs, "poc.yaml"), []byte(body), 0o600); err != nil {
+					return err
+				}
+			} else {
+				p := poc.New(name)
+				p.Metadata.Customer = customer
+				if err := savePoC(abs, p, cmd.OutOrStdout()); err != nil {
+					return err
+				}
 			}
 
 			// Seed decisions.md with empty template.
@@ -157,6 +181,7 @@ host the customer provides.
 	}
 	cmd.Flags().StringVar(&dir, "dir", "", "target directory (default ./<poc-name>)")
 	cmd.Flags().StringVar(&customer, "customer", "", "customer name to record in poc.yaml metadata")
+	cmd.Flags().StringVar(&sample, "sample", "", "seed poc.yaml from an embedded sample (list via `dpubnkctl samples`)")
 	cmd.Flags().BoolVar(&noGit, "no-git", false, "skip git init")
 	return cmd
 }
@@ -369,4 +394,64 @@ func randomString(n int, charset string) (string, error) {
 		out[i] = charset[idx.Int64()]
 	}
 	return string(out), nil
+}
+
+
+// patchSampleMetadata is the small line-oriented YAML patcher that
+// `dpubnkctl init --sample <name>` uses to put the operator-supplied
+// poc-name (and optional customer) into the seeded poc.yaml.
+//
+// Why not load → mutate → marshal? yaml.v3 strips comments on
+// re-marshal. The samples carry # CUSTOMIZE: markers and a
+// # Description: header that are load-bearing for operators
+// reading the file afterwards; losing them is worse than the
+// fragility of a line-edit.
+//
+// Scope: only patches the first `name:` and first `customer:` key
+// found inside the top-level `metadata:` block. Indentation is
+// preserved so the file diff is minimal.
+func patchSampleMetadata(body, name, customer string) string {
+	lines := strings.Split(body, "\n")
+	inMeta := false
+	doneName := false
+	doneCust := false
+	for i, raw := range lines {
+		trimmed := strings.TrimLeft(raw, " \t")
+		// Leave fully-commented lines alone — that is what keeps the
+		// `# Description:` header + CUSTOMIZE hints intact even if a
+		// future sample author quotes the word "customer" inside one.
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(trimmed, "metadata:"):
+			inMeta = true
+		case inMeta && (doneName && doneCust):
+			return strings.Join(lines, "\n")
+		case inMeta && !doneName && strings.HasPrefix(trimmed, "name:"):
+			lines[i] = patchKVPreserveIndent(raw, "name", name)
+			doneName = true
+		case inMeta && customer != "" && !doneCust && strings.HasPrefix(trimmed, "customer:"):
+			lines[i] = patchKVPreserveIndent(raw, "customer", customer)
+			doneCust = true
+		case inMeta && len(raw) > 0 && raw[0] != ' ' && raw[0] != '\t' && !strings.HasPrefix(trimmed, "metadata:"):
+			// Left margin column at top-level → no longer inside metadata.
+			return strings.Join(lines, "\n")
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// patchKVPreserveIndent rewrites a `<indent>KEY: <value>` line as
+// `<indent>KEY: <newValue>`, keeping any trailing comment intact.
+func patchKVPreserveIndent(line, key, newValue string) string {
+	indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+	// Preserve a trailing inline comment if present.
+	rest := strings.TrimLeft(line, " \t")
+	rest = strings.TrimPrefix(rest, key+":")
+	comment := ""
+	if hash := strings.Index(rest, "#"); hash != -1 {
+		comment = "  " + strings.TrimLeft(rest[hash:], " \t")
+	}
+	return fmt.Sprintf("%s%s: %s%s", indent, key, newValue, comment)
 }

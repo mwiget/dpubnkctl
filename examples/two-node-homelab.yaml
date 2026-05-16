@@ -1,0 +1,138 @@
+# Description: Two-node lab — 1 control plane + 1 worker, 1 BlueField-3 DPU per host (LAG mode).
+#
+# Derived from a working 2-node homelab deploy. Every field marked
+# `# CUSTOMIZE:` must be edited before this validates clean against
+# your environment; everything else is a sane default that travels
+# with the dpubnkctl binary.
+#
+# After extraction:
+#   1. Edit CUSTOMIZE fields below.
+#   2. Run `dpubnkctl validate` to confirm the schema is happy.
+#   3. Run `dpubnkctl discover wizard` if you want to auto-fill DPU
+#      PCI / oob_ip / serial from the live hosts.
+#   4. Drop the F5 license material into keys/ (FAR tgz + JWT).
+#   5. `dpubnkctl e2e --yolo` to run the full pipeline.
+
+apiVersion: dpubnkctl.f5.com/v1alpha1
+kind: PoC
+metadata:
+    name: poc-2node                              # CUSTOMIZE: per-PoC name (lowercase RFC 1123 label, must match --confirm-cluster later)
+    customer: ACME Labs                          # CUSTOMIZE: customer / lab name (free-form)
+    bnk_version: 2.3.0
+
+versions:
+    doca: 3.2.0
+    bfb_image: bf-bundle-3.2.0-113_25.10_ubuntu-24.04_64k_prod.bfb
+    k8s: "1.30"
+    containerd: 1.7.23
+    runc: 1.2.1
+    pause_tag: "3.10"
+
+topology:
+    mode: multi-node
+    lag: true
+    control_plane_count: 1
+    expected_hosts: 2
+    expected_dpus_per_host: 1
+
+network:
+    internal_cidr: 10.244.0.0/16                 # CUSTOMIZE: pod/service CIDR (must not overlap any subnet in use)
+    pod_mtu: 8900
+    dpu_mtu: 9000
+    vlans:
+        - name: external
+          id: 40
+          subnet: 10.40.0.0/24                   # CUSTOMIZE: north-south VLAN subnet
+        - name: internal
+          id: 50
+          subnet: 10.50.0.0/24                   # CUSTOMIZE: east-west / control-plane VLAN subnet
+    cluster_apiserver_address: 10.50.0.66        # CUSTOMIZE: must equal host1's `internal` VLAN IP (single-CP topology)
+    node_ip_role: internal
+
+provisioning:
+    dpu_password_hash_ref: keys/dpu_password.hash
+    dpu_dns:
+        - 8.8.8.8
+        - 1.1.1.1
+    dpu_ntp:
+        - pool.ntp.org
+    bfb_cache_dir: ~/.cache/dpubnkctl/bfb
+
+hosts:
+    - name: host1                                # CUSTOMIZE: host shortname (RFC 1123 label, lowercase)
+      role: both                                 # control-plane + worker on the same node (2-node lab)
+      ssh:
+        address: 192.168.10.11                   # CUSTOMIZE: host mgmt IP — what you SSH to from your jumphost
+        port: 22
+        user: ubuntu
+        key_ref: keys/id_ed25519
+      mgmt_iface: eth0
+      data_plane:
+        parent_iface: ens16f0np0                 # CUSTOMIZE: host-side data-plane PF (run `lspci -d 15b3:` on the host)
+        vlans:
+            - role: external
+              tag: 40
+              ip: 10.40.0.66/24                  # CUSTOMIZE: host1 external-VLAN IP
+            - role: internal
+              tag: 50
+              ip: 10.50.0.66/24                  # CUSTOMIZE: host1 internal-VLAN IP — MUST match cluster_apiserver_address
+      dpus:
+        - pci: "0000:03:00.0"                    # CUSTOMIZE: DPU PCIe BDF (run `dpubnkctl discover host <ip>` to find)
+          mode: dpu
+          lag: true
+          hostname: host1-bf3                    # CUSTOMIZE: DPU OS hostname (lowercase RFC 1123 label)
+          tmfifo_ip: 192.168.100.2/30            # host-local rshim link — keep .2/30 unless your host's rshim conflicts
+          oob_ip: 192.168.10.21/22               # CUSTOMIZE: DPU oob_net0 mgmt IP (DHCP-assigned at first boot)
+          vlans:
+            - role: external
+              tag: 40
+              ip: 10.40.0.5/24                   # CUSTOMIZE: host1-bf3 external IP (used by TMM)
+            - role: internal
+              tag: 50
+              ip: 10.50.0.5/24                   # CUSTOMIZE: host1-bf3 internal IP (used by TMM)
+
+    - name: host2                                # CUSTOMIZE: second host shortname
+      role: worker
+      ssh:
+        address: 192.168.10.12                   # CUSTOMIZE: host2 mgmt IP
+        port: 22
+        user: ubuntu
+        key_ref: keys/id_ed25519
+      mgmt_iface: eth0
+      data_plane:
+        parent_iface: ens16f0np0                 # CUSTOMIZE: same shape as host1 typically
+        vlans:
+            - role: external
+              tag: 40
+              ip: 10.40.0.71/24                  # CUSTOMIZE: host2 external-VLAN IP
+            - role: internal
+              tag: 50
+              ip: 10.50.0.71/24                  # CUSTOMIZE: host2 internal-VLAN IP
+      dpus:
+        - pci: "0000:03:00.0"                    # CUSTOMIZE: host2 DPU PCIe BDF
+          mode: dpu
+          lag: true
+          hostname: host2-bf3                    # CUSTOMIZE: second DPU OS hostname
+          tmfifo_ip: 192.168.100.2/30
+          oob_ip: 192.168.10.22/22               # CUSTOMIZE: host2 DPU oob_net0 mgmt IP
+          vlans:
+            - role: external
+              tag: 40
+              ip: 10.40.0.6/24                   # CUSTOMIZE: host2-bf3 external IP
+            - role: internal
+              tag: 50
+              ip: 10.50.0.6/24                   # CUSTOMIZE: host2-bf3 internal IP
+
+bnk:
+    far_key_ref: keys/f5-far-auth-key.tgz        # drop the F5 FAR tarball here
+    jwt_ref: keys/.jwt                           # drop the F5 TEEM JWT here
+    external_selfip: 10.40.0.100                 # CUSTOMIZE: TMM north-south self-IP (must be in `external` VLAN subnet)
+    internal_selfip: 10.50.0.100                 # CUSTOMIZE: TMM east-west self-IP (must be in `internal` VLAN subnet)
+
+agent:
+    default: claude
+
+bnk_forge:
+    enabled: false                               # CUSTOMIZE: set true if you have bnk-forge cloned locally and want auto-registration
+    repo_path: ~/git/bnk-forge
+    url: https://localhost

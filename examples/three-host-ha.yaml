@@ -1,3 +1,5 @@
+# Description: Three hosts — HA-safe, all role=both (3-node etcd quorum), 1 DPU each.
+#
 # Three-host HA-safe PoC. All three hosts run `role: both` (CP + worker)
 # so etcd has a real 3-node quorum that survives losing any single host.
 # Each host has one BF3 DPU; the 3 DPUs join as additional workers.
