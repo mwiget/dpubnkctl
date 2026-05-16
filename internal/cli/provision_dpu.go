@@ -233,29 +233,56 @@ func runProvisionDPUMulti(ctx context.Context, out io.Writer, hostnames []string
 }
 
 // flashOneJob runs the per-host pipeline. Writes are prefixed if w is a
-// per-host writer (multi-host mode); otherwise it streams plainly.
+// per-host writer (multi-host mode); otherwise it streams plainly. The
+// pipeline is split into five phase helpers so each is ~30 lines and
+// individually readable; flashOneJob is now just the orchestrator.
 func flashOneJob(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j flashJob, bfbPath string, f *provisionDPUFlags, journalMu *sync.Mutex) error {
 	logPath := filepath.Join(repo, "artifacts", j.hostname+"-flash.log")
 
 	fmt.Fprintf(w, "DPU:    %s   mode=%s lag=%v hostname=%s tmfifo=%s\n",
 		j.dpu.PCI, orDash(j.dpu.Mode), j.dpu.LAG, orDash(j.dpu.Hostname), orDash(j.dpu.TmfifoIP))
 
-	// 1. SSH connect.
+	client, err := connectAndCheck(ctx, w, repo, j, journalMu, logPath)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	if err := pushAndFlash(ctx, w, repo, p, j, bfbPath, logPath, client, f.flashTimeout, journalMu); err != nil {
+		return err
+	}
+
+	waitFirstBoot(ctx, w, client, j, f)
+
+	if err := swResetAndWaitSecondBoot(ctx, w, client, j, f, journalMu, repo, logPath); err != nil {
+		return err
+	}
+
+	if err := postFlashVerify(ctx, w, repo, j, f, journalMu, logPath); err != nil {
+		return err
+	}
+
+	journaled(journalMu, repo, j.hostname, j.dpu, "SUCCESS", logPath, "")
+	return nil
+}
+
+// connectAndCheck dials the host (jumphost-aware) and runs the
+// provision readiness probe. Steps 1+2 of the flash pipeline. Returns
+// the open SSH client; caller MUST Close.
+func connectAndCheck(ctx context.Context, w io.Writer, repo string, j flashJob, journalMu *sync.Mutex, logPath string) (*ssh.Client, error) {
 	fmt.Fprintln(w, "[1/7] Connecting to host ...")
 	cfg, err := sshConfigForHost(repo, j.host, 30*time.Second)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	dialCtx, dialCancel := context.WithTimeout(ctx, 30*time.Second)
 	client, err := ssh.Dial(dialCtx, cfg)
 	dialCancel()
 	if err != nil {
-		return fmt.Errorf("ssh dial: %w", err)
+		return nil, fmt.Errorf("ssh dial: %w", err)
 	}
-	defer client.Close()
 	fmt.Fprintln(w, "      ok")
 
-	// 2. Readiness.
 	fmt.Fprintln(w, "[2/7] Running readiness checks ...")
 	probeCtx, pcancel := context.WithTimeout(ctx, 60*time.Second)
 	rep := provision.Check(probeCtx, j.host.Name, provision.AsRunner(client), j.dpu.PCI)
@@ -265,18 +292,26 @@ func flashOneJob(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j fl
 			fmt.Fprintln(w, "      err:", e)
 		}
 		journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (readiness)", logPath, strings.Join(rep.Errors, "; "))
-		return errors.New("readiness check failed")
+		_ = client.Close()
+		return nil, errors.New("readiness check failed")
 	}
 	for _, warning := range rep.Warnings {
 		fmt.Fprintln(w, "      warn:", warning)
 	}
 	fmt.Fprintln(w, "      ok")
+	return client, nil
+}
 
-	// 3. SFTP push (BFB + rendered bf.conf).
+// pushAndFlash uploads BFB + rendered bf.conf and runs bfb-install,
+// streaming output to w + per-host log file. Steps 3+4 of the flash
+// pipeline. Journals fine-grained failure status (push bfb / push
+// bf.conf / transport / exit N) so post-mortem can distinguish them.
+func pushAndFlash(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j flashJob, bfbPath, logPath string, client *ssh.Client, flashTimeout time.Duration, journalMu *sync.Mutex) error {
 	fmt.Fprintln(w, "[3/7] Pushing BFB + bf.conf to host /tmp ...")
 	remoteBFB := "/tmp/" + p.Versions.BFBImage
 	remoteCfg := "/tmp/dpubnkctl-bf.cfg"
 	pushCtx, pushCancel := context.WithTimeout(ctx, 15*time.Minute)
+	defer pushCancel()
 	pushProgress := func(written, total int64) {
 		if total > 0 {
 			fmt.Fprintf(w, "      sftp: %d / %d MiB (%.1f%%)\n",
@@ -284,19 +319,15 @@ func flashOneJob(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j fl
 		}
 	}
 	if err := client.PushFile(pushCtx, bfbPath, remoteBFB, pushProgress); err != nil {
-		pushCancel()
 		journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (push bfb)", logPath, err.Error())
 		return fmt.Errorf("push bfb: %w", err)
 	}
 	if err := client.PushBytes(pushCtx, []byte(j.rendered), remoteCfg); err != nil {
-		pushCancel()
 		journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (push bf.conf)", logPath, err.Error())
 		return fmt.Errorf("push bf.conf: %w", err)
 	}
-	pushCancel()
 	fmt.Fprintf(w, "      pushed %s + %s\n", remoteBFB, remoteCfg)
 
-	// 4. bfb-install — stream to operator + per-host log file.
 	fmt.Fprintln(w, "[4/7] Running bfb-install (5–15 minutes) ...")
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		return err
@@ -308,7 +339,7 @@ func flashOneJob(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j fl
 	defer logFile.Close()
 	tee := io.MultiWriter(prefixWriter{w: w, prefix: "      | "}, logFile)
 	flashCmd := fmt.Sprintf("sudo -n bfb-install --bfb '%s' --config '%s' --rshim rshim0 2>&1", remoteBFB, remoteCfg)
-	flashCtx, flashCancel := context.WithTimeout(ctx, f.flashTimeout)
+	flashCtx, flashCancel := context.WithTimeout(ctx, flashTimeout)
 	exit, runErr := client.RunStream(flashCtx, flashCmd, tee)
 	flashCancel()
 	if runErr != nil {
@@ -320,98 +351,101 @@ func flashOneJob(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j fl
 		return fmt.Errorf("bfb-install exited %d — see %s", exit, logPath)
 	}
 	fmt.Fprintf(w, "      bfb-install completed — log at %s\n", logPath)
+	return nil
+}
 
-	// 5. Wait for first DPU boot. Identify the DPU by hostname in
-	//    progress output — the tmfifo IP is host-local and identical
-	//    across every DPU, so reporting it confuses the operator (and
-	//    any agent relaying messages). The transport is implicitly
-	//    "tmfifo" since that's the only path until oob_net0 comes up.
+// waitFirstBoot polls for DPU SSH reachability after bfb-install's
+// first boot. Non-fatal — swResetAndWaitSecondBoot is the real gate,
+// so a first-boot timeout here is logged as a warning and we still
+// proceed to SW_RESET. Step 5 of the flash pipeline.
+func waitFirstBoot(ctx context.Context, w io.Writer, client *ssh.Client, j flashJob, f *provisionDPUFlags) {
 	dpuIP := tmfifoHostPart(j.dpu.TmfifoIP)
-	dpuName := j.dpu.Hostname
-	if dpuName == "" {
-		dpuName = "DPU"
-	}
+	dpuName := dpuLabel(j.dpu)
 	if f.skipDPUWait || dpuIP == "" {
 		fmt.Fprintln(w, "[5/7] (skipping DPU SSH wait)")
-	} else {
-		fmt.Fprintf(w, "[5/7] Waiting for %s first boot (via tmfifo) ...\n", dpuName)
-		// First-boot wait is heuristic — we SW_RESET afterwards and the
-		// real gate is the post-reset wait in step 7. Stay non-fatal here.
-		if err := waitForDPUSSHWithGrace(ctx, client, dpuIP, f.dpuWaitTimeout); err != nil {
-			fmt.Fprintf(w, "      WARN: first boot wait timed out (%v) — continuing to SW_RESET anyway\n", err)
-		} else {
-			fmt.Fprintf(w, "      %s is reachable.\n", dpuName)
-		}
+		return
 	}
+	fmt.Fprintf(w, "[5/7] Waiting for %s first boot (via tmfifo) ...\n", dpuName)
+	if err := waitForDPUSSHWithGrace(ctx, client, dpuIP, f.dpuWaitTimeout); err != nil {
+		fmt.Fprintf(w, "      WARN: first boot wait timed out (%v) — continuing to SW_RESET anyway\n", err)
+		return
+	}
+	fmt.Fprintf(w, "      %s is reachable.\n", dpuName)
+}
 
-	// 6. Post-flash rshim soft-reset to clear first-boot LAG/firmware race.
-	if !f.skipPostFlashReboot && !f.skipDPUWait {
-		fmt.Fprintln(w, "[6/7] Triggering rshim SW_RESET (clears first-boot LAG race) ...")
-		r := client.Run(ctx, "echo 'SW_RESET 1' | sudo -n tee /dev/rshim0/misc > /dev/null")
-		if !r.OK() {
-			fmt.Fprintf(w, "      WARN: SW_RESET failed (%s) — DPU still up but FW may need manual reset\n", strings.TrimSpace(r.Stderr+r.Stdout))
-		} else {
-			fmt.Fprintln(w, "      reset issued; allowing DPU to reboot ...")
-		}
-	} else {
+// swResetAndWaitSecondBoot issues an rshim SW_RESET on the host and
+// waits for the DPU to come back. The second-boot reachability gate
+// is hard — if the DPU doesn't return, this returns an error and the
+// flash is marked POST_FLASH_UNREACHABLE so downstream phases don't
+// press on into cluster-join time. Steps 6+7 of the flash pipeline.
+func swResetAndWaitSecondBoot(ctx context.Context, w io.Writer, client *ssh.Client, j flashJob, f *provisionDPUFlags, journalMu *sync.Mutex, repo, logPath string) error {
+	dpuIP := tmfifoHostPart(j.dpu.TmfifoIP)
+	dpuName := dpuLabel(j.dpu)
+	skip := f.skipPostFlashReboot || f.skipDPUWait
+	if skip {
 		fmt.Fprintln(w, "[6/7] (skipping post-flash reboot)")
-	}
-
-	// 7. Wait for second DPU boot (after the soft-reset). This IS the
-	//    gate — if the DPU doesn't come back after SW_RESET it's not
-	//    going to come back without operator intervention. Treat the
-	//    timeout (after grace) as a hard failure so journal records
-	//    FAILED and the operator (or e2e) doesn't press on into
-	//    cluster-join time only to discover the DPU is dead.
-	if !f.skipPostFlashReboot && !f.skipDPUWait && dpuIP != "" {
-		fmt.Fprintf(w, "[7/7] Waiting for %s second boot (via tmfifo) ...\n", dpuName)
-		// Give the reset a moment to actually start before polling.
-		time.Sleep(8 * time.Second)
-		if err := waitForDPUSSHWithGrace(ctx, client, dpuIP, f.dpuWaitTimeout); err != nil {
-			journaled(journalMu, repo, j.hostname, j.dpu, "POST_FLASH_UNREACHABLE", logPath, err.Error())
-			return fmt.Errorf("DPU %s never came back after SW_RESET (timeout + grace expired) — check rshim console for kernel panic, BL2 hang, or PCIe reset failure", dpuName)
-		}
-		fmt.Fprintf(w, "      %s is reachable after reboot.\n", dpuName)
-	} else {
 		fmt.Fprintln(w, "[7/7] (no second boot wait)")
+		return nil
 	}
+	fmt.Fprintln(w, "[6/7] Triggering rshim SW_RESET (clears first-boot LAG race) ...")
+	if r := client.Run(ctx, "echo 'SW_RESET 1' | sudo -n tee /dev/rshim0/misc > /dev/null"); !r.OK() {
+		fmt.Fprintf(w, "      WARN: SW_RESET failed (%s) — DPU still up but FW may need manual reset\n", strings.TrimSpace(r.Stderr+r.Stdout))
+	} else {
+		fmt.Fprintln(w, "      reset issued; allowing DPU to reboot ...")
+	}
+	if dpuIP == "" {
+		fmt.Fprintln(w, "[7/7] (no second boot wait — tmfifo_ip empty)")
+		return nil
+	}
+	fmt.Fprintf(w, "[7/7] Waiting for %s second boot (via tmfifo) ...\n", dpuName)
+	// Give the reset a moment to actually start before polling.
+	time.Sleep(8 * time.Second)
+	if err := waitForDPUSSHWithGrace(ctx, client, dpuIP, f.dpuWaitTimeout); err != nil {
+		journaled(journalMu, repo, j.hostname, j.dpu, "POST_FLASH_UNREACHABLE", logPath, err.Error())
+		return fmt.Errorf("DPU %s never came back after SW_RESET (timeout + grace expired) — check rshim console for kernel panic, BL2 hang, or PCIe reset failure", dpuName)
+	}
+	fmt.Fprintf(w, "      %s is reachable after reboot.\n", dpuName)
+	return nil
+}
 
-	// Final readiness gate: confirm the DPU created both SR-IOV
-	// sub-functions (one per PF) that TMM later claims as devices.
-	// The BSP's mlnx-sf systemd unit races kernel module init and
-	// sometimes only creates one — TMM then stays Pending forever on
-	// "Insufficient nvidia.com/bf3_p0_sf1". Fail flash-completion with
-	// a recovery recipe so the operator catches it now rather than
-	// after `deploy cne`. Skip if we couldn't even reach the DPU
-	// (we already warned above) or if the operator opted out of
-	// post-flash waits.
-	if !f.skipPostFlashReboot && !f.skipDPUWait && dpuIP != "" {
+// postFlashVerify enforces the two post-flash invariants:
+//
+//  1. SR-IOV sub-functions (mlx5_core.sf.*) exist for both PFs. Hard
+//     fail — without them TMM stays Pending on `Insufficient
+//     nvidia.com/bf3_p0_sf1`. Skipped if we never reached the DPU.
+//
+//  2. Host-side parent_iface mlx5_core PF is out of ghost state. Soft
+//     fail — host network setup has its own modprobe-reload + PCIe-
+//     rescan recovery, so we just WARN and move on.
+//
+// Skipped entirely when the operator opted out of post-flash waits.
+func postFlashVerify(ctx context.Context, w io.Writer, repo string, j flashJob, f *provisionDPUFlags, journalMu *sync.Mutex, logPath string) error {
+	dpuIP := tmfifoHostPart(j.dpu.TmfifoIP)
+	skip := f.skipPostFlashReboot || f.skipDPUWait || dpuIP == ""
+	if !skip {
 		if err := verifyDPUSubFunctions(ctx, repo, j, w); err != nil {
 			journaled(journalMu, repo, j.hostname, j.dpu, "POST_FLASH_SF_INCOMPLETE", logPath, err.Error())
 			return err
 		}
 	}
-
-	// Settle wait: after the DPU OS is up + SF aux devices are present,
-	// the host-side mlx5_core driver may still be in the post-flash
-	// "ghost PF" state (AGENTS.md #11). For BlueField-3 cards on Proxmox
-	// VFIO-passthrough this is especially dangerous: a host reboot at
-	// this moment can hang the kernel's PCIe reset path and take the
-	// hypervisor down (verified on rome1 with VMs 204/205, May 15).
-	//
-	// Instead of reboot-or-die, just poll the host's parent_iface until
-	// `ip link show` succeeds. In practice the host mlx5_core recovers
-	// on its own within ~10-30s of the DPU completing its second boot;
-	// we just have to wait for it.
 	if !f.skipBF3Settle && j.host.DataPlane != nil && j.host.DataPlane.ParentIface != "" {
 		if err := waitForHostParentIface(ctx, repo, j, f.bf3SettleTimeout, w); err != nil {
 			fmt.Fprintf(w, "      WARN: parent_iface settle wait did not converge: %v\n", err)
 			fmt.Fprintln(w, "      `host network setup` will attempt mlx5_core reload to recover.")
 		}
 	}
-
-	journaled(journalMu, repo, j.hostname, j.dpu, "SUCCESS", logPath, "")
 	return nil
+}
+
+// dpuLabel returns the DPU hostname, or "DPU" if unset. Operator-
+// facing progress lines use this so the tmfifo IP (which is the same
+// across every DPU) doesn't appear and confuse anyone scanning
+// parallel multi-host output.
+func dpuLabel(d *poc.DPU) string {
+	if d != nil && d.Hostname != "" {
+		return d.Hostname
+	}
+	return "DPU"
 }
 
 // waitForHostParentIface polls `ip link show <parent_iface>` on the
