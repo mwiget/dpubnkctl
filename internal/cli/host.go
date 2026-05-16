@@ -120,7 +120,7 @@ func runHostNetworkSetup(ctx context.Context, out io.Writer, f *hostNetworkSetup
 		go func() {
 			defer wg.Done()
 			tag := fmt.Sprintf("[%s]", h.Name)
-			err := setupOneHost(ctx, out, repo, h, p.Network.DPUMTU, f.dryRun, tag)
+			err := setupOneHost(ctx, out, repo, h, p.Network.DPUMTU, f.dryRun, f.yolo, tag)
 			if err != nil {
 				mu.Lock()
 				failures = append(failures, fmt.Sprintf("%s: %v", h.Name, err))
@@ -137,7 +137,7 @@ func runHostNetworkSetup(ctx context.Context, out io.Writer, f *hostNetworkSetup
 	return nil
 }
 
-func setupOneHost(ctx context.Context, out io.Writer, repo string, h *poc.Host, defaultMTU int, dryRun bool, tag string) error {
+func setupOneHost(ctx context.Context, out io.Writer, repo string, h *poc.Host, defaultMTU int, dryRun, yolo bool, tag string) error {
 	dp := h.DataPlane
 	defMTU := dp.MTU
 	if defMTU == 0 {
@@ -165,15 +165,31 @@ func setupOneHost(ctx context.Context, out io.Writer, repo string, h *poc.Host, 
 	if err != nil {
 		return err
 	}
-	defer c.Close()
+	defer func() {
+		if c != nil {
+			c.Close()
+		}
+	}()
 
 	// Pre-flight: catch the post-BFB "ghost PF" state before netplan
 	// blunders into opaque RTNETLINK errors. A successful BFB flash
 	// leaves the host's mlx5_core PF detached from the kernel — the
 	// interface name exists, but `ethtool -i` returns "No such device".
 	//
-	if err := recoverGhostPF(ctx, c, dp.ParentIface, tag, out); err != nil {
+	// When --yolo is set, the last-resort path is to issue `sudo reboot`
+	// (only a fresh boot reliably clears the ghost state on some setups)
+	// and reconnect — see AGENTS.md #29 + #9. The reboot needs the same
+	// SSH config + a new client after the host comes back, so pass them
+	// in. Non-yolo runs keep the historical "reboot manually" error so
+	// an interactive operator isn't surprised by a sudden 5-min reboot.
+	if recovered, err := recoverGhostPF(ctx, c, cfg, dp.ParentIface, tag, yolo, out); err != nil {
 		return err
+	} else if recovered != nil {
+		// Reconnect happened; close the old client (defer above runs at
+		// function exit, but we now have a fresh client for everything
+		// below) and adopt the new one.
+		c.Close()
+		c = recovered
 	}
 
 	const remotePath = "/etc/netplan/70-dpubnkctl-dataplane.yaml"
@@ -228,8 +244,14 @@ func setupOneHost(ctx context.Context, out io.Writer, repo string, h *poc.Host, 
 // We avoid suggesting a host reboot — on Proxmox VFIO-passthrough
 // setups (BF3 attached at PCIe 82:00/c1:00 etc.) a guest reboot
 // during the post-flash window can hang the host kernel's PCIe reset
-// path. Verified on rome1, 2026-05-15. See AGENTS.md #11.
-func recoverGhostPF(ctx context.Context, c *ssh.Client, parentIface, tag string, out io.Writer) error {
+// path. Verified on rome1, 2026-05-15. See AGENTS.md #29.
+// recoverGhostPF returns (newClient, nil) when a reboot happened and a
+// fresh SSH client took the place of `c`. The caller adopts the new
+// client. Returns (nil, nil) on success without reboot; (nil, err) on
+// hard failure. The yolo flag gates the reboot path: only --yolo runs
+// will reboot the host autonomously; interactive runs still get the
+// historical "reboot manually" error.
+func recoverGhostPF(ctx context.Context, c *ssh.Client, cfg ssh.Config, parentIface, tag string, yolo bool, out io.Writer) (*ssh.Client, error) {
 	ethtoolCheck := func() (bool, string) {
 		r := c.Run(ctx, fmt.Sprintf("ethtool -i %s 2>&1", parentIface))
 		combined := strings.TrimSpace(r.Stdout + r.Stderr)
@@ -255,7 +277,7 @@ func recoverGhostPF(ctx context.Context, c *ssh.Client, parentIface, tag string,
 
 	ok, combined := ethtoolCheck()
 	if ok && strings.Contains(combined, "mlx5_core") {
-		return nil
+		return nil, nil
 	}
 
 	// Both recovery tiers run in sequence on the ghost-state path. We
@@ -298,12 +320,68 @@ echo 1 | tee /sys/bus/pci/rescan >/dev/null'`
 	// (or no tier) actually fired.
 	ok, combined = ethtoolCheck()
 	if ok && strings.Contains(combined, "mlx5_core") {
-		return nil
+		return nil, nil
 	}
 	if strings.Contains(combined, "No such device") || strings.TrimSpace(combined) == "" {
-		return fmt.Errorf("parent iface %s did not recover after modprobe reload + PCIe rescan — reboot the host manually (BF3 EMBEDDED_CPU rules out mlxfwreset). See AGENTS.md #11", parentIface)
+		if yolo {
+			// Tier 3 (--yolo only): host reboot. Some setups (post-flash
+			// homelab, May 16) leave stale netlink state that only a
+			// fresh boot clears (AGENTS.md #9). On Proxmox VFIO setups
+			// this risks hanging the hypervisor — but --yolo means the
+			// operator owns the risk; the caller already passed the
+			// `--confirm-cluster <name>` gate.
+			return autoReboot(ctx, c, cfg, parentIface, tag, out)
+		}
+		return nil, fmt.Errorf("parent iface %s did not recover after modprobe reload + PCIe rescan — reboot the host manually (BF3 EMBEDDED_CPU rules out mlxfwreset). See AGENTS.md #29. Pass --yolo to let the tool reboot for you", parentIface)
 	}
-	return fmt.Errorf("ethtool -i %s failed: %s", parentIface, combined)
+	return nil, fmt.Errorf("ethtool -i %s failed: %s", parentIface, combined)
+}
+
+// autoReboot is the --yolo last-resort path when modprobe + PCIe rescan
+// have failed to bring the host's mlx5_core PF back. Issues `sudo
+// reboot`, waits for SSH to come back (up to 5 min), and confirms the
+// parent_iface is live before returning a fresh client. The caller
+// adopts the returned client; the old one is unusable after reboot.
+func autoReboot(ctx context.Context, c *ssh.Client, cfg ssh.Config, parentIface, tag string, out io.Writer) (*ssh.Client, error) {
+	fmt.Fprintf(out, "%s   still ghost after PCIe rescan; --yolo set, issuing 'sudo reboot' ...\n", tag)
+	// `sudo reboot` returns SIGHUP/255 to the SSH client when systemd
+	// kills sshd — that's expected, not a failure. Don't surface the
+	// exit code to the user; the only thing that matters is that the
+	// host actually comes back.
+	_ = c.Run(ctx, "sudo -n reboot")
+	c.Close()
+
+	fmt.Fprintf(out, "%s   host going down — waiting for SSH on %s to return (up to 5 min) ...\n", tag, cfg.Address)
+	deadline := time.Now().Add(5 * time.Minute)
+	// Give the box a moment to actually go down before polling — if we
+	// dial too fast we'll race the still-alive sshd and false-positive.
+	time.Sleep(20 * time.Second)
+	var newClient *ssh.Client
+	for time.Now().Before(deadline) {
+		dialCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		nc, err := ssh.Dial(dialCtx, cfg)
+		cancel()
+		if err == nil {
+			newClient = nc
+			break
+		}
+		time.Sleep(5 * time.Second)
+	}
+	if newClient == nil {
+		return nil, fmt.Errorf("host did not return on SSH within 5 min after reboot — investigate manually (the box may be hung in BIOS/POST or VFIO reset)")
+	}
+	fmt.Fprintf(out, "%s   SSH back; re-checking %s ...\n", tag, parentIface)
+
+	// Re-check parent_iface after the reboot. If it's still ghost, no
+	// amount of further automation will help — surface the failure.
+	r := newClient.Run(ctx, fmt.Sprintf("ethtool -i %s 2>&1", parentIface))
+	combined := strings.TrimSpace(r.Stdout + r.Stderr)
+	if r.OK() && strings.Contains(combined, "mlx5_core") {
+		fmt.Fprintf(out, "%s   %s live after reboot.\n", tag, parentIface)
+		return newClient, nil
+	}
+	newClient.Close()
+	return nil, fmt.Errorf("parent iface %s still in ghost state after reboot — manual diagnosis required (lspci -d 15b3: on the host, check dmesg for mlx5 probe errors)", parentIface)
 }
 
 func renderHostNetplan(parent string, vlans []poc.HostDataPlaneVLAN, defaultMTU int) string {

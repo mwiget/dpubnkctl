@@ -76,7 +76,7 @@ every host's plan is READY.`,
 	cmd.Flags().BoolVar(&f.skipPostFlashReboot, "skip-post-flash-reboot", false, "Skip the rshim SW_RESET after the first DPU boot (workaround retained for diagnostics)")
 	cmd.Flags().BoolVar(&f.skipValidate, "skip-validate", false, "Skip the `dpubnkctl validate` precheck (not recommended)")
 	cmd.Flags().DurationVar(&f.bf3SettleTimeout, "bf3-settle-timeout", 90*time.Second, "After SF-ready, wait up to this for the host-side mlx5_core PF to come back (clears the ghost-PF state without a reboot)")
-	cmd.Flags().BoolVar(&f.skipBF3Settle, "skip-bf3-settle", false, "Don't poll the host-side parent_iface after flash (AGENTS.md #11 host reboot then falls back on the operator)")
+	cmd.Flags().BoolVar(&f.skipBF3Settle, "skip-bf3-settle", false, "Don't poll the host-side parent_iface after flash (AGENTS.md #29 ghost-PF recovery then falls back on the operator)")
 	return cmd
 }
 
