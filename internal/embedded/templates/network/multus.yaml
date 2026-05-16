@@ -194,12 +194,17 @@ spec:
         - "--multus-autoconfig-dir=/host/etc/cni/net.d"
         - "--cni-conf-dir=/host/etc/cni/net.d"
         resources:
+          # Upstream defaults 50Mi req/limit. On a BF3 DPU under BNK 2.3
+          # workload (multiple NADs, lots of SR-IOV bookkeeping) the
+          # kube-multus container OOMKills repeatedly at 50Mi and the
+          # node never gets a working CNI delegate. Bumped to 128Mi
+          # limit / 64Mi request — observed 2026-05-16 on worker1-bf3.
           requests:
             cpu: "100m"
-            memory: "50Mi"
+            memory: "64Mi"
           limits:
             cpu: "100m"
-            memory: "50Mi"
+            memory: "128Mi"
         securityContext:
           privileged: true
         volumeMounts:
