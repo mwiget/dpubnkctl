@@ -19,6 +19,16 @@ const (
 	BFBImage    = "bf-bundle-3.2.0-113_25.10_ubuntu-24.04_64k_prod.bfb"
 	BFBBaseURL  = "https://content.mellanox.com/BlueField/BFBs/Ubuntu24.04"
 
+	// BFBImageSHA256 — when non-empty, EnsureBFB verifies the downloaded
+	// file matches this hex digest before installing. Empty means
+	// integrity is not pinned and the download is trust-on-first-use;
+	// the file is still served over TLS so passive MITM is mitigated,
+	// but content substitution by the origin (or a poc.yaml-overridden
+	// bfb_url) is silent. Populate once the BFB's published checksum
+	// is confirmed against the upstream NVIDIA release notes — leave
+	// empty here pending that confirmation.
+	BFBImageSHA256 = ""
+
 	// K8sVersion is what we tell operators in the docs / cluster status.
 	// K8sVersionPinned is what kubespray's `kube_version` accepts.
 	//

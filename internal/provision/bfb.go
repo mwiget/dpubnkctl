@@ -2,6 +2,8 @@ package provision
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -37,6 +39,9 @@ func EnsureBFB(ctx context.Context, cacheDir, imageName, urlOverride string, pro
 		return "", err
 	}
 	if st, err := os.Stat(dst); err == nil && st.Size() > 0 {
+		if err := verifyBFBChecksum(dst); err != nil {
+			return "", err
+		}
 		return dst, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
@@ -86,10 +91,40 @@ func EnsureBFB(ctx context.Context, cacheDir, imageName, urlOverride string, pro
 	if err := os.Rename(tmp, dst); err != nil {
 		return "", err
 	}
+	if err := verifyBFBChecksum(dst); err != nil {
+		// Rename succeeded but the downloaded content doesn't match the
+		// pinned hash. Remove the bad file so the next run re-downloads.
+		_ = os.Remove(dst)
+		return "", err
+	}
 	if progress != nil {
 		progress(pr.written, total)
 	}
 	return dst, nil
+}
+
+// verifyBFBChecksum hashes the file at path and compares to
+// version.BFBImageSHA256. Returns nil if the pin is empty (unpinned) or
+// the hash matches; an error if the pin is set and doesn't match.
+func verifyBFBChecksum(path string) error {
+	want := strings.TrimSpace(version.BFBImageSHA256)
+	if want == "" {
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return fmt.Errorf("sha256 %s: %w", path, err)
+	}
+	got := hex.EncodeToString(h.Sum(nil))
+	if got != want {
+		return fmt.Errorf("BFB integrity check failed for %s: got sha256=%s, expected %s", path, got, want)
+	}
+	return nil
 }
 
 type progressReader struct {
