@@ -230,6 +230,30 @@ func saveE2EState(repo string, s e2eState) error {
 	return os.WriteFile(filepath.Join(dir, "e2e-state.json"), data, 0o644)
 }
 
+// clearE2EPhases removes the named phase entries from the persisted
+// state file. Called by destroy paths to invalidate phases whose work
+// the destroy just unwound — without this, a subsequent
+// `dpubnkctl e2e --yolo` would skip those phases as "already done".
+// Missing phases (and a missing state file) are noops, not errors.
+func clearE2EPhases(repo string, phases ...string) error {
+	path := filepath.Join(repo, "artifacts", "e2e-state.json")
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil
+	}
+	s := loadE2EState(repo)
+	changed := false
+	for _, p := range phases {
+		if _, ok := s.Phases[p]; ok {
+			delete(s.Phases, p)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return saveE2EState(repo, s)
+}
+
 func runE2E(ctx context.Context, out io.Writer, f *e2eFlags) error {
 	repo, err := resolvePoCDir(f.pocDir)
 	if err != nil {

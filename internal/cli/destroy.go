@@ -156,6 +156,41 @@ func runDestroyAll(ctx context.Context, out io.Writer, f *destroyAllFlags) error
 	if err := savePoC(repo, p, out); err != nil {
 		return err
 	}
+
+	// Invalidate the matching phase entries in artifacts/e2e-state.json
+	// so a subsequent `dpubnkctl e2e --yolo` doesn't skip phases whose
+	// work this destroy just unwound. Mapping mirrors the destroy
+	// pipeline: bnk → deploy-*, dpus → provision+host-network+join,
+	// cluster reset → everything cluster-dependent.
+	stale := map[string]bool{}
+	if !f.skipBNK {
+		stale["deploy-network"] = true
+		stale["deploy-flo"] = true
+		stale["deploy-cne"] = true
+	}
+	if !f.skipDPUs {
+		stale["provision"] = true
+		stale["host-network"] = true
+		stale["cluster-join-dpus"] = true
+	}
+	if !f.skipCluster {
+		stale["cluster-up"] = true
+		stale["cluster-join-dpus"] = true
+		stale["host-network"] = true
+		stale["deploy-network"] = true
+		stale["deploy-flo"] = true
+		stale["deploy-cne"] = true
+	}
+	if len(stale) > 0 {
+		phases := make([]string, 0, len(stale))
+		for ph := range stale {
+			phases = append(phases, ph)
+		}
+		if err := clearE2EPhases(repo, phases...); err != nil {
+			fmt.Fprintf(out, "WARN: failed to clear e2e-state.json: %v\n", err)
+		}
+	}
+
 	appendDestroyJournal(repo, p.Metadata.Name, "ALL", "")
 	fmt.Fprintln(out, "\nDONE.  Re-run `dpubnkctl host network setup` + `cluster up` + `cluster join-dpus` + `deploy ...` to redeploy.")
 	return nil
