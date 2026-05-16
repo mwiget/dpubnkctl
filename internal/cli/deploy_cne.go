@@ -33,24 +33,30 @@ func newDeployCNECmd() *cobra.Command {
 		Short: "Apply CNEInstance + F5SPKVlan CRs + BNK GatewayClass + License CR (DESTRUCTIVE)",
 		Long: `Phase 4b.2 — drives FLO to deploy the BNK data plane:
 
-  1. Apply the License CR (k8s.f5net.com/v1) with the JWT from
-     poc.yaml.bnk.jwt_ref and wait for state=Active. CWC validates
-     against the JWT-derived TEEM endpoint. Must happen BEFORE the
-     CNEInstance — otherwise TMM pods come up unlicensed, their
-     bfd_watcher checks for VLAN config before CWC starts pushing,
-     gives up, and the RoutingDone readiness gate never flips True.
-     (Disconnected-mode customers stay at PendingVerification — run
-     the manual licensing curl ritual from F5's docs to finish.)
-  2. Render + apply CNEInstance with dpu_enabled=true (FLO sees this
-     and starts deploying TMM pods on the labeled DPU nodes).
-  3. Render + apply F5SPKVlan CRs — one per logical VLAN, aggregating
+  1. Render + apply CNEInstance with dpu_enabled=true (FLO sees this,
+     reconciles the BNK CRDs — License, F5SPKVlan — and starts
+     deploying TMM pods on the labeled DPU nodes).
+  2. Render + apply F5SPKVlan CRs — one per logical VLAN, aggregating
      selfip_v4s across every DPU's IP for that VLAN tag. TMM-side
      interfaces auto-numbered 1.1, 1.2, ... in the order they appear
      in the first DPU's poc.yaml.
-  4. Render + apply the GatewayClass (upstream Gateway-API v1) with the
+  3. Render + apply the GatewayClass (upstream Gateway-API v1) with the
      F5 CNE controllerName so FLO picks up Gateway objects that
      reference it.
-  5. Wait for the CNEInstance to report Available.
+  4. Apply the License CR (k8s.f5net.com/v1) with the JWT from
+     poc.yaml.bnk.jwt_ref and wait for state=Active. CWC validates
+     against the JWT-derived TEEM endpoint and starts pushing
+     F5SPKVlan config to TMM only after the license is Active.
+     (Disconnected-mode customers stay at PendingVerification — run
+     the manual licensing curl ritual from F5's docs to finish.)
+  5. Restart the f5-tmm DaemonSet. TMM's bfd_watcher polls once at
+     pod-start for VLAN config; if it runs before CWC has pushed
+     (license not yet Active, or pod started before the F5SPKVlan
+     was applied), it logs "ERROR: vlan name not found" and the
+     RoutingDone readiness gate never flips True. Restarting AFTER
+     License Active + F5SPKVlans applied guarantees bfd_watcher
+     sees config on its first poll. Wizard-deploy May 16 verified.
+  6. Wait for the CNEInstance to report Available.
 
 Required gates:
   --yolo                    acknowledge cluster writes
@@ -107,31 +113,17 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 	}
 	fmt.Fprintln(out, "      ok")
 
-	// 2. License CR. Must come BEFORE CNEInstance — once FLO sees a
-	//    CNEInstance it starts spinning up TMM pods, and TMM's bfd_watcher
-	//    checks for F5SPKVlan config from CWC ~2 minutes after pod start.
-	//    If the license isn't Active by then, CWC hasn't started pushing
-	//    config, bfd_watcher logs "ERROR: vlan name not found", gives up,
-	//    and the RoutingDone readiness gate stays False forever — CNEInstance
-	//    never reaches Available. Verified on the wizard-deploy run, May 16.
-	//
-	//    New in 2.3: JWT no longer lives in FLO chart values; it goes into
-	//    a License custom resource (k8s.f5net.com/v1) in the shared-component
-	//    namespace. CWC watches the CR, validates the JWT, contacts the TEEM
-	//    endpoint derived from the JWT's jku header (so prod vs tst is auto),
-	//    and updates .status.state → PendingVerification → Active.
-	//
-	//    The License CRD is installed by FLO's crd-installer reconciliation,
-	//    same two-step wait (for-create + Established) as F5SPKVlan below
-	//    so the kubectl apply doesn't race the CRD's appearance.
-	if err := applyLicenseCR(ctx, r, repo, p, f, out); err != nil {
-		return err
-	}
-
-	// 3. Apply CNEInstance — FLO watches it and reconciles the downstream
+	// 2. Apply CNEInstance — FLO watches it and reconciles the downstream
 	//    BNK CRs (TMM, dssm, observer, ...). Lands in `default` per the
 	//    cne-instance.yaml.tmpl namespace (commit 0270d78).
-	fmt.Fprintln(out, "[3/6] Rendering + applying CNEInstance ...")
+	//
+	//    CNEInstance's existence is what triggers FLO's crd-installer to
+	//    reconcile the BNK-specific CRDs (License, F5SPKVlan) — confirmed
+	//    May 16 by checking `kubectl get crd | grep k8s.f5net.com` post
+	//    deploy-flo: empty. After CNEInstance, those CRDs appear. So
+	//    License + F5SPKVlan applications must wait for the CRD to exist
+	//    (`--for=create`) before kubectl apply, regardless of step order.
+	fmt.Fprintln(out, "[2/6] Rendering + applying CNEInstance ...")
 	cne, err := deploy.RenderCNEInstance(p)
 	if err != nil {
 		return err
@@ -140,7 +132,7 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 		return err
 	}
 
-	// 4. Apply F5SPKVlan resources. TMM's bfd_watcher needs these to come
+	// 3. Apply F5SPKVlan resources. TMM's bfd_watcher needs these to come
 	//    out of "ERROR: vlan name not found" and let the readiness gates
 	//    (RoutingDone / ConfigurationDone) flip to True. Aggregator keys
 	//    by Role+Tag so a single VLAN spanning both DPUs gets one
@@ -148,12 +140,12 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 	//    VLANs declared (single-host or NIC-mode topologies).
 	//
 	//    The F5SPKVlan CRD is installed by FLO's reconciliation of the
-	//    CNEInstance we applied in step 3. That reconciliation isn't
+	//    CNEInstance we applied in step 2. That reconciliation isn't
 	//    instant — without a wait, `kubectl apply` here loses a race
 	//    with "no matches for kind F5SPKVlan in version k8s.f5net.com/v1
 	//    ensure CRDs are installed first" (caught dogfooding e2e on
 	//    lake1). Wait until the CRD is Established.
-	fmt.Fprintln(out, "[4/6] Rendering + applying F5SPKVlan(s) ...")
+	fmt.Fprintln(out, "[3/6] Rendering + applying F5SPKVlan(s) ...")
 	if vlanCount := dpuVLANCount(p); vlanCount > 0 {
 		// FLO doesn't apply the F5SPKVlan CRD inline with its own helm
 		// release — a `crd-installer` Job inside f5-operators races to
@@ -202,13 +194,13 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 		fmt.Fprintln(out, "      (no DPU VLANs in poc.yaml — skipped)")
 	}
 
-	// 5. Apply the upstream Gateway-API GatewayClass with the F5 CNE
+	// 4. Apply the upstream Gateway-API GatewayClass with the F5 CNE
 	//    controllerName. FLO's f5-cne-controller registers itself under
 	//    this name; once the GatewayClass exists, downstream Gateway
 	//    objects can reference it via gatewayClassName. The historical
 	//    BNKGatewayClassConfig CRD this used to also apply does not
 	//    exist in BNK 2.2.0 — see AGENTS.md #20.
-	fmt.Fprintln(out, "[5/6] Rendering + applying BNK GatewayClass ...")
+	fmt.Fprintln(out, "[4/6] Rendering + applying BNK GatewayClass ...")
 	gwc, err := deploy.RenderGatewayClass("")
 	if err != nil {
 		return err
@@ -218,7 +210,45 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 	}
 	fmt.Fprintln(out, "      applied.")
 
-	// 6. Wait for CNEInstance Available. The CNEInstance reports its
+	// 5. License CR. New in 2.3: the JWT no longer lives in FLO chart
+	//    values; it goes into a License custom resource (k8s.f5net.com/v1)
+	//    in the shared-component namespace. CWC watches the CR, validates
+	//    the JWT, contacts the TEEM endpoint derived from the JWT's jku
+	//    header (so prod vs tst is auto), and updates .status.state →
+	//    PendingVerification → Active. The License CRD is installed by
+	//    FLO's crd-installer reconciliation (triggered by the CNEInstance
+	//    we applied in step 2 — confirmed empirically May 16, the License
+	//    CRD does NOT exist before a CNEInstance triggers reconciliation).
+	if err := applyLicenseCR(ctx, r, repo, p, f, out); err != nil {
+		return err
+	}
+
+	// 6. Restart the f5-tmm DaemonSet. TMM's bfd_watcher polls for VLAN
+	//    config once at pod-start; if it ran before License was Active
+	//    (CWC starts pushing F5SPKVlan config only after license check)
+	//    or before F5SPKVlans were applied, it logs "ERROR: vlan name
+	//    not found" and the RoutingDone readiness gate stays False
+	//    forever. Restarting now — with License Active + F5SPKVlans
+	//    applied — guarantees bfd_watcher sees the full config on its
+	//    first poll. Wizard-deploy May 16 verified: without the restart,
+	//    CNEInstance never reaches Available because TMM stays at 1/2
+	//    gates; with the restart, both pods converge in ~30s–5m.
+	//
+	//    Skip the restart if DPUs declared no VLANs (NIC-mode / no DPU
+	//    data plane) — TMM still runs but there's no F5SPKVlan to push
+	//    and RoutingDone goes True on its own.
+	if dpuVLANCount(p) > 0 {
+		fmt.Fprintln(out, "[6/6] Restarting f5-tmm DaemonSet (race-breaker for RoutingDone gate) ...")
+		if err := r.Kubectl(ctx, "rollout", "restart", "-n", "default",
+			"daemonset/f5-tmm"); err != nil {
+			return fmt.Errorf("rollout restart f5-tmm: %w", err)
+		}
+		fmt.Fprintln(out, "      restart issued; CNEInstance-Available wait below covers the re-readiness window.")
+	} else {
+		fmt.Fprintln(out, "[6/6] No DPU VLANs — skipping f5-tmm restart.")
+	}
+
+	// 7. Wait for CNEInstance Available. The CNEInstance reports its
 	//    overall readiness via the `Available` condition (NOT `Ready`
 	//    — that condition name does not exist on CNEInstance). Available
 	//    flips True when every component condition (F5Tmm, NodeLabeler,
@@ -227,21 +257,15 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 	//    CSRC, …) reaches True. The CNEInstance lives in `default`
 	//    (cne-instance.yaml.tmpl namespace), not f5-operators.
 	//
-	//    With the License applied first (step 2), TMM pods come up
-	//    licensed; CWC pushes F5SPKVlan config; bfd_watcher succeeds on
-	//    its first poll; RoutingDone flips True; Available follows.
-	//    Without the reorder, this wait was the 15-min trap that left
-	//    TMM stuck — see the comment in step 2.
-	fmt.Fprintln(out, "[6/6] Waiting for CNEInstance Available ...")
+	//    With License applied + F5SPKVlans applied + f5-tmm restarted
+	//    (steps 3-6), this wait should converge in 5-10 min. The hard
+	//    error replaces the historical WARN-on-timeout behaviour that
+	//    let the May 16 wizard run claim "DONE" while TMM was actually
+	//    stuck.
+	fmt.Fprintln(out, "      Waiting for CNEInstance Available (DaemonSet restart needs ~5 min to converge) ...")
 	fmt.Fprintln(out, "      Requires Multus CNI + NADs in default (sf-external, sf-internal — installed by `deploy network`).")
 	if err := r.Wait(ctx, "default", "Available",
 		"cneinstance/bnk-instance", f.cneReadyTimeout); err != nil {
-		// Hard error now that License runs before CNEInstance — if CNEInstance
-		// doesn't flip Available, something deeper is wrong (license stuck
-		// at PendingVerification, Multus DS broken, TMM pull-secret bad, ...)
-		// and downstream phases can't proceed anyway. The prior WARN-only
-		// behavior is what allowed the wizard-deploy May 16 run to report
-		// "DONE" while TMM was in fact never Ready.
 		return fmt.Errorf("CNEInstance not Available within %s — check `kubectl get cneinstance -A` and the per-component conditions in its .status. Common causes: license stuck (kubectl -n f5-cne-core get license), Multus DS not Ready (kubectl -n kube-system get ds kube-multus-ds), TMM image pull (kubectl -n default describe pod -l app=f5-tmm): %w", f.cneReadyTimeout, err)
 	}
 	fmt.Fprintln(out, "      CNEInstance Available.")
@@ -264,7 +288,7 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 func applyLicenseCR(ctx context.Context, r *deploy.Runner, repo string, p *poc.PoC, f *deployCNEFlags, out io.Writer) error {
 	jwtPath := resolveRef(repo, p.BNK.JWTRef)
 	if _, err := os.Stat(jwtPath); err != nil {
-		fmt.Fprintf(out, "[2/6] License CR — JWT not at %s, skipping (deploy flo will have warned)\n", jwtPath)
+		fmt.Fprintf(out, "[5/6] License CR — JWT not at %s, skipping (deploy flo will have warned)\n", jwtPath)
 		fmt.Fprintln(out, "      WARN: TMM will come up unlicensed; bfd_watcher will fail and CNEInstance will not reach Available.")
 		return nil
 	}
@@ -272,7 +296,7 @@ func applyLicenseCR(ctx context.Context, r *deploy.Runner, repo string, p *poc.P
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "[2/6] Applying License CR (mode=%s) ...\n", f.licenseMode)
+	fmt.Fprintf(out, "[5/6] Applying License CR (mode=%s) ...\n", f.licenseMode)
 	fmt.Fprintln(out, "      Waiting for license CRD ...")
 	if err := r.Kubectl(ctx, "wait", "--for=create",
 		"crd/licenses.k8s.f5net.com", "--timeout=3m"); err != nil {
@@ -310,7 +334,14 @@ func applyLicenseCR(ctx context.Context, r *deploy.Runner, repo string, p *poc.P
 	if err := os.Chmod(licenseRendered, 0o600); err != nil {
 		return err
 	}
-	if err := r.Apply(ctx, licenseYAML); err != nil {
+	// CWC creates a ResourceQuota (f5-single-license-quota) when it
+	// reconciles the License CRD. The quota controller takes a moment
+	// to populate `status.used`; until then, kubectl apply fails with
+	// "forbidden: status unknown for quota: f5-single-license-quota".
+	// Verified on the wizard-deploy May 16 redeploy: quota created at
+	// T+0, License apply at T+0 hit "status unknown", retry at T+5min
+	// succeeded. Bounded retry: ~20 attempts × 5s = 100s total.
+	if err := applyWithQuotaRetry(ctx, r, licenseYAML, "f5-single-license-quota", 20, 5*time.Second, out); err != nil {
 		return fmt.Errorf("apply license CR: %w", err)
 	}
 	fmt.Fprintln(out, "      License CR applied; waiting for state=Active ...")
@@ -384,4 +415,28 @@ func applyWithWebhookRetry(ctx context.Context, r *deploy.Runner, repo, relPath,
 		time.Sleep(interval)
 	}
 	return fmt.Errorf("webhook %s never came up: %w", webhookName, applyErr)
+}
+
+// applyWithQuotaRetry handles the specific "forbidden: status unknown
+// for quota: <name>" race: when CWC creates a ResourceQuota and its
+// status.used hasn't been computed yet, the kube-apiserver denies
+// creates against that resource type. The quota controller populates
+// it asynchronously within a few seconds to a few minutes. Retries
+// just that error class; every other apply error surfaces immediately.
+func applyWithQuotaRetry(ctx context.Context, r *deploy.Runner, manifest, quotaName string, attempts int, interval time.Duration, out io.Writer) error {
+	var applyErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		applyErr = r.Apply(ctx, manifest)
+		if applyErr == nil {
+			return nil
+		}
+		msg := applyErr.Error()
+		if !strings.Contains(msg, "status unknown for quota") || !strings.Contains(msg, quotaName) {
+			return applyErr
+		}
+		fmt.Fprintf(out, "      quota %s status not yet computed, retrying in %s (attempt %d/%d) ...\n",
+			quotaName, interval, attempt, attempts)
+		time.Sleep(interval)
+	}
+	return fmt.Errorf("quota %s status never populated: %w", quotaName, applyErr)
 }
