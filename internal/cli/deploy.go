@@ -171,15 +171,11 @@ func resolveRef(repo, ref string) string {
 }
 
 func appendDeployJournal(repo, pocName, jwtType, status, errMsg string) {
-	date := time.Now().UTC().Format("2006-01-02")
-	path := filepath.Join(repo, "journal", date+"-deploy.md")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := openJournal(repo, "deploy", "deploy — "+status)
 	if err != nil {
 		return
 	}
 	defer f.Close()
-	fmt.Fprintf(f, "## lab-tech: deploy — %s\n", status)
-	fmt.Fprintf(f, "- Time: %s\n", time.Now().UTC().Format(time.RFC3339))
 	fmt.Fprintf(f, "- PoC:  %s\n", pocName)
 	fmt.Fprintf(f, "- JWT type: %s\n", jwtType)
 	if errMsg != "" {

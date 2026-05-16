@@ -716,15 +716,12 @@ func waitForDPUSSH(ctx context.Context, host *ssh.Client, dpuIP string) error {
 }
 
 func appendFlashJournal(repo, hostname string, dpu *poc.DPU, status, logPath, errMsg string) {
-	date := time.Now().UTC().Format("2006-01-02")
-	path := filepath.Join(repo, "journal", date+"-provision.md")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	header := fmt.Sprintf("flash DPU %s on %s — %s", dpu.PCI, hostname, status)
+	f, err := openJournal(repo, "provision", header)
 	if err != nil {
 		return
 	}
 	defer f.Close()
-	fmt.Fprintf(f, "## lab-tech: flash DPU %s on %s — %s\n", dpu.PCI, hostname, status)
-	fmt.Fprintf(f, "- Time: %s\n", time.Now().UTC().Format(time.RFC3339))
 	fmt.Fprintf(f, "- DPU: pci=%s mode=%s lag=%v hostname=%s tmfifo=%s\n",
 		dpu.PCI, orDash(dpu.Mode), dpu.LAG, orDash(dpu.Hostname), orDash(dpu.TmfifoIP))
 	fmt.Fprintf(f, "- bfb-install log: %s\n", strings.TrimPrefix(logPath, repo+string(filepath.Separator)))

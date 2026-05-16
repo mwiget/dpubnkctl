@@ -383,15 +383,12 @@ func redactToken(joinCmd string) string {
 }
 
 func appendJoinJournal(repo, pocName string, jobs []dpuJob) {
-	date := time.Now().UTC().Format("2006-01-02")
-	path := filepath.Join(repo, "journal", date+"-cluster.md")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	header := fmt.Sprintf("join-dpus — %d DPU(s) joined cluster", len(jobs))
+	f, err := openJournal(repo, "cluster", header)
 	if err != nil {
 		return
 	}
 	defer f.Close()
-	fmt.Fprintf(f, "## lab-tech: join-dpus — %d DPU(s) joined cluster\n", len(jobs))
-	fmt.Fprintf(f, "- Time: %s\n", time.Now().UTC().Format(time.RFC3339))
 	fmt.Fprintf(f, "- PoC:  %s\n", pocName)
 	for _, j := range jobs {
 		fmt.Fprintf(f, "- %s (host %s, dpu %s, tmfifo %s) — labeled app=f5-tmm, tainted dpu=true:NoSchedule\n",

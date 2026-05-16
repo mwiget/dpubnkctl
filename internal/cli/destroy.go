@@ -601,15 +601,11 @@ func destroyClusterReset(ctx context.Context, repo string, p *poc.PoC, out io.Wr
 
 // appendDestroyJournal mirrors appendDeployJournal for tear-down events.
 func appendDestroyJournal(repo, pocName, scope, errMsg string) {
-	date := time.Now().UTC().Format("2006-01-02")
-	path := filepath.Join(repo, "journal", date+"-destroy.md")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := openJournal(repo, "destroy", "destroy — scope="+scope)
 	if err != nil {
 		return
 	}
 	defer f.Close()
-	fmt.Fprintf(f, "## lab-tech: destroy — scope=%s\n", scope)
-	fmt.Fprintf(f, "- Time: %s\n", time.Now().UTC().Format(time.RFC3339))
 	fmt.Fprintf(f, "- PoC:  %s\n", pocName)
 	if errMsg != "" {
 		fmt.Fprintf(f, "- Error: %s\n", errMsg)

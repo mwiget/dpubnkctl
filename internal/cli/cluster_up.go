@@ -405,15 +405,11 @@ func preflightVLANIPs(ctx context.Context, repo string, plan cluster.Plan, role 
 }
 
 func appendClusterJournal(repo, pocName, status, logPath, errMsg string) {
-	date := time.Now().UTC().Format("2006-01-02")
-	path := filepath.Join(repo, "journal", date+"-cluster.md")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := openJournal(repo, "cluster", "cluster up — "+status)
 	if err != nil {
 		return
 	}
 	defer f.Close()
-	fmt.Fprintf(f, "## lab-tech: cluster up — %s\n", status)
-	fmt.Fprintf(f, "- Time: %s\n", time.Now().UTC().Format(time.RFC3339))
 	fmt.Fprintf(f, "- PoC:  %s\n", pocName)
 	fmt.Fprintf(f, "- kubespray log: %s\n", strings.TrimPrefix(logPath, repo+string(filepath.Separator)))
 	if errMsg != "" {
