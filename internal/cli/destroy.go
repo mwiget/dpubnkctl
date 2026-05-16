@@ -530,35 +530,11 @@ func destroyDPUs(ctx context.Context, repo string, p *poc.PoC, out io.Writer, pe
 }
 
 func resetOneDPU(ctx context.Context, repo string, h *poc.Host, d *poc.DPU, timeout time.Duration, w io.Writer) error {
-	if d.TmfifoIP == "" {
-		return fmt.Errorf("dpu %s missing tmfifo_ip in poc.yaml", d.Hostname)
+	cfg, err := dpuSSHConfig(repo, h, d)
+	if err != nil {
+		return fmt.Errorf("dpu %s: %w", d.Hostname, err)
 	}
-	dpuIP := strings.SplitN(d.TmfifoIP, "/", 2)[0]
-
-	hostKey := h.SSH.KeyRef
-	if !filepath.IsAbs(hostKey) {
-		hostKey = filepath.Join(repo, hostKey)
-	}
-	known := filepath.Join(repo, "inventory", "known_hosts")
-
-	// Same DPU SSH topology as cluster join-dpus: skip known_hosts on
-	// the DPU side (every DPU answers at 192.168.100.2 — collisions),
-	// trust the jumphost via known_hosts.
-	cfg := ssh.Config{
-		Address: dpuIP,
-		Port:    22,
-		User:    "ubuntu",
-		KeyPath: hostKey,
-		Timeout: 30 * time.Second,
-		Jumphost: &ssh.Config{
-			Address:    h.SSH.Address,
-			Port:       h.SSH.Port,
-			User:       h.SSH.User,
-			KeyPath:    hostKey,
-			KnownHosts: known,
-			Timeout:    30 * time.Second,
-		},
-	}
+	dpuIP := cfg.Address
 
 	fmt.Fprintf(w, "ssh ubuntu@%s via %s ...\n", dpuIP, h.SSH.Address)
 	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)

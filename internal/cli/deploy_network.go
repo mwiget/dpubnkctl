@@ -333,28 +333,17 @@ func restartContainerdEverywhere(ctx context.Context, repo string, p *poc.PoC, o
 		}
 		jobs = append(jobs, job{label: h.Name, cfg: cfg})
 		// DPUs reached via ProxyJump through their host.
-		hostKey := h.SSH.KeyRef
-		if !filepath.IsAbs(hostKey) {
-			hostKey = filepath.Join(repo, hostKey)
-		}
-		known := filepath.Join(repo, "inventory", "known_hosts")
 		for j := range h.DPUs {
 			d := &h.DPUs[j]
 			if d.TmfifoIP == "" || d.Hostname == "" {
 				continue
 			}
-			dpuIP := strings.SplitN(d.TmfifoIP, "/", 2)[0]
-			jobs = append(jobs, job{
-				label: d.Hostname,
-				cfg: ssh.Config{
-					Address: dpuIP, Port: 22, User: "ubuntu",
-					KeyPath: hostKey, Timeout: 30 * time.Second,
-					Jumphost: &ssh.Config{
-						Address: h.SSH.Address, Port: h.SSH.Port, User: h.SSH.User,
-						KeyPath: hostKey, KnownHosts: known, Timeout: 30 * time.Second,
-					},
-				},
-			})
+			dpuCfg, err := dpuSSHConfig(repo, h, d)
+			if err != nil {
+				fmt.Fprintf(out, "      WARN: skip dpu %s (ssh cfg: %v)\n", d.Hostname, err)
+				continue
+			}
+			jobs = append(jobs, job{label: d.Hostname, cfg: dpuCfg})
 		}
 	}
 	var (

@@ -281,32 +281,9 @@ const (
 )
 
 func joinOneDPU(ctx context.Context, repo string, j dpuJob, jc *cluster.JoinCommand, nodeIP, k8sMinor string, f *clusterJoinDPUsFlags, w io.Writer) (joinOutcome, error) {
-	dpuIP := strings.SplitN(j.dpu.TmfifoIP, "/", 2)[0]
-
-	hostKey := j.host.SSH.KeyRef
-	if !filepath.IsAbs(hostKey) {
-		hostKey = filepath.Join(repo, hostKey)
-	}
-	known := filepath.Join(repo, "inventory", "known_hosts")
-
-	// DPU connections deliberately skip known_hosts: every DPU answers
-	// at the same tmfifo IP (192.168.100.2) but is a different machine,
-	// so a shared known_hosts collides on the second host. The trust
-	// boundary is the jumphost (which IS verified via known_hosts).
-	cfg := ssh.Config{
-		Address: dpuIP,
-		Port:    22,
-		User:    "ubuntu",
-		KeyPath: hostKey,
-		Timeout: 30 * time.Second,
-		Jumphost: &ssh.Config{
-			Address:    j.host.SSH.Address,
-			Port:       j.host.SSH.Port,
-			User:       j.host.SSH.User,
-			KeyPath:    hostKey,
-			KnownHosts: known,
-			Timeout:    30 * time.Second,
-		},
+	cfg, err := dpuSSHConfig(repo, j.host, j.dpu)
+	if err != nil {
+		return joinOutcomeJoined, err
 	}
 
 	fmt.Fprintf(w, "ssh %s (tmfifo via %s) ...\n", j.dpu.Hostname, j.host.Name)

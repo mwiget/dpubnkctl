@@ -514,32 +514,6 @@ func verifyDPUSubFunctions(ctx context.Context, repo string, j flashJob, w io.Wr
 	}
 }
 
-// dpuSSHConfig builds an ssh.Config for connecting to a DPU through
-// its host (ProxyJump). Mirrors the pattern in cluster_join_dpus.go.
-func dpuSSHConfig(repo string, host *poc.Host, dpu *poc.DPU) (ssh.Config, error) {
-	if dpu == nil || dpu.TmfifoIP == "" {
-		return ssh.Config{}, fmt.Errorf("dpu has no tmfifo_ip")
-	}
-	dpuIP := strings.SplitN(dpu.TmfifoIP, "/", 2)[0]
-	hostKey := host.SSH.KeyRef
-	if !filepath.IsAbs(hostKey) {
-		hostKey = filepath.Join(repo, hostKey)
-	}
-	return ssh.Config{
-		Address: dpuIP,
-		Port:    22,
-		User:    "ubuntu",
-		KeyPath: hostKey,
-		Timeout: 30 * time.Second,
-		Jumphost: &ssh.Config{
-			Address: host.SSH.Address,
-			Port:    host.SSH.Port,
-			User:    host.SSH.User,
-			KeyPath: hostKey,
-			Timeout: 30 * time.Second,
-		},
-	}, nil
-}
 
 // perHostWriter returns a writer that prefixes lines with [hostname] when
 // running multi-host (so parallel streams are tellable apart). For
