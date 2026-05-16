@@ -79,9 +79,12 @@ var safeIfaceRe = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,15}$`)
 var safeBFBNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+\.bfb$`)
 
 // safePCIRe gates DPU.PCI — flows into `mlxconfig -d %s` inside the
-// readiness probe and `mlx5_core` driver paths. Canonical PCIe BDF
-// shape: `DDDD:BB:DD.F`, hex segments + a `.<func>` suffix.
-var safePCIRe = regexp.MustCompile(`^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$`)
+// readiness probe and `mlx5_core` driver paths. Linux PCIe BDF accepts
+// both the full domain-prefixed form (`DDDD:BB:DD.F`, e.g.
+// `0000:03:00.0`) and the short form without the domain
+// (`BB:DD.F`, e.g. `00:10.0`). lspci often emits the short form, and
+// `mlxconfig -d <bdf>` handles both, so accept either.
+var safePCIRe = regexp.MustCompile(`^([0-9a-fA-F]{4}:)?[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$`)
 
 // defaultInternalCIDR is the placeholder that ships in `dpubnkctl init`
 // — it's a documented-safe RFC 2544 default, but the SE should confirm

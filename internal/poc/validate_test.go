@@ -362,8 +362,8 @@ func TestValidate_ShellSafeFields(t *testing.T) {
 			func(p *PoC) { p.Versions.BFBImage = "x'$(curl|sh)'.bfb" }},
 		{"pci_inject", "dpu.pci with semicolon", "pci",
 			func(p *PoC) { p.Hosts[0].DPUs[0].PCI = "0000:03:00.0; rm -rf /" }},
-		{"pci_malformed", "dpu.pci missing domain", "pci",
-			func(p *PoC) { p.Hosts[0].DPUs[0].PCI = "03:00.0" }},
+		{"pci_garbage", "dpu.pci entirely malformed", "pci",
+			func(p *PoC) { p.Hosts[0].DPUs[0].PCI = "not-a-bdf" }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -381,16 +381,22 @@ func TestValidate_ShellSafeFields(t *testing.T) {
 }
 
 // TestValidate_ShellSafeFieldsHappy makes sure the new gates don't
-// reject the canonical good shapes used in real homelabs.
+// reject the canonical good shapes used in real homelabs — including
+// the short PCIe BDF form lspci emits by default (no domain prefix).
 func TestValidate_ShellSafeFieldsHappy(t *testing.T) {
-	p, repo := goodPoC(t)
-	p.Hosts[0].Name = "worker1"
-	p.Hosts[0].DPUs[0].Hostname = "worker1-bf3"
-	p.Hosts[0].DataPlane.ParentIface = "ens16f0np0"
-	p.Versions.BFBImage = "bf-bundle-3.2.0-113_25.10_ubuntu-24.04_64k_prod.bfb"
-	r := Validate(p, repo)
-	if !r.Valid() {
-		t.Errorf("standard names should validate clean; got: %v", r.Errors)
+	for _, pci := range []string{"0000:03:00.0", "00:10.0"} {
+		t.Run("pci="+pci, func(t *testing.T) {
+			p, repo := goodPoC(t)
+			p.Hosts[0].Name = "worker1"
+			p.Hosts[0].DPUs[0].Hostname = "worker1-bf3"
+			p.Hosts[0].DPUs[0].PCI = pci
+			p.Hosts[0].DataPlane.ParentIface = "ens16f0np0"
+			p.Versions.BFBImage = "bf-bundle-3.2.0-113_25.10_ubuntu-24.04_64k_prod.bfb"
+			r := Validate(p, repo)
+			if !r.Valid() {
+				t.Errorf("standard names should validate clean; got: %v", r.Errors)
+			}
+		})
 	}
 }
 
