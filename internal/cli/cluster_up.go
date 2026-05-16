@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -264,41 +263,7 @@ func runClusterUp(ctx context.Context, out io.Writer, f *clusterUpFlags) error {
 // preCreateKubeDir SSHes to every host (in parallel) and ensures
 // /etc/kubernetes exists. Aggregates errors.
 func preCreateKubeDir(ctx context.Context, repo string, plan cluster.Plan) error {
-	var (
-		wg      sync.WaitGroup
-		mu      sync.Mutex
-		failures []string
-	)
-	for name, h := range plan.HostByName {
-		name, h := name, h
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			cfg, err := sshConfigForHost(repo, h, 15*time.Second)
-			if err != nil {
-				mu.Lock()
-				failures = append(failures, fmt.Sprintf("%s: %v", name, err))
-				mu.Unlock()
-				return
-			}
-			dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-			c, err := ssh.Dial(dialCtx, cfg)
-			cancel()
-			if err != nil {
-				mu.Lock()
-				failures = append(failures, fmt.Sprintf("%s: ssh dial: %v", name, err))
-				mu.Unlock()
-				return
-			}
-			defer c.Close()
-			if r := c.Run(ctx, "sudo -n mkdir -p /etc/kubernetes"); !r.OK() {
-				mu.Lock()
-				failures = append(failures, fmt.Sprintf("%s: mkdir: %s", name, strings.TrimSpace(r.Stderr+r.Stdout)))
-				mu.Unlock()
-			}
-		}()
-	}
-	wg.Wait()
+	failures := runOnHostsParallel(ctx, repo, plan, "sudo -n mkdir -p /etc/kubernetes", nil)
 	if len(failures) > 0 {
 		return fmt.Errorf("%d host(s) failed: %s", len(failures), strings.Join(failures, "; "))
 	}
@@ -334,43 +299,9 @@ func fetchKubeconfig(ctx context.Context, repo string, host *poc.Host, dst strin
 // (Reproduced on lake1 worker2 — restart flips the node to Ready in
 // seconds.) Idempotent + cheap.
 func restartContainerdOnHosts(ctx context.Context, repo string, plan cluster.Plan, out io.Writer) error {
-	var (
-		wg       sync.WaitGroup
-		mu       sync.Mutex
-		failures []string
-	)
-	for name, h := range plan.HostByName {
-		name, h := name, h
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			cfg, err := sshConfigForHost(repo, h, 15*time.Second)
-			if err != nil {
-				mu.Lock()
-				failures = append(failures, fmt.Sprintf("%s: ssh cfg: %v", name, err))
-				mu.Unlock()
-				return
-			}
-			dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-			c, err := ssh.Dial(dialCtx, cfg)
-			cancel()
-			if err != nil {
-				mu.Lock()
-				failures = append(failures, fmt.Sprintf("%s: ssh dial: %v", name, err))
-				mu.Unlock()
-				return
-			}
-			defer c.Close()
-			if r := c.Run(ctx, "sudo -n systemctl restart containerd"); !r.OK() {
-				mu.Lock()
-				failures = append(failures, fmt.Sprintf("%s: restart containerd: %s", name, strings.TrimSpace(r.Stderr+r.Stdout)))
-				mu.Unlock()
-				return
-			}
-			fmt.Fprintf(out, "      | %s containerd restarted\n", name)
-		}()
-	}
-	wg.Wait()
+	failures := runOnHostsParallel(ctx, repo, plan, "sudo -n systemctl restart containerd", func(name string) {
+		fmt.Fprintf(out, "      | %s containerd restarted\n", name)
+	})
 	if len(failures) > 0 {
 		return fmt.Errorf("%d host(s) failed containerd restart: %s", len(failures), strings.Join(failures, "; "))
 	}
