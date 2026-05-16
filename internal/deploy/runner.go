@@ -14,7 +14,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -37,13 +36,12 @@ func (r *Runner) CheckTools(ctx context.Context) error {
 	if _, err := os.Stat(r.KubeconfigPath); err != nil {
 		return fmt.Errorf("kubeconfig %s: %w", r.KubeconfigPath, err)
 	}
-	for _, img := range []string{version.K8sToolsImage, version.K8sToolsImage} {
-		fmt.Fprintf(r.Out, "      pulling %s ...\n", img)
-		c := exec.CommandContext(ctx, "docker", "pull", img)
-		c.Stdout, c.Stderr = io.Discard, io.Discard
-		if err := c.Run(); err != nil {
-			return fmt.Errorf("docker pull %s: %w", img, err)
-		}
+	img := version.K8sToolsImage
+	fmt.Fprintf(r.Out, "      pulling %s ...\n", img)
+	c := exec.CommandContext(ctx, "docker", "pull", img)
+	c.Stdout, c.Stderr = io.Discard, io.Discard
+	if err := c.Run(); err != nil {
+		return fmt.Errorf("docker pull %s: %w", img, err)
 	}
 	return nil
 }
@@ -305,11 +303,3 @@ func (r *Runner) helmArgs(helmArgs ...string) []string {
 	return append(base, helmArgs...)
 }
 
-// guards against accidental absolute-path duplication when the operator
-// passes a relative kubeconfig path.
-func (r *Runner) absKubeconfig(repo string) (string, error) {
-	if filepath.IsAbs(r.KubeconfigPath) {
-		return r.KubeconfigPath, nil
-	}
-	return filepath.Abs(filepath.Join(repo, r.KubeconfigPath))
-}

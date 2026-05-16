@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -629,7 +628,6 @@ func uniqueOrdered(in []string) []string {
 			out = append(out, s)
 		}
 	}
-	sort.Strings(in) // stable for tests; preserves cmd ordering above
 	return out
 }
 

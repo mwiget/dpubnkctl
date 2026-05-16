@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -340,5 +339,3 @@ func indent(s, prefix string) string {
 	return b.String()
 }
 
-// _ keeps file-level import of os used by potential future variants.
-var _ = os.Stat

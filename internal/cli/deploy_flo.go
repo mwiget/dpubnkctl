@@ -282,13 +282,6 @@ func readJWT(path string) (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-// floChartVersionLabel returns p.Versions.FLOChart or a placeholder when
-// it hasn't been resolved yet — the release-manifest workflow populates
-// it during `deploy flo`. Used purely for the operator-facing banner.
-func floChartVersionLabel(p *poc.PoC) string {
-	return floChartLabel(p)
-}
-
 // floChartLabel is the shared formatter used by cluster_status, e2e
 // report rendering, and the FLO deploy banner.
 func floChartLabel(p *poc.PoC) string {

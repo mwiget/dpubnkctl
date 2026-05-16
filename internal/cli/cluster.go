@@ -79,7 +79,7 @@ func runClusterPlan(ctx context.Context, out io.Writer, f *clusterPlanFlags) err
 
 	fmt.Fprintf(out, "PoC:        %s   (BNK %s, k8s %s, kubespray %s)\n",
 		p.Metadata.Name, p.Metadata.BNKVersion,
-		"v"+p.Versions.K8s, kubesprayVersionFromPlan())
+		"v"+p.Versions.K8s, cluster.KubesprayPinForCLI())
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "=== group membership ===")
 	fmt.Fprintf(out, "  kube_control_plane (%d): %v\n", len(plan.ControlPlane), plan.ControlPlane)
@@ -145,12 +145,3 @@ func writeFiles(root string, files map[string]string) []string {
 	return keys
 }
 
-// kubesprayVersionFromPlan returns the pinned kubespray version. Lives
-// here only to keep the import surface small in cluster.go.
-func kubesprayVersionFromPlan() string {
-	// Avoid pulling internal/version into this file just for one constant
-	// — read it via the cluster package's renderer fingerprint.
-	return clusterKubesprayPin()
-}
-
-func clusterKubesprayPin() string { return cluster.KubesprayPinForCLI() }
