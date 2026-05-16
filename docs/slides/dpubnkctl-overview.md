@@ -192,7 +192,7 @@ Marcel Wiget · github.com/mwiget/dpubnkctl
 
 ## Contents
 
-<div class="toc-row"><span class="toc-num">PART 1</span><span class="toc-title">Why dpubnkctl</span><span class="toc-tagline">a 3.5-hour BNK deploy compressed into one binary</span></div>
+<div class="toc-row"><span class="toc-num">PART 1</span><span class="toc-title">Why dpubnkctl</span><span class="toc-tagline">a multi-step BNK deploy compressed into one binary</span></div>
 <div class="toc-row"><span class="toc-num">PART 2</span><span class="toc-title">Architecture &amp; operation</span><span class="toc-tagline">two repos, 8 phases, two operating modes</span></div>
 <div class="toc-row"><span class="toc-num">PART 3</span><span class="toc-title">The agentic loop</span><span class="toc-tagline">personas, AGENTS.md, four diagnosis case studies</span></div>
 <div class="toc-row"><span class="toc-num">PART 4</span><span class="toc-title">BNK 2.3.0 migration</span><span class="toc-tagline">License CR, release-manifest, eight new audit items</span></div>
@@ -206,13 +206,13 @@ Marcel Wiget · github.com/mwiget/dpubnkctl
 
 # Why dpubnkctl
 
-<div class="tagline">A 3.5-hour BNK deploy compressed into one binary</div>
+<div class="tagline">A multi-step BNK deploy compressed into one binary</div>
 
 ---
 
 ## Why this exists
 
-Manual BNK-on-bare-metal deploy is 20+ steps over ~3.5 hours:
+Manual BNK-on-bare-metal deploy is 20+ steps across several distinct toolchains:
 
 - BFB flash the DPU (mlxconfig, rshim, bf.conf)
 - Host VLAN sub-interfaces (netplan)
@@ -646,10 +646,7 @@ Every CR + manifest applied during the run is saved verbatim under `artifacts/` 
 - License CR **`Active`** · CNEInstance `Available=True`
 - `Gateway demo-gw` `Programmed=True` @ `192.168.40.100`
 
-| | Wall clock |
-| :-- | --: |
-| Manual deploy (baseline) | ~3.5 hours |
-| **`dpubnkctl e2e` (destroy + redeploy)** | **~42m43s** |
+**`dpubnkctl e2e` destroy + redeploy: ~42m43s wall clock.**
 
 Dominant phases: `provision dpu` 12m31s · `deploy cne` 19m20s. All other phases combined: under 11 minutes.
 
