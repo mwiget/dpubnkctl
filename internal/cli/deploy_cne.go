@@ -243,7 +243,27 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 			"daemonset/f5-tmm"); err != nil {
 			return fmt.Errorf("rollout restart f5-tmm: %w", err)
 		}
-		fmt.Fprintln(out, "      restart issued; CNEInstance-Available wait below covers the re-readiness window.")
+		// Wait for the rollout to fully complete before the CNEInstance
+		// Available wait below. Without this gate, the wait can return
+		// True during a transient window where revision-1 pods are
+		// still Ready and revision-2 pods haven't yet started — the
+		// CNEInstance briefly sees F5TmmAvailable=True from the lagging
+		// rev-1 pods, deploy cne reports "DONE", then rolling continues
+		// and the cluster ends up with rev-2 pods not yet at RoutingDone.
+		// Verified on the wizard-deploy May 16 confirm-run: without the
+		// status wait, e2e exit=0 but TMM stayed at 0-1/2 gates for ~4
+		// more minutes after deploy cne returned.
+		//
+		// rollout status blocks until ALL pods on the new revision report
+		// Ready=True — which for f5-tmm means both readiness gates flipped,
+		// i.e. RoutingDone+ConfigurationDone both True. That's exactly the
+		// condition we want to gate on.
+		fmt.Fprintln(out, "      restart issued; waiting for rollout to complete (each pod must flip RoutingDone before Ready) ...")
+		if err := r.Kubectl(ctx, "rollout", "status", "-n", "default",
+			"daemonset/f5-tmm", "--timeout=10m"); err != nil {
+			return fmt.Errorf("f5-tmm rollout did not converge to Ready: %w", err)
+		}
+		fmt.Fprintln(out, "      f5-tmm rollout complete; all pods Ready.")
 	} else {
 		fmt.Fprintln(out, "[6/6] No DPU VLANs — skipping f5-tmm restart.")
 	}
