@@ -678,9 +678,9 @@ Every CR + manifest applied during the run is saved verbatim under `artifacts/` 
 - License CR **`Active`** · CNEInstance `Available=True`
 - `Gateway demo-gw` `Programmed=True` @ `192.168.40.100`
 
-**`dpubnkctl e2e` destroy + redeploy: ~42m43s wall clock.**
+**`dpubnkctl e2e` destroy + redeploy: 32m34s wall clock.**
 
-Dominant phases: `provision dpu` 12m31s · `deploy cne` 19m20s. All other phases combined: under 11 minutes.
+Dominant phase: `provision dpu` 12m15s (DPU reflash). Every other phase under 6 min. `deploy cne` is now 5m20s (was 19m20s pre-fixes — License→CNEInstance ordering + post-restart `rollout status` gate, see commits 5bb139f + e6f768e).
 
 ---
 

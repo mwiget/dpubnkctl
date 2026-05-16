@@ -10207,8 +10207,8 @@ section.dense img { max-height: 400px; }
 <li>License CR <strong><code>Active</code></strong> · CNEInstance <code>Available=True</code></li>
 <li><code>Gateway demo-gw</code> <code>Programmed=True</code> @ <code>192.168.40.100</code></li>
 </ul>
-<p><strong><code>dpubnkctl e2e</code> destroy + redeploy: ~42m43s wall clock.</strong></p>
-<p>Dominant phases: <code>provision dpu</code> 12m31s · <code>deploy cne</code> 19m20s. All other phases combined: under 11 minutes.</p>
+<p><strong><code>dpubnkctl e2e</code> destroy + redeploy: 32m34s wall clock.</strong></p>
+<p>Dominant phase: <code>provision dpu</code> 12m15s (DPU reflash). Every other phase under 6 min. <code>deploy cne</code> is now 5m20s (was 19m20s pre-fixes — License→CNEInstance ordering + post-restart <code>rollout status</code> gate, see commits 5bb139f + e6f768e).</p>
 <footer>github.com/mwiget/dpubnkctl</footer>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="30" data-paginate="true" data-header="dpubnkctl · BNK 2.3.0" data-footer="github.com/mwiget/dpubnkctl" data-class="section-divider" data-theme="default" data-style="/* ====================================================================
