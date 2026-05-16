@@ -9472,6 +9472,57 @@ section.dense img { max-height: 400px; }
 <li><code>Gateway demo-gw</code> <code>Programmed=True</code> @ <code>192.168.40.100</code></li>
 <li><code>destroy --yolo</code> round-trip clean: kubespray reset.yml 0 failures, License + CWC + observer finalizers stripped, <strong>zero &quot;unknown flag&quot; noise</strong></li>
 </ul>
+<table>
+<thead>
+<tr>
+<th style="text-align:left">Phase</th>
+<th style="text-align:right">Wall clock</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left"><code>destroy</code> (incl. bnk-forge unregister)</td>
+<td style="text-align:right">2m53s</td>
+</tr>
+<tr>
+<td style="text-align:left"><code>validate</code></td>
+<td style="text-align:right">0s</td>
+</tr>
+<tr>
+<td style="text-align:left"><code>provision dpu</code> (2× BF3 in parallel)</td>
+<td style="text-align:right">12m31s</td>
+</tr>
+<tr>
+<td style="text-align:left"><code>host network setup</code></td>
+<td style="text-align:right">5s</td>
+</tr>
+<tr>
+<td style="text-align:left"><code>cluster up</code> (kubespray)</td>
+<td style="text-align:right">4m31s</td>
+</tr>
+<tr>
+<td style="text-align:left"><code>cluster join-dpus</code></td>
+<td style="text-align:right">1m3s</td>
+</tr>
+<tr>
+<td style="text-align:left"><code>deploy network</code></td>
+<td style="text-align:right">1m24s</td>
+</tr>
+<tr>
+<td style="text-align:left"><code>deploy flo</code></td>
+<td style="text-align:right">56s</td>
+</tr>
+<tr>
+<td style="text-align:left"><code>deploy cne</code> (CNEInstance + License + TMM + GatewayClass)</td>
+<td style="text-align:right">19m20s</td>
+</tr>
+<tr>
+<td style="text-align:left"><strong>TOTAL (destroy + redeploy)</strong></td>
+<td style="text-align:right"><strong>~42m43s</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Manual baseline for the same outcome: <strong>~3.5 hours</strong>.</p>
 <footer>github.com/mwiget/dpubnkctl</footer>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="28" data-paginate="true" data-header="dpubnkctl · BNK 2.3.0" data-footer="github.com/mwiget/dpubnkctl" data-class="section-divider" data-theme="default" data-style="/* ====================================================================

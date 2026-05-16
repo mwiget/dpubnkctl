@@ -652,6 +652,21 @@ Every CR + manifest applied during the run is saved verbatim under `artifacts/` 
 - `Gateway demo-gw` `Programmed=True` @ `192.168.40.100`
 - `destroy --yolo` round-trip clean: kubespray reset.yml 0 failures, License + CWC + observer finalizers stripped, **zero "unknown flag" noise**
 
+| Phase | Wall clock |
+| :-- | --: |
+| `destroy` (incl. bnk-forge unregister) | 2m53s |
+| `validate` | 0s |
+| `provision dpu` (2× BF3 in parallel) | 12m31s |
+| `host network setup` | 5s |
+| `cluster up` (kubespray) | 4m31s |
+| `cluster join-dpus` | 1m3s |
+| `deploy network` | 1m24s |
+| `deploy flo` | 56s |
+| `deploy cne` (CNEInstance + License + TMM + GatewayClass) | 19m20s |
+| **TOTAL (destroy + redeploy)** | **~42m43s** |
+
+Manual baseline for the same outcome: **~3.5 hours**.
+
 ---
 
 <!-- _class: section-divider -->
