@@ -213,13 +213,28 @@ func setupOneHost(ctx context.Context, out io.Writer, repo string, h *poc.Host, 
 			fmt.Fprintf(out, "%s mlx5_core reload exit=%d: %s\n",
 				tag, r.ExitCode, strings.TrimSpace(r.Stdout+r.Stderr))
 		}
-		// Give the driver a moment to probe + rename the netdev.
-		time.Sleep(5 * time.Second)
-		ok, combined, _ = ethtoolCheck()
+		// Driver probe + udev rename + link up takes ~5-15s in practice.
+		// Poll for up to 30s rather than guessing a fixed sleep — a fixed
+		// 5s landed at the exact wrong moment in the May 16 homelab run
+		// (interface had renamed 4s prior but ethtool was still returning
+		// transient empty output as the link came up).
+		fmt.Fprintf(out, "%s polling ethtool -i %s for up to 30s ...\n", tag, dp.ParentIface)
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			time.Sleep(2 * time.Second)
+			ok, combined, _ = ethtoolCheck()
+			if ok && strings.Contains(combined, "mlx5_core") {
+				fmt.Fprintf(out, "%s mlx5_core %s recovered after reload.\n", tag, dp.ParentIface)
+				break
+			}
+			if time.Now().After(deadline) {
+				break
+			}
+		}
 	}
 	if !ok {
-		if strings.Contains(combined, "No such device") {
-			return fmt.Errorf("parent iface %s is in ghost state after mlx5_core reload — reboot the host manually (BF3 EMBEDDED_CPU rules out mlxfwreset). See AGENTS.md #11", dp.ParentIface)
+		if strings.Contains(combined, "No such device") || strings.TrimSpace(combined) == "" {
+			return fmt.Errorf("parent iface %s did not recover after mlx5_core reload (30s poll) — reboot the host manually (BF3 EMBEDDED_CPU rules out mlxfwreset). See AGENTS.md #11", dp.ParentIface)
 		}
 		return fmt.Errorf("ethtool -i %s failed: %s", dp.ParentIface, combined)
 	}
