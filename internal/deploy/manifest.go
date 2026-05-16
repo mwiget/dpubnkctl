@@ -149,26 +149,32 @@ func PullReleaseManifest(ctx context.Context, auth OCIAuth, manifestVersion, cac
 	// once and prefixed once — that's F5's packaging quirk, see
 	// IBM ROKS terraform modules/roks-cluster-install-flo/modules/flo/main.tf
 	// line ~438).
-	script := strings.Join([]string{
-		`set -e`,
-		`cat | helm registry login ` + version.FARRegistryHost + ` --username ` + auth.Username + ` --password-stdin >/dev/null`,
-		`cd /work`,
-		`rm -f f5-bigip-k8s-manifest-` + manifestVersion + `.tgz`,
-		`rm -rf f5-bigip-k8s-manifest-` + manifestVersion,
-		`helm pull ` + version.ReleaseManifestRepo + `/` + version.ReleaseManifestChart +
-			` --version ` + manifestVersion + ` -d . >/dev/null`,
-		`tar -xzf f5-bigip-k8s-manifest-` + manifestVersion + `.tgz`,
-		// emit a marker so the host can find the manifest body in the
-		// captured stdout regardless of helm/tar chatter
-		`echo '---DPUBNKCTL-MANIFEST-BEGIN---'`,
-		`cat f5-bigip-k8s-manifest-` + manifestVersion + `/bigip-k8s-manifest-` + manifestVersion + `.yaml`,
-		`echo '---DPUBNKCTL-MANIFEST-END---'`,
-	}, " && ")
+	// Username + manifestVersion are passed as docker env vars rather
+	// than spliced into the script body. Today auth.Username is the
+	// constant "_json_key" and manifestVersion comes from the binary-
+	// pinned version.CNEManifestVersion, but both surfaces are
+	// poc.yaml-ready in the medium term. Mirror of the fix in
+	// PullF5CertGen (commit 0e63fa1 / review S-M6) — same threat model:
+	// --network=host alpine/k8s container running as root inside docker
+	// means an injection here is consequential.
+	const script = `set -e
+cat | helm registry login ` + version.FARRegistryHost + ` --username "$USERNAME" --password-stdin >/dev/null
+cd /work
+rm -f "f5-bigip-k8s-manifest-${MANIFEST_VERSION}.tgz"
+rm -rf "f5-bigip-k8s-manifest-${MANIFEST_VERSION}"
+helm pull ` + version.ReleaseManifestRepo + `/` + version.ReleaseManifestChart + ` --version "$MANIFEST_VERSION" -d . >/dev/null
+tar -xzf "f5-bigip-k8s-manifest-${MANIFEST_VERSION}.tgz"
+echo '---DPUBNKCTL-MANIFEST-BEGIN---'
+cat "f5-bigip-k8s-manifest-${MANIFEST_VERSION}/bigip-k8s-manifest-${MANIFEST_VERSION}.yaml"
+echo '---DPUBNKCTL-MANIFEST-END---'
+`
 
 	dockerArgs := []string{
 		"run", "--rm", "-i",
 		"-v", absCache + ":/work",
 		"--network=host",
+		"-e", "USERNAME=" + auth.Username,
+		"-e", "MANIFEST_VERSION=" + manifestVersion,
 		version.K8sToolsImage,
 		"sh", "-c", script,
 	}
