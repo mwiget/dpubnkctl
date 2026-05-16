@@ -274,9 +274,9 @@ func runDestroyBNK(ctx context.Context, out io.Writer, f *destroyBNKFlags) error
 
 // destroyBNK is the workhorse, callable from both `destroy` and `destroy bnk`.
 func destroyBNK(ctx context.Context, repo string, p *poc.PoC, out io.Writer, timeout time.Duration) error {
-	kubeconfig := filepath.Join(repo, "artifacts", "kubeconfig")
-	if _, err := os.Stat(kubeconfig); err != nil {
-		return fmt.Errorf("kubeconfig %s missing — nothing to clean up cluster-side", kubeconfig)
+	kubeconfig, err := requireKubeconfig(repo, "nothing to clean up cluster-side")
+	if err != nil {
+		return err
 	}
 	r := &deploy.Runner{KubeconfigPath: kubeconfig, Out: prefixWriter{w: out, prefix: "      | "}}
 

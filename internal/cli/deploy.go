@@ -80,9 +80,9 @@ func runDeployPrereqs(ctx context.Context, out io.Writer, f *deployPrereqsFlags)
 		return fmt.Errorf("--confirm-deploy must equal poc.yaml.metadata.name (%q), got %q", p.Metadata.Name, f.confirmDeploy)
 	}
 
-	kubeconfig := filepath.Join(repo, "artifacts", "kubeconfig")
-	if _, err := os.Stat(kubeconfig); err != nil {
-		return fmt.Errorf("kubeconfig %s missing — run `dpubnkctl cluster up` first", kubeconfig)
+	kubeconfig, err := requireKubeconfig(repo, "run `dpubnkctl cluster up` first")
+	if err != nil {
+		return err
 	}
 
 	farPath := resolveRef(repo, p.BNK.FARKeyRef)

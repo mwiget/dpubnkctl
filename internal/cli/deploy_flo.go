@@ -86,9 +86,9 @@ func runDeployFLO(ctx context.Context, out io.Writer, f *deployFLOFlags) error {
 		return err
 	}
 
-	kubeconfig := filepath.Join(repo, "artifacts", "kubeconfig")
-	if _, err := os.Stat(kubeconfig); err != nil {
-		return fmt.Errorf("kubeconfig %s missing — run `dpubnkctl cluster up` first", kubeconfig)
+	kubeconfig, err := requireKubeconfig(repo, "run `dpubnkctl cluster up` first")
+	if err != nil {
+		return err
 	}
 	jwtPath := resolveRef(repo, p.BNK.JWTRef)
 	if _, err := os.Stat(jwtPath); err != nil {

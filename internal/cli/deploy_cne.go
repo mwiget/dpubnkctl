@@ -89,9 +89,9 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 	if err := enforceValidateForPhase(out, p, repo, poc.PhaseDeploy, false); err != nil {
 		return err
 	}
-	kubeconfig := filepath.Join(repo, "artifacts", "kubeconfig")
-	if _, err := os.Stat(kubeconfig); err != nil {
-		return fmt.Errorf("kubeconfig %s missing — run `dpubnkctl cluster up` + `cluster join-dpus` + `deploy flo` first", kubeconfig)
+	kubeconfig, err := requireKubeconfig(repo, "run `dpubnkctl cluster up` + `cluster join-dpus` + `deploy flo` first")
+	if err != nil {
+		return err
 	}
 
 	fmt.Fprintf(out, "PoC:        %s\n", p.Metadata.Name)

@@ -100,9 +100,9 @@ func runDeployNetwork(ctx context.Context, out io.Writer, f *deployNetworkFlags)
 	if err := enforceValidateForPhase(out, p, repo, poc.PhaseDeploy, false); err != nil {
 		return err
 	}
-	kubeconfig := filepath.Join(repo, "artifacts", "kubeconfig")
-	if _, err := os.Stat(kubeconfig); err != nil {
-		return fmt.Errorf("kubeconfig %s missing — run `dpubnkctl cluster up` first", kubeconfig)
+	kubeconfig, err := requireKubeconfig(repo, "run `dpubnkctl cluster up` first")
+	if err != nil {
+		return err
 	}
 
 	r := &deploy.Runner{KubeconfigPath: kubeconfig, Out: prefixWriter{w: out, prefix: "      | "}}
