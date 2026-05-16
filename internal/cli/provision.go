@@ -105,22 +105,11 @@ func runProvisionPlan(ctx context.Context, out io.Writer, hostname string, f *pr
 
 	// 2. Readiness checks via SSH.
 	fmt.Fprintln(out, "\n=== readiness ===")
-	known := filepath.Join(repo, "inventory", "known_hosts")
-	keyPath := host.SSH.KeyRef
-	if !filepath.IsAbs(keyPath) {
-		keyPath = filepath.Join(repo, keyPath)
-	}
-	cfg := ssh.Config{
-		Address: host.SSH.Address, Port: host.SSH.Port,
-		User: host.SSH.User, KeyPath: keyPath,
-		KnownHosts: known, Timeout: f.timeout,
-	}
-	if host.SSH.Jumphost != "" {
-		cfg.Jumphost = &ssh.Config{
-			Address: host.SSH.Jumphost, Port: 22,
-			User: host.SSH.User, KeyPath: keyPath,
-			KnownHosts: known, Timeout: f.timeout,
-		}
+	cfg, err := sshConfigForHost(repo, host, f.timeout)
+	if err != nil {
+		fmt.Fprintf(out, "  ssh config: %v\n", err)
+		fmt.Fprintln(out, "\nplan: NOT READY")
+		return nil
 	}
 
 	dialCtx, cancel := context.WithTimeout(ctx, f.timeout)
