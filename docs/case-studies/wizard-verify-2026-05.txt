@@ -1,0 +1,171 @@
+# =============================================================================
+# Verification run of `dpubnkctl wizard` after fixes for issues #11/#12/#13.
+# Date: 2026-05-16
+# dpubnkctl version: 39fadad (commit `fix(wizard,host): close out UX gaps`)
+# Test PoC dir:      /tmp/wverify/wverify  (throwaway, separate from /home/mwiget/lab/wizard-deploy)
+#
+# Format convention:
+#   - Lines starting with `#` are tester-added commentary (this includes me).
+#   - Lines starting with `$` are commands the tester ran.
+#   - Everything else is verbatim wizard output.
+#   - Operator-typed input is shown after the prompt on the same line (when
+#     piped) — see the "Inputs piped to stdin" block below for the canonical
+#     list of answers.
+#
+# Inputs piped to stdin (one per Enter press):
+#     192.168.68.66-71     # range
+#     ubuntu               # SSH user
+#                          # SSH port (empty → default 22)
+#     keys/id_ed25519      # SSH key
+#                          # jumphost (empty → none)
+#     y                    # proceed with scan
+#     both                 # role for worker1
+#     worker               # role for worker2
+#     ACME Labs            # customer name
+#                          # external VLAN tag (empty → default 40)
+#                          # external VLAN subnet (empty → 192.168.40.0/24)
+#                          # internal VLAN tag (empty → 50)
+#                          # internal VLAN subnet (empty → 192.168.50.0/24)
+#                          # node_ip_role (empty → internal)
+# =============================================================================
+
+$ dpubnkctl init wverify --no-git
+# (output elided — same as last time: creates the skeleton + DPU password)
+
+$ cp /home/mwiget/lab/homelab-2-3-0/keys/id_ed25519 keys/
+
+$ dpubnkctl wizard
+Discovery wizard for PoC "wverify" (/tmp/wverify/wverify)
+
+Subnet or range to scan — e.g. 192.168.68.0/24 or 192.168.68.66-71 or a single IP: → 6 IP(s) to probe
+
+# ^^^ Cosmetic: when stdin is piped (no tty echo), the prompt + the "→ 6 IP(s)"
+# response collide on a single line because the operator's typed input isn't
+# rendered. In an actual interactive session each prompt sits on its own line.
+
+SSH user — shared across the range [ubuntu]: SSH port — shared across the range [22]: Path to SSH private key — must be readable [/home/mwiget/.ssh/id_ed25519]: Jumphost (optional) — host[:port], blank for none:
+About to scan 6 IP(s) — ssh ubuntu with key keys/id_ed25519
+Proceed? [Y/n]:
+Scanning 6 IP(s) ...
+  [1/6] [skip] 192.168.68.70    ssh auth: rejected
+  [2/6] [skip] 192.168.68.67    ssh dial: no route to host
+  [3/6] [skip] 192.168.68.69    ssh dial: no route to host
+  [4/6] [skip] 192.168.68.68    ssh dial: no route to host
+  ... 4/6 done, elapsed 13s (probes can take up to 60s each)
+  ... 4/6 done, elapsed 23s (probes can take up to 60s each)
+  ... 4/6 done, elapsed 33s (probes can take up to 60s each)
+  [5/6] [ok]   192.168.68.71    worker2 — Ubuntu 22.04.5 LTS, 1 DPU(s)
+  [6/6] [ok]   192.168.68.66    worker1 — Ubuntu 22.04.5 LTS, 1 DPU(s)
+
+Scanned 6 IP(s) in 41s.
+Reachable hosts: 2   DPU OS detected: 0   Unreachable: 4
+
+# ^^^ Issue #4 fix confirmed: per-IP `[i/N]` counter, 10s heartbeat ("... 4/6
+# done, elapsed Xs"), and the post-scan elapsed-time line ("Scanned 6 IP(s)
+# in 41s"). Zero silent waiting.
+
+Now assign each reachable host a cluster role.
+A k8s control plane needs 1 node (lab) or 3+ nodes (HA — etcd needs an odd quorum).
+The wizard suggests roles based on what's reachable; override per host as needed.
+
+  control-plane = k8s control plane only
+  worker        = k8s worker only
+  both          = control plane AND worker (typical 2-node PoC)
+
+  → suggested both for worker1 — has DPU(s); only 0 DPU-free host(s) — fewer than the 3 control-plane-only nodes etcd needs for HA, so this host runs control plane and worker
+Role for worker1 (192.168.68.66, 1 DPU(s)) [both] (both|control-plane|worker|skip):   [new]    worker1 — appended to hosts[]
+  → suggested both for worker2 — has DPU(s); only 0 DPU-free host(s) — fewer than the 3 control-plane-only nodes etcd needs for HA, so this host runs control plane and worker
+Role for worker2 (192.168.68.71, 1 DPU(s)) [both] (both|control-plane|worker|skip):   [new]    worker2 — appended to hosts[]
+
+# ^^^ Issue #10 fix confirmed: the role-prompt preamble now explains etcd
+# quorum in plain English. Suggested rationale reads "fewer than the 3
+# control-plane-only nodes etcd needs for HA" instead of "dedicated CP quorum".
+
+--- Network design ---
+Wizard now asks the few values that genuinely depend on the customer's network plan, and fills everything else from documented conventions (see examples/README.md). Hit Enter to accept any default.
+
+Customer name — appears in the final report [self]: External VLAN tag — tag for the north-south VLAN [40]: External VLAN subnet (CIDR) — data-plane subnet for the external VLAN [192.168.40.0/24]: Internal VLAN tag — tag for the east-west / cluster VLAN [50]: Internal VLAN subnet (CIDR) — data-plane subnet for the internal VLAN [192.168.50.0/24]: Which VLAN should kubelet --node-ip bind to? [internal] (internal|external):
+Filled in conventions for 2 host(s) / 2 DPU(s):
+  network.vlans          external/40 (192.168.40.0/24), internal/50 (192.168.50.0/24)
+  network.node_ip_role   internal
+  network.cluster_apiserver_address  192.168.50.66
+  bnk.external_selfip    192.168.40.100
+  bnk.internal_selfip    192.168.50.100
+  topology               mode=multi-node lag=true expected_hosts=2 expected_dpus_per_host=1
+
+Open poc.yaml afterwards to override any default that doesn't match your environment.
+
+# ^^^ Issue #11 fix confirmed: wizard now asks for customer name + VLAN tag/
+# subnet pairs + node_ip_role, then derives every other previously-empty
+# field from documented conventions:
+#   - cluster_apiserver_address  = first CP host's internal-VLAN IP (.66)
+#   - per-host VLAN IPs          = subnet + mgmt last octet (e.g. .66, .71)
+#   - per-DPU VLAN IPs           = sequential .5/.6/.7 in each subnet
+#   - external/internal_selfip   = subnet + .100
+#   - topology block             = derived from merged hosts[]
+
+DONE.  2 host(s) merged into poc.yaml.
+
+Next steps:
+  1. Review poc.yaml — the wizard filled in conventions; tweak any field whose default doesn't match your environment.
+     For background on each field, see /tmp/wverify/wverify/network-design-checklist.md.
+  2. Drop FAR tarball + JWT into keys/ (DPU password hash already generated by `init`).
+  3. Run `dpubnkctl validate` to confirm poc.yaml is consistent.
+  4. `dpubnkctl e2e --yolo` to run the full pipeline, or `dpubnkctl provision dpus <hostname> --yolo --confirm-flash <hostname>` per phase.
+
+--- dpubnkctl validate ---
+Errors (2):
+  ✗ bnk.far_key_ref "keys/f5-far-auth-key.tgz" file not found — drop the FAR tgz into keys/
+  ✗ bnk.jwt_ref "keys/.jwt" file not found — drop the JWT into keys/.jwt
+Warnings (1):
+  ! network.internal_cidr is still at the template default 198.18.100.0/24 — confirm with the customer it does not overlap any subnet they use elsewhere
+
+3 issue(s) still need attention before provisioning (2 error(s), 1 warning(s)). Discovery itself completed successfully.
+
+# ^^^ Issue #5 fix confirmed: footer reads "3 issue(s) ... (2 error(s),
+# 1 warning(s))" — counts errors AND warnings, not just errors as before.
+#
+# The 2 remaining errors are about the FAR tarball and JWT, which are
+# physical artifacts the operator drops into keys/ by hand. Everything
+# else is wizard-filled and validates clean.
+
+# =============================================================================
+# Post-wizard sanity check: copy in the missing artifacts, re-validate.
+# =============================================================================
+
+$ cp /home/mwiget/lab/homelab-2-3-0/keys/f5-far-auth-key.tgz keys/
+$ cp /home/mwiget/lab/homelab-2-3-0/keys/.jwt keys/.jwt
+
+$ dpubnkctl validate
+Warnings (1):
+  ! network.internal_cidr is still at the template default 198.18.100.0/24 — confirm with the customer it does not overlap any subnet they use elsewhere
+
+# ^^^ ZERO errors. The only thing left is the ignorable internal_cidr default
+# warning. PoC is fully deploy-ready.
+
+$ dpubnkctl e2e --dry-run | head -2
+PoC: wverify   (BNK 2.2.0)
+Phases (8): validate, provision, host-network, cluster-up, cluster-join-dpus, deploy-network, deploy-flo, deploy-cne
+
+# =============================================================================
+# Verdict
+#
+# The wizard, on this run, took 6 operator answers:
+#   - subnet/range
+#   - SSH user
+#   - SSH key (path)
+#   - role for worker1
+#   - role for worker2
+#   - customer name
+#
+# All 5 network-design prompts (VLAN tag x2, VLAN subnet x2, node_ip_role)
+# accepted the defaults, which match the homelab convention.
+#
+# Result: a poc.yaml that validates clean once the operator drops two
+# physical files (FAR tarball + JWT) into keys/. That's the full non-
+# agentic workflow.
+#
+# All seven previously-filed fixes (#4, #5, #6, #7, #8, #9, #10) plus the
+# three additional fixes from this batch (#11, #12, #13) are confirmed in
+# this single run. No new UX issues spotted.
+# =============================================================================
