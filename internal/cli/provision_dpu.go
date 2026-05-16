@@ -28,9 +28,11 @@ type provisionDPUFlags struct {
 	bfbURL              string
 	flashTimeout        time.Duration
 	dpuWaitTimeout      time.Duration
+	bf3SettleTimeout    time.Duration
 	skipDPUWait         bool
 	skipPostFlashReboot bool
 	skipValidate        bool
+	skipBF3Settle       bool
 }
 
 func newProvisionDPUCmd() *cobra.Command {
@@ -74,6 +76,8 @@ every host's plan is READY.`,
 	cmd.Flags().BoolVar(&f.skipDPUWait, "skip-dpu-wait", false, "Don't wait for the DPU to reboot — return as soon as bfb-install exits (also skips post-flash reboot)")
 	cmd.Flags().BoolVar(&f.skipPostFlashReboot, "skip-post-flash-reboot", false, "Skip the rshim SW_RESET after the first DPU boot (workaround retained for diagnostics)")
 	cmd.Flags().BoolVar(&f.skipValidate, "skip-validate", false, "Skip the `dpubnkctl validate` precheck (not recommended)")
+	cmd.Flags().DurationVar(&f.bf3SettleTimeout, "bf3-settle-timeout", 90*time.Second, "After SF-ready, wait up to this for the host-side mlx5_core PF to come back (clears the ghost-PF state without a reboot)")
+	cmd.Flags().BoolVar(&f.skipBF3Settle, "skip-bf3-settle", false, "Don't poll the host-side parent_iface after flash (AGENTS.md #11 host reboot then falls back on the operator)")
 	return cmd
 }
 
@@ -389,8 +393,68 @@ func flashOneJob(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j fl
 		}
 	}
 
+	// Settle wait: after the DPU OS is up + SF aux devices are present,
+	// the host-side mlx5_core driver may still be in the post-flash
+	// "ghost PF" state (AGENTS.md #11). For BlueField-3 cards on Proxmox
+	// VFIO-passthrough this is especially dangerous: a host reboot at
+	// this moment can hang the kernel's PCIe reset path and take the
+	// hypervisor down (verified on rome1 with VMs 204/205, May 15).
+	//
+	// Instead of reboot-or-die, just poll the host's parent_iface until
+	// `ip link show` succeeds. In practice the host mlx5_core recovers
+	// on its own within ~10-30s of the DPU completing its second boot;
+	// we just have to wait for it.
+	if !f.skipBF3Settle && j.host.DataPlane != nil && j.host.DataPlane.ParentIface != "" {
+		if err := waitForHostParentIface(ctx, repo, j, f.bf3SettleTimeout, w); err != nil {
+			fmt.Fprintf(w, "      WARN: parent_iface settle wait did not converge: %v\n", err)
+			fmt.Fprintln(w, "      `host network setup` will attempt mlx5_core reload to recover.")
+		}
+	}
+
 	journaled(journalMu, repo, j.hostname, j.dpu, "SUCCESS", logPath, "")
 	return nil
+}
+
+// waitForHostParentIface polls `ip link show <parent_iface>` on the
+// host until the kernel returns a real netdev (not the ghost state
+// where the sysfs entry exists but the kernel reports "No such
+// device"). On a healthy post-flash this converges in 10-30s. Returns
+// nil on success, error on timeout — the caller decides whether to
+// hard-fail or punt to `host network setup`'s mlx5_core recovery.
+func waitForHostParentIface(ctx context.Context, repo string, j flashJob, timeout time.Duration, w io.Writer) error {
+	cfg, err := sshConfigForHost(repo, j.host, 30*time.Second)
+	if err != nil {
+		return err
+	}
+	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	c, err := ssh.Dial(dialCtx, cfg)
+	cancel()
+	if err != nil {
+		return fmt.Errorf("ssh to host for settle wait: %w", err)
+	}
+	defer c.Close()
+
+	parent := j.host.DataPlane.ParentIface
+	fmt.Fprintf(w, "      Waiting for host-side %s to be live (BF3 settle, up to %s) ...\n",
+		parent, timeout)
+
+	pollCtx, pollCancel := context.WithTimeout(ctx, timeout)
+	defer pollCancel()
+	start := time.Now()
+	for {
+		// `ethtool -i` returns "No such device" on the ghost state but
+		// non-zero exit AND empty driver line; a healthy PF prints
+		// `driver: mlx5_core` in stdout.
+		r := c.Run(pollCtx, fmt.Sprintf("ethtool -i %s 2>&1 | grep -E '^driver:' || true", parent))
+		if r.OK() && strings.Contains(r.Stdout, "mlx5_core") {
+			fmt.Fprintf(w, "      host %s is live after %s.\n", parent, time.Since(start).Round(time.Second))
+			return nil
+		}
+		if pollCtx.Err() != nil {
+			return fmt.Errorf("host %s still in ghost state after %s", parent, timeout)
+		}
+		time.Sleep(3 * time.Second)
+	}
 }
 
 // verifyDPUSubFunctions SSHes into the freshly-flashed DPU and counts

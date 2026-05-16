@@ -160,6 +160,33 @@ No fancy tooling — stdlib + cobra + yaml.v3 + golang.org/x/crypto/ssh + sftp.
 
     Found in the Phase 6 e2e smoke test on homelab-2-3-0 (this branch).
 
+### Ghost mlx5_core PF after BFB flash — now auto-recovers
+
+29. **The "ghost PF" remediation has changed: don't reboot.** A successful
+    BFB flash leaves the host's mlx5_core PF detached from the kernel
+    (sysfs entry exists, `ethtool -i <parent_iface>` returns "No such
+    device"). The historical advice was "reboot the host" — but on a
+    Proxmox VFIO-passthrough setup that can hang the hypervisor's PCIe
+    reset path and take the entire host down. Verified on rome1
+    May 15: VMs 204/205 SSH-rebooted simultaneously after the DPU
+    reflash, both hung in qemu CPU reset, required a Proxmox-level
+    `qm stop` to recover.
+
+    Now handled by two layered fixes:
+
+      1. `provision dpu` waits up to 90s post-SF-ready for the host's
+         `parent_iface` to come back live (the BF3 settle window). In
+         practice ~10-30s on a healthy run. `--bf3-settle-timeout` /
+         `--skip-bf3-settle` override.
+      2. `host network setup` detects any remaining ghost state and
+         runs `modprobe -r mlx5_core; modprobe mlx5_core` on the host
+         to re-probe the PCIe device. Seconds, no reboot, no VFIO
+         touch. Only after this fallback fails does it return the
+         historical "reboot the host manually" error.
+
+    Net effect: a clean `dpubnkctl e2e` from provision through
+    host-network with zero reboots on Proxmox setups.
+
 ### Apt repo trap on DOCA 3.2 BFB (kubernetes.sources)
 
 25. **DOCA 3.2 / Ubuntu 24.04 BFBs pre-ship `/etc/apt/sources.list.d/kubernetes.sources`** (deb822

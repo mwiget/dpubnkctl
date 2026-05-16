@@ -172,13 +172,54 @@ func setupOneHost(ctx context.Context, out io.Writer, repo string, h *poc.Host, 
 	// blunders into opaque RTNETLINK errors. A successful BFB flash
 	// leaves the host's mlx5_core PF detached from the kernel — the
 	// interface name exists, but `ethtool -i` returns "No such device".
-	// Only a host reboot recovers it (mlxfwreset is unsupported in
-	// EMBEDDED_CPU mode; see AGENTS.md #9). Fail loud so the operator
-	// reboots instead of chasing netplan errors.
-	if r := c.Run(ctx, fmt.Sprintf("ethtool -i %s 2>&1", dp.ParentIface)); !r.OK() {
+	//
+	// Recovery has three tiers (cheapest first):
+	//   1. provision dpu's settle wait usually catches this — the host
+	//      mlx5_core recovers on its own within 10-30s post-flash. If
+	//      it has, the ethtool check below returns clean and we proceed.
+	//   2. If still ghost: `modprobe -r mlx5_core; modprobe mlx5_core`.
+	//      Re-runs the driver's PCIe probe path; re-creates the netdev.
+	//      Seconds, no reboot, no VFIO touch.
+	//   3. If still ghost after reload: fail loud with the historical
+	//      "reboot the host" message. The operator handles it manually.
+	//
+	// We avoid host reboot specifically because on Proxmox VFIO-pass-
+	// through setups (BlueField-3 attached at PCIe 82:00/c1:00 etc.),
+	// a guest reboot during the post-flash window can hang the host
+	// kernel's PCIe reset path. Verified on rome1, May 15. See
+	// AGENTS.md #11.
+	ethtoolCheck := func() (bool, string, error) {
+		r := c.Run(ctx, fmt.Sprintf("ethtool -i %s 2>&1", dp.ParentIface))
 		combined := strings.TrimSpace(r.Stdout + r.Stderr)
+		if r.OK() {
+			return true, combined, nil
+		}
+		return false, combined, nil
+	}
+
+	ok, combined, err := ethtoolCheck()
+	if err != nil {
+		return err
+	}
+	if !ok && strings.Contains(combined, "No such device") {
+		fmt.Fprintf(out, "%s ghost mlx5_core PF detected on %s; attempting `modprobe -r mlx5_core; modprobe mlx5_core` ...\n",
+			tag, dp.ParentIface)
+		// `|| true` on the unload so the reload runs even if a previous
+		// user (existing VLAN sub-iface, OVS bridge) holds the driver
+		// in a refcount > 0 state. modprobe in this case logs but
+		// continues; reload-without-unload is still a partial probe-
+		// retry that often clears the ghost state.
+		if r := c.Run(ctx, "sudo -n bash -c 'modprobe -r mlx5_core 2>&1 || true; modprobe mlx5_core 2>&1'"); !r.OK() {
+			fmt.Fprintf(out, "%s mlx5_core reload exit=%d: %s\n",
+				tag, r.ExitCode, strings.TrimSpace(r.Stdout+r.Stderr))
+		}
+		// Give the driver a moment to probe + rename the netdev.
+		time.Sleep(5 * time.Second)
+		ok, combined, _ = ethtoolCheck()
+	}
+	if !ok {
 		if strings.Contains(combined, "No such device") {
-			return fmt.Errorf("parent iface %s exists but kernel says \"No such device\" — BlueField PF is in the post-flash 'ghost' state. Reboot the host (mlxfwreset is unsupported on BF3 EMBEDDED_CPU). See AGENTS.md #9", dp.ParentIface)
+			return fmt.Errorf("parent iface %s is in ghost state after mlx5_core reload — reboot the host manually (BF3 EMBEDDED_CPU rules out mlxfwreset). See AGENTS.md #11", dp.ParentIface)
 		}
 		return fmt.Errorf("ethtool -i %s failed: %s", dp.ParentIface, combined)
 	}
