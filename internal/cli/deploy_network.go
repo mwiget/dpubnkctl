@@ -258,10 +258,20 @@ func runDeployNetwork(ctx context.Context, out io.Writer, f *deployNetworkFlags)
 	} else {
 		fmt.Fprintf(out, "      detected Pending pods (race triggered):\n%s\n", indent(stuck, "        "))
 		fmt.Fprintln(out, "      Rotating multus + sriov daemonsets to recover ...")
+		// DS names match the embedded manifests in
+		// internal/embedded/templates/network/. They are arch-agnostic
+		// (multus.yaml + sriov-*-daemonset.yaml use nodeAffinity, not
+		// arch-suffixed names) — DPU nodes are arm64, host nodes amd64,
+		// both run the same DS. Previous code carried `-amd64`-suffixed
+		// names from an earlier kubespray naming convention; on a mixed-
+		// arch cluster the rotation silently no-op'd against names that
+		// never existed and the broken multus stayed broken until the
+		// CNEInstance-Available wait timed out 15 min later. (Caught on
+		// the wizard-deploy May 16 measurement run.)
 		cniDS := []string{
 			"kube-multus-ds",
-			"kube-sriov-cni-ds-amd64",
-			"kube-sriov-device-plugin-amd64",
+			"kube-sriov-cni-ds",
+			"kube-sriov-device-plugin",
 		}
 		for _, ds := range cniDS {
 			if err := r.Kubectl(ctx, "rollout", "restart",
@@ -271,7 +281,7 @@ func runDeployNetwork(ctx context.Context, out io.Writer, f *deployNetworkFlags)
 		}
 		for _, ds := range cniDS {
 			if err := r.Kubectl(ctx, "rollout", "status",
-				"-n", "kube-system", "ds/"+ds, "--timeout=3m"); err != nil {
+				"-n", "kube-system", "ds/"+ds, "--timeout=5m"); err != nil {
 				fmt.Fprintf(out, "      WARN: %s rotation did not converge: %v\n", ds, err)
 			}
 		}
@@ -291,6 +301,25 @@ func runDeployNetwork(ctx context.Context, out io.Writer, f *deployNetworkFlags)
 		}
 		fmt.Fprintln(out, "      CNI rotation complete.")
 	}
+
+	// Verify the recovery actually worked. Without this, a rotation
+	// against a wrong DS name (or a deeper multus issue) silently
+	// no-op'd and downstream BNK install proceeded against a broken
+	// cluster — TMM lands only on the nodes where multus is healthy,
+	// CNEInstance Available wait at deploy-cne times out 15 min later
+	// with an opaque "0 out of N pods" message. Probe again for Pending
+	// pods after a brief settle; if any remain, fail loudly with a
+	// pointer at the offending pods.
+	fmt.Fprintln(out, "\nVerifying multus is healthy on every node ...")
+	time.Sleep(10 * time.Second)
+	residual, _ := r.KubectlCapture(ctx, "get", "pods", "-A",
+		"--field-selector=status.phase=Pending",
+		"-o", "jsonpath={range .items[*]}{.metadata.namespace}{\"/\"}{.metadata.name}{\" on \"}{.spec.nodeName}{\"\\n\"}{end}")
+	residual = strings.TrimSpace(residual)
+	if residual != "" {
+		return fmt.Errorf("multus race not recovered — pods still Pending after rotation:\n%s\n\nInspect with `kubectl describe pod -n <ns> <pod>`; the multus error is typically `missing network name` from a stale /etc/cni/net.d/00-multus.conf on the affected node. Manually rotate with `kubectl rollout restart -n kube-system ds/kube-multus-ds`.", indent(residual, "  "))
+	}
+	fmt.Fprintln(out, "      every pod scheduled; multus delegate chain intact.")
 
 	appendDeployJournal(repo, p.Metadata.Name, "", "NETWORK INSTALLED", "")
 	fmt.Fprintln(out, "\nDONE.  FLO should now reconcile the CNEInstance — re-check `kubectl get cneinstance -A` + `kubectl get pods -A`.")
