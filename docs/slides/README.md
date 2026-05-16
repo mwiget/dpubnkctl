@@ -37,23 +37,23 @@ the bottom edge.
 From the repo root:
 
 ```bash
-make slides           # all three formats (HTML always; PPTX/PDF if browser available)
-make slides-html      # HTML — works browser-free, opens locally or hosted as Pages
-make slides-pptx      # PPTX — edit in PowerPoint / LibreOffice / Keynote
-make slides-pdf       # PDF  — printable, attach to email
+make slides           # renders each .md to HTML via npx + marp-cli
 ```
 
-PPTX and PDF rely on Marp CLI driving a headless browser. If neither
-Chromium nor Firefox is on PATH, set `CHROME_PATH=/path/to/chromium`
-before running, or install one:
+That's it — HTML is the shipped artefact. Marp CLI is fetched on-demand
+via `npx` and cached under `~/.npm/_npx/`; no global npm install.
+
+PPTX and PDF aren't built or tracked. Marp's PPTX export is a slide-
+per-image bundle (not editable in PowerPoint anyway), and the PDF is
+a worse-fidelity copy of the HTML. If you need either for a one-off
+handout, render locally without committing the output:
 
 ```bash
-sudo apt install chromium-browser    # or firefox
+npx @marp-team/marp-cli docs/slides/dpubnkctl-overview.md --pptx --allow-local-files
+npx @marp-team/marp-cli docs/slides/dpubnkctl-overview.md --pdf  --allow-local-files
 ```
 
-Marp CLI itself is fetched on-demand via `npx`; no global npm install
-needed. The build will download it the first time and cache under
-`~/.npm/_npx/`.
+Both need Chromium/Firefox at `$CHROME_PATH` or on `PATH`.
 
 ## Editing for a customer presentation
 
@@ -65,9 +65,8 @@ $EDITOR docs/slides/dpubnkctl-overview.md
 make slides
 ```
 
-The HTML is self-contained; serve directly or paste into an email.
-PPTX is friendly to last-mile slide edits (slide order, layout
-tweaks, logos) before a real customer meeting.
+The HTML is self-contained; serve directly, host as GitHub Pages, or
+paste into an email.
 
 ## Web preview
 
