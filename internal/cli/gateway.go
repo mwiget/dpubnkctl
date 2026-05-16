@@ -30,6 +30,7 @@ ipam-pool' subcommand alongside this one. For now: explicit per-Gateway
 addresses are the only supported path.`,
 	}
 	cmd.AddCommand(newGatewayExampleCmd())
+	cmd.AddCommand(newGatewayApplyCmd())
 	cmd.AddCommand(newGatewayResyncCmd())
 	return cmd
 }
@@ -76,20 +77,33 @@ by hand. The smoke test matches the shape in homelab/journal/
 }
 
 func runGatewayExample(out io.Writer, f *gatewayExampleFlags) error {
-	repo, err := resolvePoCDir(f.pocDir)
+	manifest, _, err := renderGatewayManifest(f)
 	if err != nil {
 		return err
 	}
+	_, err = io.WriteString(out, manifest)
+	return err
+}
+
+// renderGatewayManifest assembles the same YAML body that
+// `runGatewayExample` writes to stdout, plus returns the resolved
+// Gateway address so callers (`gateway apply`) can wait on / curl
+// against it without re-parsing the YAML.
+func renderGatewayManifest(f *gatewayExampleFlags) (manifest, address string, err error) {
+	repo, err := resolvePoCDir(f.pocDir)
+	if err != nil {
+		return "", "", err
+	}
 	p, err := poc.Load(repo)
 	if err != nil {
-		return fmt.Errorf("not a PoC repo (%s): %w", repo, err)
+		return "", "", fmt.Errorf("not a PoC repo (%s): %w", repo, err)
 	}
 	addr := strings.TrimSpace(f.address)
 	if addr == "" {
 		addr = strings.TrimSpace(p.BNK.ExternalSelfIP)
 	}
 	if addr == "" {
-		return fmt.Errorf("no Gateway address: pass --address <ip> or set bnk.external_selfip in poc.yaml")
+		return "", "", fmt.Errorf("no Gateway address: pass --address <ip> or set bnk.external_selfip in poc.yaml")
 	}
 
 	var b strings.Builder
@@ -98,8 +112,7 @@ func runGatewayExample(out io.Writer, f *gatewayExampleFlags) error {
 		b.WriteString("---\n")
 	}
 	renderGatewayHTTPRoute(&b, f.name, addr, f.port, f.appName, f.appPort, f.smokeTest)
-	_, err = io.WriteString(out, b.String())
-	return err
+	return b.String(), addr, nil
 }
 
 // renderSmokeBackend emits a minimal Deployment + Service so the operator
@@ -190,6 +203,122 @@ spec:
           port: %d
 `, name, name, backendName, backendName, backendName, backendPort)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// `dpubnkctl gateway apply`
+//
+// `gateway example | kubectl apply -f -` always needs to be followed by
+// `gateway resync` to push the new Gateway config to TMM (AGENTS.md #28).
+// In practice operators forget — the smoke-test in the May 16 wizard-
+// deploy validation hit exactly this: applied Gateway, curl returned
+// HTTP 500 ("Server: BigIP") until we ran resync.
+//
+// `gateway apply` is the one-shot "deploy a working Gateway against this
+// cluster": render → kubectl apply → wait Programmed=True → resync the
+// newly-applied Gateway (push TMM config) → print a smoke-test curl.
+// `gateway example` stays a pure renderer for diff/preview/CI flows.
+// ---------------------------------------------------------------------------
+
+type gatewayApplyFlags struct {
+	gatewayExampleFlags // namespace + name + port + smoke-test toggles all reused
+	namespace           string
+	waitTimeout         time.Duration
+	skipResync          bool
+}
+
+func newGatewayApplyCmd() *cobra.Command {
+	f := &gatewayApplyFlags{}
+	cmd := &cobra.Command{
+		Use:   "apply",
+		Short: "Render + apply a BNK Gateway (and optional smoke-test backend), wait Programmed, auto-resync",
+		Long: `One-shot deploy of a Gateway against this cluster. Renders the same
+manifest as ` + "`gateway example`" + `, kubectl-applies it to the named
+namespace (default ` + "`default`" + `), waits for the Gateway to reach
+Programmed=True, then runs the per-Gateway resync that pushes the new
+config to every TMM in the cluster.
+
+Without the trailing resync, every freshly-applied Gateway returns
+HTTP 500 from TMM until ` + "`dpubnkctl gateway resync`" + ` is run separately
+(AGENTS.md #28). This subcommand bakes that step in so the smoke-test
+path is one command instead of three.
+
+For preview / diff / CI flows, use ` + "`gateway example`" + ` (pure renderer).`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runGatewayApply(cmd.Context(), cmd.OutOrStdout(), f)
+		},
+	}
+	cmd.Flags().StringVar(&f.pocDir, "poc", "", "PoC repo path (default: current directory)")
+	cmd.Flags().StringVar(&f.namespace, "namespace", "default", "Namespace to apply into")
+	cmd.Flags().StringVar(&f.name, "name", "demo-gw", "Gateway / HTTPRoute name")
+	cmd.Flags().IntVar(&f.port, "port", 80, "Gateway listener port")
+	cmd.Flags().StringVar(&f.address, "address", "", "Override spec.addresses (defaults to poc.yaml bnk.external_selfip)")
+	cmd.Flags().StringVar(&f.appName, "app-name", "demo-app", "Backend Service/Deployment name (smoke-test only)")
+	cmd.Flags().StringVar(&f.appImage, "app-image", "nginx:1.27-alpine", "Backend container image (smoke-test only)")
+	cmd.Flags().IntVar(&f.appPort, "app-port", 80, "Backend container/service port (smoke-test only)")
+	cmd.Flags().BoolVar(&f.smokeTest, "smoke-test", false, "Also apply a Deployment + Service backend so the operator can curl through the Gateway end-to-end")
+	cmd.Flags().DurationVar(&f.waitTimeout, "wait-timeout", 3*time.Minute, "How long to wait for the Gateway to reach Programmed=True")
+	cmd.Flags().BoolVar(&f.skipResync, "skip-resync", false, "Apply only; don't run the post-apply TMM resync (you probably want the default)")
+	return cmd
+}
+
+func runGatewayApply(ctx context.Context, out io.Writer, f *gatewayApplyFlags) error {
+	manifest, addr, err := renderGatewayManifest(&f.gatewayExampleFlags)
+	if err != nil {
+		return err
+	}
+
+	repo, err := resolvePoCDir(f.pocDir)
+	if err != nil {
+		return err
+	}
+	p, err := poc.Load(repo)
+	if err != nil {
+		return fmt.Errorf("not a PoC repo (%s): %w", repo, err)
+	}
+	// Same phase-validate as `gateway resync` — screens shell-exposed
+	// poc.yaml fields the kubectl path will reference.
+	if err := enforceValidateForPhase(out, p, repo, poc.PhaseCluster, false); err != nil {
+		return err
+	}
+	kubeconfig, err := requireKubeconfig(repo, "run `dpubnkctl cluster up` + `deploy cne` first")
+	if err != nil {
+		return err
+	}
+	r := &deploy.Runner{KubeconfigPath: kubeconfig, Out: prefixWriter{w: out, prefix: "      | "}}
+
+	fmt.Fprintf(out, "[1/3] Applying Gateway %s/%s (address %s) ...\n", f.namespace, f.name, addr)
+	if err := r.ApplyInNamespace(ctx, f.namespace, manifest); err != nil {
+		return fmt.Errorf("kubectl apply: %w", err)
+	}
+
+	fmt.Fprintf(out, "[2/3] Waiting for Gateway/%s Programmed=True (up to %s) ...\n", f.name, f.waitTimeout)
+	if err := r.Wait(ctx, f.namespace, "Programmed",
+		"gateway/"+f.name, f.waitTimeout); err != nil {
+		return fmt.Errorf("gateway/%s did not reach Programmed=True: %w", f.name, err)
+	}
+
+	if f.skipResync {
+		fmt.Fprintln(out, "[3/3] --skip-resync set; not running TMM resync.")
+		fmt.Fprintln(out, "      WARN: curl may return HTTP 500 from TMM until you run `dpubnkctl gateway resync` (AGENTS.md #28).")
+	} else {
+		fmt.Fprintf(out, "[3/3] Resyncing Gateway %s/%s so TMM picks it up (AGENTS.md #28) ...\n",
+			f.namespace, f.name)
+		if err := resyncOneGateway(ctx, r, f.namespace, f.name, out); err != nil {
+			return fmt.Errorf("post-apply resync: %w", err)
+		}
+	}
+
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "DONE.")
+	if f.smokeTest {
+		fmt.Fprintf(out, "Smoke-test the full path:\n")
+		fmt.Fprintf(out, "  curl -H \"Host: %s.local\" http://%s/\n", f.appName, addr)
+	} else {
+		fmt.Fprintf(out, "Gateway live at %s. Apply your HTTPRoute(s) referencing parentRefs.name=%s.\n",
+			addr, f.name)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -322,69 +451,81 @@ func runGatewayResync(ctx context.Context, out io.Writer, f *gatewayResyncFlags)
 
 	for i, g := range targets {
 		fmt.Fprintf(out, "\n[%d/%d] resync %s/%s\n", i+1, len(targets), g.ns, g.name)
-
-		// Capture the Gateway YAML, stripping status / resourceVersion
-		// so the re-apply doesn't conflict with whatever the controller
-		// last wrote. `--show-managed-fields=false` keeps the body
-		// small; `kubectl-neat`-style cleanup would be nicer but isn't
-		// in alpine/k8s.
-		gwYAML, err := r.KubectlCapture(ctx, "-n", g.ns, "get", "gateway", g.name, "-o", "yaml")
-		if err != nil {
-			fmt.Fprintf(out, "      WARN: capture %s/%s: %v — skipping\n", g.ns, g.name, err)
-			continue
+		if err := resyncOneGateway(ctx, r, g.ns, g.name, out); err != nil {
+			fmt.Fprintf(out, "      WARN: %v — skipping\n", err)
 		}
-		gwYAML = stripK8sServerFields(gwYAML)
-
-		// Capture every HTTPRoute that references this Gateway by name.
-		// We need them because the HTTPRoute's binding to the Gateway
-		// has to be re-established post-delete; without re-applying the
-		// route, the new Gateway would have Listener attachedRoutes=0.
-		// JSONPath: match parentRefs[].name == <gw>.
-		routesRaw, _ := r.KubectlCapture(ctx, "-n", g.ns, "get", "httproute",
-			"-o", `jsonpath={range .items[?(@.spec.parentRefs[*].name=="`+g.name+`")]}{.metadata.name}{"\n"}{end}`)
-		var routeYAMLs []string
-		for _, rn := range strings.Split(strings.TrimSpace(routesRaw), "\n") {
-			rn = strings.TrimSpace(rn)
-			if rn == "" {
-				continue
-			}
-			rb, err := r.KubectlCapture(ctx, "-n", g.ns, "get", "httproute", rn, "-o", "yaml")
-			if err != nil {
-				fmt.Fprintf(out, "      WARN: capture httproute %s/%s: %v\n", g.ns, rn, err)
-				continue
-			}
-			routeYAMLs = append(routeYAMLs, stripK8sServerFields(rb))
-		}
-		fmt.Fprintf(out, "      captured Gateway + %d HTTPRoute(s)\n", len(routeYAMLs))
-
-		// Delete (HTTPRoutes first, then Gateway).
-		for _, rn := range strings.Split(strings.TrimSpace(routesRaw), "\n") {
-			rn = strings.TrimSpace(rn)
-			if rn == "" {
-				continue
-			}
-			_ = r.Kubectl(ctx, "-n", g.ns, "delete", "httproute", rn, "--ignore-not-found")
-		}
-		_ = r.Kubectl(ctx, "-n", g.ns, "delete", "gateway", g.name, "--ignore-not-found")
-
-		// Brief settle so the controller processes the deletes before
-		// the recreate (observed: < 1s; allow 3s for safety).
-		time.Sleep(3 * time.Second)
-
-		// Re-apply: Gateway first, then HTTPRoutes.
-		if err := r.ApplyInNamespace(ctx, g.ns, gwYAML); err != nil {
-			fmt.Fprintf(out, "      WARN: re-apply gateway %s/%s: %v\n", g.ns, g.name, err)
-			continue
-		}
-		for _, rb := range routeYAMLs {
-			if err := r.ApplyInNamespace(ctx, g.ns, rb); err != nil {
-				fmt.Fprintf(out, "      WARN: re-apply httproute: %v\n", err)
-			}
-		}
-		fmt.Fprintf(out, "      %s/%s resynced.\n", g.ns, g.name)
 	}
 
 	fmt.Fprintln(out, "\nDone. Smoke-test traffic now — every TMM in the cluster has the latest config.")
+	return nil
+}
+
+// resyncOneGateway is the per-Gateway capture-delete-reapply sequence
+// that pushes the controller to re-emit Update events. Shared between
+// `gateway resync` (which iterates over every bnk-gatewayclass Gateway
+// in the cluster) and `gateway apply` (which calls it once for the
+// Gateway it just applied, so the operator doesn't need to remember to
+// run `resync` afterwards).
+//
+// Each capture-delete-reapply opens a ~3-8s Programmed=False window for
+// the affected Gateway; existing client connections may break in that
+// window.
+func resyncOneGateway(ctx context.Context, r *deploy.Runner, ns, name string, out io.Writer) error {
+	// Capture the Gateway YAML, stripping status / resourceVersion
+	// so the re-apply doesn't conflict with whatever the controller
+	// last wrote. `--show-managed-fields=false` keeps the body
+	// small; `kubectl-neat`-style cleanup would be nicer but isn't
+	// in alpine/k8s.
+	gwYAML, err := r.KubectlCapture(ctx, "-n", ns, "get", "gateway", name, "-o", "yaml")
+	if err != nil {
+		return fmt.Errorf("capture %s/%s: %w", ns, name, err)
+	}
+	gwYAML = stripK8sServerFields(gwYAML)
+
+	// Capture every HTTPRoute that references this Gateway by name.
+	// We need them because the HTTPRoute's binding to the Gateway
+	// has to be re-established post-delete; without re-applying the
+	// route, the new Gateway would have Listener attachedRoutes=0.
+	// JSONPath: match parentRefs[].name == <gw>.
+	routesRaw, _ := r.KubectlCapture(ctx, "-n", ns, "get", "httproute",
+		"-o", `jsonpath={range .items[?(@.spec.parentRefs[*].name=="`+name+`")]}{.metadata.name}{"\n"}{end}`)
+	var routeYAMLs []string
+	var routeNames []string
+	for _, rn := range strings.Split(strings.TrimSpace(routesRaw), "\n") {
+		rn = strings.TrimSpace(rn)
+		if rn == "" {
+			continue
+		}
+		routeNames = append(routeNames, rn)
+		rb, err := r.KubectlCapture(ctx, "-n", ns, "get", "httproute", rn, "-o", "yaml")
+		if err != nil {
+			fmt.Fprintf(out, "      WARN: capture httproute %s/%s: %v\n", ns, rn, err)
+			continue
+		}
+		routeYAMLs = append(routeYAMLs, stripK8sServerFields(rb))
+	}
+	fmt.Fprintf(out, "      captured Gateway + %d HTTPRoute(s)\n", len(routeYAMLs))
+
+	// Delete (HTTPRoutes first, then Gateway).
+	for _, rn := range routeNames {
+		_ = r.Kubectl(ctx, "-n", ns, "delete", "httproute", rn, "--ignore-not-found")
+	}
+	_ = r.Kubectl(ctx, "-n", ns, "delete", "gateway", name, "--ignore-not-found")
+
+	// Brief settle so the controller processes the deletes before
+	// the recreate (observed: < 1s; allow 3s for safety).
+	time.Sleep(3 * time.Second)
+
+	// Re-apply: Gateway first, then HTTPRoutes.
+	if err := r.ApplyInNamespace(ctx, ns, gwYAML); err != nil {
+		return fmt.Errorf("re-apply gateway %s/%s: %w", ns, name, err)
+	}
+	for _, rb := range routeYAMLs {
+		if err := r.ApplyInNamespace(ctx, ns, rb); err != nil {
+			fmt.Fprintf(out, "      WARN: re-apply httproute: %v\n", err)
+		}
+	}
+	fmt.Fprintf(out, "      %s/%s resynced.\n", ns, name)
 	return nil
 }
 
