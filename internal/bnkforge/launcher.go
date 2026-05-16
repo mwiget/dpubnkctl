@@ -247,6 +247,45 @@ func (c *Client) CreateProjectCluster(ctx context.Context, projectID int, k Clus
 	return out.ID, nil
 }
 
+// DeleteCluster removes a cluster registration from bnk-forge.
+// Idempotent — a 404 (already gone) is not an error.
+func (c *Client) DeleteCluster(ctx context.Context, clusterID int) error {
+	url := fmt.Sprintf("%s/api/k8s/clusters/%d", c.BaseURL, clusterID)
+	req, _ := http.NewRequestWithContext(ctx, "DELETE", url, nil)
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 404 || resp.StatusCode/100 == 2 {
+		return nil
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("delete cluster %d: %s: %s", clusterID, resp.Status, truncate(string(raw), 200))
+}
+
+// DeleteProject removes a project from bnk-forge. Idempotent — 404
+// is not an error. The bnk-forge backend cascades downstream (deletes
+// remaining clusters / variables / etc. for the project), but we
+// still call DeleteCluster first so the cluster's row is gone before
+// the parent project delete.
+func (c *Client) DeleteProject(ctx context.Context, projectID int) error {
+	url := fmt.Sprintf("%s/api/projects/%d", c.BaseURL, projectID)
+	req, _ := http.NewRequestWithContext(ctx, "DELETE", url, nil)
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 404 || resp.StatusCode/100 == 2 {
+		return nil
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("delete project %d: %s: %s", projectID, resp.Status, truncate(string(raw), 200))
+}
+
 // CreateProject POSTs /api/projects with the given payload. Returns
 // the new project's id.
 func (c *Client) CreateProject(ctx context.Context, p Project) (int, error) {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/mwiget/dpubnkctl/internal/bnkforge"
 	"github.com/mwiget/dpubnkctl/internal/cluster"
 	"github.com/mwiget/dpubnkctl/internal/deploy"
 	"github.com/mwiget/dpubnkctl/internal/poc"
@@ -58,6 +59,7 @@ Required gates:
 	cmd.Flags().BoolVar(&f.skipBNK, "skip-bnk", false, "Skip BNK teardown (start at DPU reset)")
 	cmd.Flags().BoolVar(&f.skipDPUs, "skip-dpus", false, "Skip DPU kubeadm reset")
 	cmd.Flags().BoolVar(&f.skipCluster, "skip-cluster", false, "Skip kubespray reset.yml")
+	cmd.Flags().BoolVar(&f.skipBNKForge, "skip-bnk-forge", false, "Skip the optional bnk-forge unregister even if bnk_forge.enabled=true")
 
 	cmd.AddCommand(newDestroyBNKCmd(), newDestroyDPUsCmd())
 	return cmd
@@ -71,6 +73,7 @@ type destroyAllFlags struct {
 	skipBNK        bool
 	skipDPUs       bool
 	skipCluster    bool
+	skipBNKForge   bool
 }
 
 func runDestroyAll(ctx context.Context, out io.Writer, f *destroyAllFlags) error {
@@ -119,6 +122,32 @@ func runDestroyAll(ctx context.Context, out io.Writer, f *destroyAllFlags) error
 		fmt.Fprintln(out, "      cluster reset.")
 	} else {
 		fmt.Fprintln(out, "[3/3] (--skip-cluster)")
+	}
+
+	// Inverse of cluster-up's auto-launch hook: if bnk_forge.enabled,
+	// remove the cluster registration + project from bnk-forge so
+	// re-deploys don't pile up stale entries in its UI.
+	//
+	// Soft-fail policy mirrors cluster_up.go's hook: bnk-forge not
+	// running → info skip; auth/API errors → WARN. destroy still
+	// succeeds either way.
+	switch {
+	case f.skipBNKForge:
+		fmt.Fprintln(out, "\n[bnk-forge] --skip-bnk-forge set — not unregistering.")
+	case !p.BNKForge.Enabled:
+		// silent: user has not opted in
+	default:
+		fmt.Fprintln(out, "\n[bnk-forge] bnk_forge.enabled=true — unregistering cluster + project ...")
+		err := UnregisterBNKForge(ctx, out, repo, p)
+		switch {
+		case err == nil:
+			// success — message already printed by UnregisterBNKForge
+		case errors.Is(err, bnkforge.ErrNotRunning):
+			fmt.Fprintln(out, "[bnk-forge] bnk-forge is not running — skipping. Stale project may remain; remove with `dpubnkctl bnk-forge unregister` later.")
+		default:
+			fmt.Fprintf(out, "[bnk-forge] WARN: unregister failed: %v\n", err)
+			fmt.Fprintln(out, "[bnk-forge] Continuing — run `dpubnkctl bnk-forge unregister` later to retry.")
+		}
 	}
 
 	p.Status.Deploy = "pending"

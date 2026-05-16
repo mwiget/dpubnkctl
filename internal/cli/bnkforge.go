@@ -18,28 +18,22 @@ import (
 func newBNKForgeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "bnk-forge",
-		Short: "Bring up a local bnk-forge stack + auto-create a project mirroring this PoC",
+		Short: "Integrate this PoC with a local bnk-forge install (launch / unregister)",
 		Long: `Integrates a local bnk-forge installation
 (https://github.com/sp-prod-field/bnk-forge — currently private) with a
 dpubnkctl PoC. The bnk-forge repo must be cloned locally; reference its
 path in poc.yaml under bnk_forge.repo_path.
 
-What 'launch' does:
-  1. Confirm bnk_forge.enabled = true in poc.yaml.
-  2. Health-check https://localhost (or bnk_forge.url). If responsive,
-     skip make. Otherwise run 'make deploy' in the bnk-forge clone and
-     poll the health endpoint until ready.
-  3. POST /api/auth/login (admin/changeme by default; override via
-     bnk_forge.admin_password).
-  4. If a project with the PoC's name already exists, no-op. Otherwise
-     POST /api/projects with name + description derived from poc.yaml's
-     metadata + versions blocks.
-  5. Print the URL to open in a browser.
-
-Future: 'launch' will optionally upload the PoC's kubeconfig as a
-project credential. Today it just creates the project shell.`,
+Subcommands:
+  launch      Ensure bnk-forge is running, then ensure the PoC's
+              project + cluster registration exist (idempotent).
+              Auto-invoked by 'cluster up' when bnk_forge.enabled.
+  unregister  Inverse of launch: remove the cluster registration and
+              the project from bnk-forge. Auto-invoked by 'destroy'
+              when bnk_forge.enabled.`,
 	}
 	cmd.AddCommand(newBNKForgeLaunchCmd())
+	cmd.AddCommand(newBNKForgeUnregisterCmd())
 	return cmd
 }
 
@@ -170,6 +164,95 @@ func ensureProjectCluster(ctx context.Context, out io.Writer, cli *bnkforge.Clie
 	fmt.Fprintf(out, "  Registered cluster %q (id=%d). bnk-forge should now see the live nodes + BNK CRDs.\n",
 		p.Metadata.Name, id)
 	return nil
+}
+
+// UnregisterBNKForge removes the cluster + project registration that
+// LaunchBNKForge created. Soft on every error path so a destroy that
+// runs against a torn-down bnk-forge still succeeds; the caller
+// chooses whether to log a warning or propagate.
+//
+// Lookup keyed by poc.metadata.name (same as LaunchBNKForge's
+// create-or-skip). Cluster deleted first so the foreign key from
+// cluster → project is gone before the project delete.
+func UnregisterBNKForge(ctx context.Context, out io.Writer, repo string, p *poc.PoC) error {
+	cfg := bnkforge.Config{
+		RepoPath:      p.BNKForge.RepoPath,
+		URL:           p.BNKForge.URL,
+		AdminUsername: p.BNKForge.AdminUsername,
+		AdminPassword: p.BNKForge.AdminPassword,
+	}.WithDefaults()
+
+	if err := bnkforge.RequireRunning(ctx, cfg, out); err != nil {
+		return err
+	}
+	cli := bnkforge.NewClient(cfg)
+	if err := cli.Login(ctx, cfg.AdminUsername, cfg.AdminPassword); err != nil {
+		return fmt.Errorf("login: %w", err)
+	}
+
+	// 1. Cluster (lookup by name, delete by id).
+	clusterID := 0
+	if projectID, found, err := cli.FindProjectByName(ctx, p.Metadata.Name); err == nil && found {
+		clusters, err := cli.ListProjectClusters(ctx, projectID)
+		if err == nil {
+			for _, c := range clusters {
+				if c.Name == p.Metadata.Name {
+					clusterID = c.ID
+					break
+				}
+			}
+		}
+		if clusterID != 0 {
+			if err := cli.DeleteCluster(ctx, clusterID); err != nil {
+				fmt.Fprintf(out, "  WARN: delete cluster %d: %v\n", clusterID, err)
+			} else {
+				fmt.Fprintf(out, "  Deleted cluster registration (id=%d).\n", clusterID)
+			}
+		}
+		// 2. Project.
+		if err := cli.DeleteProject(ctx, projectID); err != nil {
+			return fmt.Errorf("delete project %d: %w", projectID, err)
+		}
+		fmt.Fprintf(out, "  Deleted project %q (id=%d).\n", p.Metadata.Name, projectID)
+		return nil
+	}
+	fmt.Fprintf(out, "  No project %q in bnk-forge — nothing to unregister.\n", p.Metadata.Name)
+	return nil
+}
+
+type bnkForgeUnregisterFlags struct {
+	pocDir string
+}
+
+func newBNKForgeUnregisterCmd() *cobra.Command {
+	f := &bnkForgeUnregisterFlags{}
+	cmd := &cobra.Command{
+		Use:   "unregister",
+		Short: "Remove this PoC's cluster + project from bnk-forge",
+		Long: `Inverse of 'dpubnkctl bnk-forge launch'. Deletes the cluster
+registration for this PoC, then deletes the matching project. Idempotent —
+a missing cluster or project is not an error.
+
+Auto-invoked by 'dpubnkctl destroy' when bnk_forge.enabled = true.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repo, err := resolvePoCDir(f.pocDir)
+			if err != nil {
+				return err
+			}
+			p, err := poc.Load(repo)
+			if err != nil {
+				return fmt.Errorf("not a PoC repo (%s): %w", repo, err)
+			}
+			if !p.BNKForge.Enabled {
+				return errors.New("bnk_forge.enabled is false in poc.yaml — nothing to unregister")
+			}
+			cfg := bnkforge.Config{URL: p.BNKForge.URL}.WithDefaults()
+			fmt.Fprintf(cmd.OutOrStdout(), "PoC:           %s\nbnk-forge URL: %s\n\n", p.Metadata.Name, cfg.URL)
+			return UnregisterBNKForge(cmd.Context(), cmd.OutOrStdout(), repo, p)
+		},
+	}
+	cmd.Flags().StringVar(&f.pocDir, "poc", "", "PoC repo path (default: current directory)")
+	return cmd
 }
 
 func buildProjectFromPoC(p *poc.PoC) bnkforge.Project {
