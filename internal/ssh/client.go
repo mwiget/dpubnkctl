@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	xssh "golang.org/x/crypto/ssh"
@@ -224,7 +225,10 @@ func hostKeyCallback(cfg Config) (xssh.HostKeyCallback, error) {
 		return nil, err
 	}
 	if _, err := os.Stat(cfg.KnownHosts); errors.Is(err, os.ErrNotExist) {
-		f, ferr := os.OpenFile(cfg.KnownHosts, os.O_CREATE|os.O_WRONLY, 0o644)
+		// 0o600: known_hosts pins the SSH server identities for every
+		// host + DPU in the PoC. Anyone with read access can use it to
+		// fingerprint the lab and confirm what's reachable.
+		f, ferr := os.OpenFile(cfg.KnownHosts, os.O_CREATE|os.O_WRONLY, 0o600)
 		if ferr != nil {
 			return nil, ferr
 		}
@@ -251,9 +255,18 @@ func hostKeyCallback(cfg Config) (xssh.HostKeyCallback, error) {
 	}, nil
 }
 
+// knownHostsMu serialises TOFU appends across parallel SSH fanouts
+// (cluster up's preflight + DPU joins both dial concurrently). Without
+// it, two goroutines that both observe "host not in known_hosts" race
+// the O_APPEND write and one's host-key line can interleave with the
+// other's, leaving an unparseable known_hosts entry.
+var knownHostsMu sync.Mutex
+
 func appendKnownHost(path, host string, remote net.Addr, key xssh.PublicKey) error {
+	knownHostsMu.Lock()
+	defer knownHostsMu.Unlock()
 	line := knownhosts.Line([]string{knownhosts.Normalize(host), knownhosts.Normalize(remote.String())}, key)
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}

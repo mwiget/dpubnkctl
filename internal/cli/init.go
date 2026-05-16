@@ -333,11 +333,15 @@ func generateDPUPassword(repoDir string) (string, error) {
 		return "", fmt.Errorf("unexpected openssl passwd output: %q", hash)
 	}
 
+	// keys/ holds offline-crackable material: SSH private keys, the MD5-
+	// crypt DPU password hash, the FAR tarball, the TEEM JWT. 0o700 so
+	// other local users on the jumphost can't even list the contents;
+	// each file is 0o600 too as belt-and-suspenders.
 	keysDir := filepath.Join(repoDir, "keys")
-	if err := os.MkdirAll(keysDir, 0o755); err != nil {
+	if err := os.MkdirAll(keysDir, 0o700); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(filepath.Join(keysDir, "dpu_password.hash"), []byte(hash+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(keysDir, "dpu_password.hash"), []byte(hash+"\n"), 0o600); err != nil {
 		return "", err
 	}
 	if err := os.WriteFile(filepath.Join(keysDir, "dpu_password.txt"), []byte(cleartext+"\n"), 0o600); err != nil {
