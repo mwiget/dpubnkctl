@@ -60,6 +60,24 @@ func (r ValidationResult) Valid() bool { return len(r.Errors) == 0 }
 // to keep this package import-free from siblings — they're stable.
 var roleRe = regexp.MustCompile(`^[a-z][a-z0-9]{0,9}$`)
 
+// safeNameRe gates strings that end up in shell command lines or
+// filesystem paths under artifacts/ — Host.Name, DPU.Hostname. RFC 1123
+// label, all lowercase to match k8s node-name rules; this is also what
+// dpubnkctl init enforces for the PoC name itself.
+var safeNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+
+// safeIfaceRe gates network interface names that flow into `ethtool`,
+// `ip link`, and netplan link references. Linux IFNAMSIZ caps at 15
+// chars; we additionally disallow whitespace, quotes, command-substitution
+// metacharacters — anything that could break out of a shell argv.
+var safeIfaceRe = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,15}$`)
+
+// safeBFBNameRe gates the on-disk BFB filename that gets uploaded to
+// the host and named in `bfb-install --bfb '<name>'`. Single-quoted in
+// the script today, but disallow quote chars entirely so a poc.yaml
+// override can't escape.
+var safeBFBNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+\.bfb$`)
+
 // defaultInternalCIDR is the placeholder that ships in `dpubnkctl init`
 // — it's a documented-safe RFC 2544 default, but the SE should confirm
 // it doesn't overlap the customer's existing ranges.
@@ -148,6 +166,12 @@ func ValidateForPhase(p *PoC, repoDir string, minPhase Phase) ValidationResult {
 		hctx := fmt.Sprintf("hosts[%d:%s]", i, h.Name)
 		if h.Name == "" {
 			c.err(PhaseProvision, "%s.name is empty", hctx)
+		} else if !safeNameRe.MatchString(h.Name) {
+			// Host.Name flows into artifacts/<name>.pem, bf.conf filenames,
+			// and the kubespray inventory — any value that isn't a strict
+			// RFC 1123 label can either escape filesystem boundaries or
+			// land in a shell command unquoted. See AGENTS.md threat model.
+			c.err(PhaseProvision, "%s.name %q must match %s (RFC 1123 label, lowercase)", hctx, h.Name, safeNameRe.String())
 		}
 		// Role classification is required by kubespray inventory rendering
 		// (cluster phase). Provision flashes any host's DPU regardless of
@@ -192,6 +216,11 @@ func ValidateForPhase(p *PoC, repoDir string, minPhase Phase) ValidationResult {
 		if h.DataPlane != nil {
 			if h.DataPlane.ParentIface == "" {
 				c.err(PhaseCluster, "%s.data_plane.parent_iface is empty (set to the host's data-plane PF, e.g. ens16f0np0)", hctx)
+			} else if !safeIfaceRe.MatchString(h.DataPlane.ParentIface) {
+				// ParentIface flows into `ethtool -i %s` and `ip -br addr
+				// show dev %s` over SSH. An unquoted value containing a
+				// shell metacharacter would execute as the SSH user.
+				c.err(PhaseCluster, "%s.data_plane.parent_iface %q must match %s (Linux IFNAMSIZ + shell-safe charset)", hctx, h.DataPlane.ParentIface, safeIfaceRe.String())
 			}
 			for k, v := range h.DataPlane.VLANs {
 				validateHostVLAN(c, v, fmt.Sprintf("%s.data_plane.vlans[%d]", hctx, k))
@@ -242,6 +271,13 @@ func ValidateForPhase(p *PoC, repoDir string, minPhase Phase) ValidationResult {
 	} else if !fileExists(repoDir, p.Provisioning.DPUPasswordHashRef) {
 		c.err(PhaseProvision, "provisioning.dpu_password_hash_ref %q file not found", p.Provisioning.DPUPasswordHashRef)
 	}
+	// BFB filename feeds `sudo bfb-install --bfb '<name>'` on the host;
+	// the value is single-quoted but a poc.yaml override with an embedded
+	// single quote would escape the quoting. Require a strict
+	// filesystem-safe shape with a literal .bfb extension.
+	if p.Versions.BFBImage != "" && !safeBFBNameRe.MatchString(p.Versions.BFBImage) {
+		c.err(PhaseProvision, "versions.bfb_image %q must match %s", p.Versions.BFBImage, safeBFBNameRe.String())
+	}
 	if len(p.Provisioning.DPUDNS) == 0 {
 		c.err(PhaseProvision, "provisioning.dpu_dns is empty (DPU systemd-resolved needs at least one resolver)")
 	}
@@ -286,6 +322,11 @@ func validateDPU(c *checker, d *DPU, ctx string) {
 	}
 	if d.Hostname == "" {
 		c.err(PhaseProvision, "%s.hostname is empty (DPU OS hostname, set before flash)", ctx)
+	} else if !safeNameRe.MatchString(d.Hostname) {
+		// DPU.Hostname flows into kubeadm join's --node-name and the
+		// bf.conf hostname line. Strict RFC 1123 label is also what k8s
+		// node-name requires; anything else would break the join.
+		c.err(PhaseProvision, "%s.hostname %q must match %s (RFC 1123 label, lowercase)", ctx, d.Hostname, safeNameRe.String())
 	}
 	if d.TmfifoIP == "" {
 		c.err(PhaseProvision, "%s.tmfifo_ip is empty (tmfifo_net0 CIDR, e.g. 192.168.100.2/30)", ctx)
