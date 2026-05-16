@@ -169,28 +169,9 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 		if err != nil {
 			return err
 		}
-		// Even after deployment/f5-cne-controller is Available, the
-		// validating-webhook server inside the pod may take a few
-		// seconds more to bind to port 3340 (the deployment's readiness
-		// probe doesn't actually probe the webhook listener). First
-		// applies tend to hit "failed calling webhook ... connection
-		// refused". Retry with a short backoff specifically on that
-		// error; surface any other failure immediately.
-		var applyErr error
-		for attempt := 1; attempt <= 30; attempt++ {
-			applyErr = saveAndApply(ctx, r, repo, "artifacts/f5spkvlans-rendered.yaml", vlans)
-			if applyErr == nil {
-				break
-			}
-			msg := applyErr.Error()
-			if !strings.Contains(msg, "f5validate.f5net.com") || !strings.Contains(msg, "connection refused") {
-				return applyErr
-			}
-			fmt.Fprintf(out, "      webhook not bound yet, retrying in 5s (attempt %d/30) ...\n", attempt)
-			time.Sleep(5 * time.Second)
-		}
-		if applyErr != nil {
-			return fmt.Errorf("F5SPKVlan apply: webhook never came up: %w", applyErr)
+		if err := applyWithWebhookRetry(ctx, r, repo, "artifacts/f5spkvlans-rendered.yaml",
+			vlans, "f5validate.f5net.com", 30, 5*time.Second, out); err != nil {
+			return fmt.Errorf("F5SPKVlan apply: %w", err)
 		}
 		fmt.Fprintf(out, "      applied %d aggregated F5SPKVlan(s).\n", vlanCount)
 	} else {
@@ -342,4 +323,31 @@ func saveAndApply(ctx context.Context, r *deploy.Runner, repo, relPath, manifest
 		return fmt.Errorf("apply %s: %w", relPath, err)
 	}
 	return nil
+}
+
+// applyWithWebhookRetry wraps saveAndApply with a retry loop for the
+// specific "validating webhook X: connection refused" race that
+// happens when a Deployment hosting an admission webhook reports
+// Available before the webhook server inside the pod has actually
+// bound its port. Surfaces every other apply error immediately —
+// this is not a generic retry, only the "webhook not bound yet" one.
+//
+// webhookName is matched against the kubectl error string ("the
+// webhook \"<name>\"..."); attempts × interval bounds the total wait.
+func applyWithWebhookRetry(ctx context.Context, r *deploy.Runner, repo, relPath, manifest, webhookName string, attempts int, interval time.Duration, out io.Writer) error {
+	var applyErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		applyErr = saveAndApply(ctx, r, repo, relPath, manifest)
+		if applyErr == nil {
+			return nil
+		}
+		msg := applyErr.Error()
+		if !strings.Contains(msg, webhookName) || !strings.Contains(msg, "connection refused") {
+			return applyErr
+		}
+		fmt.Fprintf(out, "      webhook %s not bound yet, retrying in %s (attempt %d/%d) ...\n",
+			webhookName, interval, attempt, attempts)
+		time.Sleep(interval)
+	}
+	return fmt.Errorf("webhook %s never came up: %w", webhookName, applyErr)
 }
