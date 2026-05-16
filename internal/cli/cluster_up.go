@@ -20,14 +20,15 @@ import (
 )
 
 type clusterUpFlags struct {
-	pocDir         string
-	yolo           bool
-	confirmCluster string
-	pull           bool
-	skipFetch      bool
-	skipBNKForge   bool
-	timeout        time.Duration
-	playbook       string
+	pocDir             string
+	yolo               bool
+	confirmCluster     string
+	pull               bool
+	skipFetch          bool
+	skipBNKForge       bool
+	insecureKubeconfig bool
+	timeout            time.Duration
+	playbook           string
 }
 
 func newClusterUpCmd() *cobra.Command {
@@ -61,6 +62,7 @@ Required gates:
 	cmd.Flags().BoolVar(&f.pull, "pull", true, "Run `docker pull` for the kubespray image before cluster.yml")
 	cmd.Flags().BoolVar(&f.skipFetch, "skip-fetch-kubeconfig", false, "Don't pull /etc/kubernetes/admin.conf back to artifacts/kubeconfig")
 	cmd.Flags().BoolVar(&f.skipBNKForge, "skip-bnk-forge", false, "Skip the optional bnk-forge auto-registration even if bnk_forge.enabled=true")
+	cmd.Flags().BoolVar(&f.insecureKubeconfig, "insecure-kubeconfig", false, "When network.cluster_apiserver_address is unset, fall back to insecure-skip-tls-verify in the fetched kubeconfig (without this flag, cluster up refuses to fetch and the operator must run with mgmt covered by the apiserver cert SAN)")
 	cmd.Flags().DurationVar(&f.timeout, "timeout", 90*time.Minute, "Wall-clock timeout for the kubespray run")
 	cmd.Flags().StringVar(&f.playbook, "playbook", "cluster.yml", "Playbook to run (use reset.yml for tear-down)")
 	return cmd
@@ -193,14 +195,29 @@ func runClusterUp(ctx context.Context, out io.Writer, f *clusterUpFlags) error {
 		kcPath := filepath.Join(repo, "artifacts", "kubeconfig")
 		// When cluster_apiserver_address is set in poc.yaml, the inventory
 		// adds every host's SSH address to supplementary_addresses_in_ssl_keys
-		// so the apiserver cert SAN covers mgmt. In that case we can keep
-		// CA verification on. Otherwise fall back to insecure mode — the
-		// cert SAN won't include the mgmt address and TLS will fail.
-		insecure := p.Network.ClusterAPIServerAddress == ""
-		if err := fetchKubeconfig(ctx, repo, cpHost, kcPath, insecure); err != nil {
-			fmt.Fprintf(out, "      WARN: kubeconfig fetch failed (cluster is up, fetch manually): %v\n", err)
-		} else {
-			fmt.Fprintf(out, "      saved %s (kubectl --kubeconfig=%s get nodes)\n", kcPath, kcPath)
+		// so the apiserver cert SAN covers mgmt. With the SAN covering
+		// every host's SSH address, the fetched kubeconfig validates TLS
+		// normally and no `--insecure-kubeconfig` is needed.
+		//
+		// If cluster_apiserver_address is empty, the cert SAN won't include
+		// the mgmt address and TLS validation will fail at the first
+		// `kubectl get`. To avoid silently inserting `insecure-skip-tls-
+		// verify: true` (which leaves the operator's later kubectl + helm
+		// calls MITM-able), require an explicit `--insecure-kubeconfig`
+		// opt-in. Without it, refuse to fetch.
+		needInsecure := p.Network.ClusterAPIServerAddress == ""
+		switch {
+		case needInsecure && !f.insecureKubeconfig:
+			fmt.Fprintln(out, "      SKIPPED kubeconfig fetch: network.cluster_apiserver_address is empty so the apiserver cert SAN won't cover the mgmt address, and --insecure-kubeconfig was not passed. Either set network.cluster_apiserver_address in poc.yaml (recommended) or re-run with --insecure-kubeconfig.")
+		default:
+			if needInsecure {
+				fmt.Fprintln(out, "      WARN: --insecure-kubeconfig — fetched kubeconfig will set insecure-skip-tls-verify=true (MITM-vulnerable).")
+			}
+			if err := fetchKubeconfig(ctx, repo, cpHost, kcPath, needInsecure); err != nil {
+				fmt.Fprintf(out, "      WARN: kubeconfig fetch failed (cluster is up, fetch manually): %v\n", err)
+			} else {
+				fmt.Fprintf(out, "      saved %s (kubectl --kubeconfig=%s get nodes)\n", kcPath, kcPath)
+			}
 		}
 	}
 
