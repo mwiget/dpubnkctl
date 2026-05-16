@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -60,11 +59,8 @@ func runClusterReset(ctx context.Context, out io.Writer, f *clusterResetFlags) e
 		return fmt.Errorf("not a PoC repo (%s): %w", repo, err)
 	}
 
-	if !f.yolo {
-		return errors.New("refusing destructive reset without --yolo")
-	}
-	if f.confirmCluster != p.Metadata.Name {
-		return fmt.Errorf("--confirm-cluster must equal poc.yaml.metadata.name (%q), got %q", p.Metadata.Name, f.confirmCluster)
+	if err := requireTwoGates(f.yolo, "--confirm-cluster", f.confirmCluster, p.Metadata.Name, "cluster reset"); err != nil {
+		return err
 	}
 	if err := enforceValidateForPhase(out, p, repo, poc.PhaseCluster, false); err != nil {
 		return err

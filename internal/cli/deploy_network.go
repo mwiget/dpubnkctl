@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -91,11 +90,8 @@ func runDeployNetwork(ctx context.Context, out io.Writer, f *deployNetworkFlags)
 	if err != nil {
 		return fmt.Errorf("not a PoC repo (%s): %w", repo, err)
 	}
-	if !f.yolo {
-		return errors.New("refusing destructive deploy without --yolo")
-	}
-	if f.confirmDeploy != p.Metadata.Name {
-		return fmt.Errorf("--confirm-deploy must equal poc.yaml.metadata.name (%q), got %q", p.Metadata.Name, f.confirmDeploy)
+	if err := requireTwoGates(f.yolo, "--confirm-deploy", f.confirmDeploy, p.Metadata.Name, "deploy network"); err != nil {
+		return err
 	}
 	if err := enforceValidateForPhase(out, p, repo, poc.PhaseDeploy, false); err != nil {
 		return err

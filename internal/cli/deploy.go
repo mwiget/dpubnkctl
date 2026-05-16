@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -73,11 +72,8 @@ func runDeployPrereqs(ctx context.Context, out io.Writer, f *deployPrereqsFlags)
 		return fmt.Errorf("not a PoC repo (%s): %w", repo, err)
 	}
 
-	if !f.yolo {
-		return errors.New("refusing to write to cluster without --yolo")
-	}
-	if f.confirmDeploy != p.Metadata.Name {
-		return fmt.Errorf("--confirm-deploy must equal poc.yaml.metadata.name (%q), got %q", p.Metadata.Name, f.confirmDeploy)
+	if err := requireTwoGates(f.yolo, "--confirm-deploy", f.confirmDeploy, p.Metadata.Name, "deploy"); err != nil {
+		return err
 	}
 
 	kubeconfig, err := requireKubeconfig(repo, "run `dpubnkctl cluster up` first")
