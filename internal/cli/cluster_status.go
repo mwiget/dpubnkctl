@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/mwiget/dpubnkctl/internal/cluster"
 	"github.com/mwiget/dpubnkctl/internal/poc"
 	"github.com/mwiget/dpubnkctl/internal/version"
 )
@@ -266,20 +267,11 @@ func (k *kubectlReader) crdEstablished(ctx context.Context, name string) (bool, 
 }
 
 // containerRuntime returns "docker" or "podman" — whichever is on PATH
-// and responds to `version`. Returns "" if neither. We re-derive here
-// instead of going through cluster.CheckContainerRuntime to avoid the
-// log spam — status is silent on the happy path.
+// and responds to `version` — or "" if neither. Thin wrapper over
+// cluster.CheckContainerRuntime that drops the "no runtime found"
+// error (status output is silent on the happy path and lists "missing"
+// for the unhappy one, not an error).
 func containerRuntime(ctx context.Context) string {
-	for _, rt := range []string{"docker", "podman"} {
-		if _, err := exec.LookPath(rt); err != nil {
-			continue
-		}
-		pctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		err := exec.CommandContext(pctx, rt, "version", "--format", "{{.Server.Version}}").Run()
-		cancel()
-		if err == nil {
-			return rt
-		}
-	}
-	return ""
+	rt, _ := cluster.CheckContainerRuntime(ctx)
+	return rt
 }
