@@ -38,19 +38,28 @@ func PullF5CertGen(ctx context.Context, auth OCIAuth, chartVersion, destDir stri
 	if err != nil {
 		return err
 	}
-	script := strings.Join([]string{
-		`set -e`,
-		`cat | helm registry login ` + version.FARRegistryHost + ` --username ` + auth.Username + ` --password-stdin >/dev/null`,
-		`cd /work`,
-		`rm -f f5-cert-gen-` + chartVersion + `.tgz`,
-		`rm -rf cert-gen`,
-		`helm pull oci://` + version.FARRegistryHost + `/utils/f5-cert-gen --version ` + chartVersion + ` -d . >/dev/null`,
-		`tar -xzf f5-cert-gen-` + chartVersion + `.tgz`,
-	}, " && ")
+	// Username + chartVersion are passed as env vars rather than spliced
+	// into the shell string so an attacker-controlled value (today
+	// FARRegistryAuth.Username is hardcoded to "_json_key" and
+	// chartVersion comes from a TLS-protected release manifest, but the
+	// surface is poc.yaml-ready in both cases) can't escape a quote and
+	// land arbitrary commands in the sh -c invocation. Inside the
+	// script, $USERNAME / $CHART_VERSION expand once at sh parse time —
+	// they're already inside the shell, no further quoting needed.
+	const script = `set -e
+cat | helm registry login ` + version.FARRegistryHost + ` --username "$USERNAME" --password-stdin >/dev/null
+cd /work
+rm -f "f5-cert-gen-${CHART_VERSION}.tgz"
+rm -rf cert-gen
+helm pull oci://` + version.FARRegistryHost + `/utils/f5-cert-gen --version "$CHART_VERSION" -d . >/dev/null
+tar -xzf "f5-cert-gen-${CHART_VERSION}.tgz"
+`
 	cmd := exec.CommandContext(ctx, "docker",
 		"run", "--rm", "-i",
 		"-v", absDest+":/work",
 		"--network=host",
+		"-e", "USERNAME="+auth.Username,
+		"-e", "CHART_VERSION="+chartVersion,
 		version.K8sToolsImage,
 		"sh", "-c", script)
 	cmd.Stdin = strings.NewReader(auth.Password + "\n")
