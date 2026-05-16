@@ -285,25 +285,16 @@ func destroyBNK(ctx context.Context, repo string, p *poc.PoC, out io.Writer, tim
 	// the next steps when they're racing it.
 	time.Sleep(10 * time.Second)
 
-	// 3. Force-delete F5 sub-CRs in f5-operators (the orphans). List of
-	//    plural names matches what FLO's chart installs; missing ones
-	//    just no-op via --ignore-not-found.
-	subCRs := []string{
-		"csrcs", "cwcs", "observers", "rabbitmqs", "otelcollectors",
-		"cnemanifests", "crdinstallers", "afms", "downloaders", "dssms",
-		"ipams", "envdiscoveries", "dwblds", "coremonds", "analyzers",
-		"cnecontrollers",
-	}
+	// 3. Force-delete F5 sub-CRs in f5-operators (the orphans). List is
+	//    owned by internal/deploy/teardown.go; missing CRDs just no-op
+	//    via --ignore-not-found.
 	fmt.Fprintln(out, "      → force-delete F5 sub-CRs in f5-operators")
-	for _, cr := range subCRs {
+	for _, cr := range deploy.FLOSubCRsInOperators {
 		_ = r.Kubectl(ctx, "-n", "f5-operators", "delete", cr+".k8s.f5.com", "--all", "--ignore-not-found", "--wait=false", "--timeout=10s")
 	}
 	// Patch off any finalizers that survive the soft delete.
 	fmt.Fprintln(out, "      → strip finalizers from any stuck sub-CRs")
-	for _, cr := range subCRs {
-		// Scriptable kubectl in one container call: get names → patch each.
-		// We use kubectl_patch in a loop driven by `xargs`-style; but our
-		// Runner only exposes a single kubectl invocation. Iterate from Go.
+	for _, cr := range deploy.FLOSubCRsInOperators {
 		stripFinalizers(ctx, r, "f5-operators", cr+".k8s.f5.com")
 	}
 
@@ -320,16 +311,9 @@ func destroyBNK(ctx context.Context, repo string, p *poc.PoC, out io.Writer, tim
 	// the finalizer — strip it manually. CWC + observer + otelcollector
 	// + rabbitmq sub-CRs in the same namespace get the same treatment.
 	sharedNS := deploy.SharedComponentNamespace
-	sharedSubCRs := []struct{ Plural, Group string }{
-		{"licenses", "k8s.f5net.com"},
-		{"cwcs", "k8s.f5.com"},
-		{"observers", "k8s.f5.com"},
-		{"otelcollectors", "k8s.f5.com"},
-		{"rabbitmqs", "k8s.f5.com"},
-	}
 	fmt.Fprintf(out, "      → force-delete + strip CRs in %s (shared-component ns)\n", sharedNS)
-	for _, cr := range sharedSubCRs {
-		fqkind := cr.Plural + "." + cr.Group
+	for _, cr := range deploy.SharedComponentSubCRs {
+		fqkind := cr.FullName()
 		_ = r.Kubectl(ctx, "-n", sharedNS, "delete", fqkind, "--all", "--ignore-not-found", "--wait=false", "--timeout=10s")
 		stripFinalizers(ctx, r, sharedNS, fqkind)
 	}
