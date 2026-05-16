@@ -91,6 +91,13 @@ func runDestroyAll(ctx context.Context, out io.Writer, f *destroyAllFlags) error
 	if f.confirmCluster != p.Metadata.Name {
 		return fmt.Errorf("--confirm-cluster must equal poc.yaml.metadata.name (%q), got %q", p.Metadata.Name, f.confirmCluster)
 	}
+	// Validate at PhaseDeploy so every poc.yaml field this command will
+	// touch (Host.Name, DPU.Hostname, ParentIface) is regex-screened
+	// before flowing into SSH `Run`. PhaseDeploy supersets cluster +
+	// provision rules — destroy may unwind any of them.
+	if err := enforceValidateForPhase(out, p, repo, poc.PhaseDeploy, false); err != nil {
+		return err
+	}
 
 	fmt.Fprintf(out, "PoC: %s\n\n", p.Metadata.Name)
 
@@ -253,6 +260,9 @@ func runDestroyBNK(ctx context.Context, out io.Writer, f *destroyBNKFlags) error
 	}
 	if f.confirmCluster != p.Metadata.Name {
 		return fmt.Errorf("--confirm-cluster must equal poc.yaml.metadata.name (%q), got %q", p.Metadata.Name, f.confirmCluster)
+	}
+	if err := enforceValidateForPhase(out, p, repo, poc.PhaseDeploy, false); err != nil {
+		return err
 	}
 	if err := destroyBNK(ctx, repo, p, out, f.timeout); err != nil {
 		return err
@@ -447,6 +457,9 @@ func runDestroyDPUs(ctx context.Context, out io.Writer, f *destroyDPUsFlags) err
 	}
 	if f.confirmCluster != p.Metadata.Name {
 		return fmt.Errorf("--confirm-cluster must equal poc.yaml.metadata.name (%q), got %q", p.Metadata.Name, f.confirmCluster)
+	}
+	if err := enforceValidateForPhase(out, p, repo, poc.PhaseProvision, false); err != nil {
+		return err
 	}
 	if err := destroyDPUs(ctx, repo, p, out, f.timeout); err != nil {
 		return err

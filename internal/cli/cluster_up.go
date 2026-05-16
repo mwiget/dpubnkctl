@@ -82,6 +82,9 @@ func runClusterUp(ctx context.Context, out io.Writer, f *clusterUpFlags) error {
 	if f.confirmCluster != p.Metadata.Name {
 		return fmt.Errorf("--confirm-cluster must equal poc.yaml.metadata.name (%q), got %q", p.Metadata.Name, f.confirmCluster)
 	}
+	if err := enforceValidateForPhase(out, p, repo, poc.PhaseCluster, false); err != nil {
+		return err
+	}
 
 	plan := cluster.BuildPlan(p)
 	if !plan.Valid() {

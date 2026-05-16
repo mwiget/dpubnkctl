@@ -82,6 +82,9 @@ func runDeployFLO(ctx context.Context, out io.Writer, f *deployFLOFlags) error {
 	if f.confirmDeploy != p.Metadata.Name {
 		return fmt.Errorf("--confirm-deploy must equal poc.yaml.metadata.name (%q), got %q", p.Metadata.Name, f.confirmDeploy)
 	}
+	if err := enforceValidateForPhase(out, p, repo, poc.PhaseDeploy, false); err != nil {
+		return err
+	}
 
 	kubeconfig := filepath.Join(repo, "artifacts", "kubeconfig")
 	if _, err := os.Stat(kubeconfig); err != nil {

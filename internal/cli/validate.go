@@ -63,6 +63,29 @@ func runValidate(out io.Writer, pocDir string, strict bool) error {
 	return nil
 }
 
+// enforceValidateForPhase is the shared precheck called by every
+// subcommand that turns poc.yaml strings into shell commands. It runs
+// the phase-filtered validate and refuses to proceed if there are
+// errors. Defense in depth — the regex gates in poc/validate.go don't
+// matter if no command runs them. Operators can override per-command
+// with --skip-validate.
+//
+// Phase tags work the way they do for `provision dpus`: this checks
+// at-or-before-phase, so a `cluster up` precheck won't yell about
+// missing FAR/JWT (deploy-phase rules), only fields that this command
+// is actually about to use.
+func enforceValidateForPhase(out io.Writer, p *poc.PoC, repo string, phase poc.Phase, skip bool) error {
+	if skip {
+		return nil
+	}
+	r := poc.ValidateForPhase(p, repo, phase)
+	if !r.Valid() {
+		printValidation(out, r)
+		return fmt.Errorf("poc.yaml has %d %s-phase validation error(s) — fix them or pass --skip-validate", len(r.Errors), phase)
+	}
+	return nil
+}
+
 // printValidation writes errors and warnings to out in a stable format.
 // Used by `dpubnkctl validate` and by the precheck in `provision dpus`.
 func printValidation(out io.Writer, r poc.ValidationResult) {
