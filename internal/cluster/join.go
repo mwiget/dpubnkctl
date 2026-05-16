@@ -76,25 +76,19 @@ func InstallKubeBinaries(ctx context.Context, dpu *ssh.Client, k8sMinor string) 
 	// (AGENTS.md #10.)
 	k8sMinor = normalizeK8sMinor(k8sMinor)
 	repoRel := "v" + k8sMinor
+	// Pinned version constraint — apt's wildcard matches the k8s repo's
+	// "<minor>.x-1.1" packaging convention. We pass this to apt-get
+	// install so the operator never silently gets a different minor
+	// even if a stale source bleeds through.
+	versionPin := k8sMinor + ".*"
+
 	script := strings.Join([]string{
-		"set -e",
+		"set -eo pipefail",
 		// Clear the BSP-applied hold before adding the upstream repo and
 		// installing. `|| true` because on a fresh DPU the packages may
 		// not be present at all (nothing to unhold), and apt-mark errors
 		// when given unknown packages.
 		"sudo -n apt-mark unhold kubelet kubeadm kubectl || true",
-		// Defensive: if a previous run installed the WRONG k8s minor
-		// (observed on the 2.3 e2e — a stale 1.34.x from before the
-		// kubernetes.sources cleanup landed), `apt-get install` below
-		// will be a no-op because the package is already "current".
-		// Compare dpkg's installed minor to our target; remove if they
-		// differ so the subsequent install pulls the right minor from
-		// the v" + k8sMinor + " apt repo.
-		fmt.Sprintf("CURRENT=$(dpkg-query -W -f='${Version}' kubeadm 2>/dev/null | cut -d. -f1,2 || true); "+
-			"if [ -n \"$CURRENT\" ] && [ \"$CURRENT\" != \"%s\" ]; then "+
-			"echo \"removing wrong-minor kubeadm $CURRENT (want %s)\"; "+
-			"sudo -n apt-get remove -y -qq kubelet kubeadm kubectl || true; "+
-			"fi", repoRel[1:], repoRel[1:]),
 		// DOCA 3.2 / Ubuntu 24.04 BFBs pre-ship
 		// /etc/apt/sources.list.d/kubernetes.sources (deb822 format)
 		// pointing at the LATEST k8s stable (e.g. v1.34). apt unions
@@ -103,15 +97,37 @@ func InstallKubeBinaries(ctx context.Context, dpu *ssh.Client, k8sMinor string) 
 		// pre-shipped source, `apt-get install kubeadm` pulls 1.34.x
 		// even though our `.list` says v1.30. Wipe both formats and
 		// rewrite the .list ourselves. See AGENTS.md gotcha #25.
+		//
+		// `apt-get clean` after the wipe so stale package lists from
+		// the previous source don't survive the source rewrite —
+		// otherwise apt's cache can resolve to the old minor even
+		// after the .list now points elsewhere.
 		"sudo -n rm -f /etc/apt/sources.list.d/kubernetes.sources /etc/apt/sources.list.d/kubernetes.list",
-		"sudo -n apt-get update -qq",
-		"sudo -n apt-get install -y -qq apt-transport-https ca-certificates curl gpg",
+		"sudo -n apt-get clean",
+		"sudo -n apt-get update",
+		"sudo -n apt-get install -y apt-transport-https ca-certificates curl gpg",
 		"sudo -n install -m 0755 -d /etc/apt/keyrings",
 		// idempotent: --batch --yes lets gpg overwrite an existing key.
 		fmt.Sprintf("curl -fsSL https://pkgs.k8s.io/core:/stable:/%s/deb/Release.key | sudo -n gpg --batch --yes --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg", repoRel),
 		fmt.Sprintf("echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/%s/deb/ /' | sudo -n tee /etc/apt/sources.list.d/kubernetes.list >/dev/null", repoRel),
-		"sudo -n apt-get update -qq",
-		"sudo -n apt-get install -y -qq kubelet kubeadm kubectl",
+		"sudo -n apt-get update",
+		// Pin the version explicitly. apt's wildcard matches the k8s
+		// repo's "<minor>.x-1.1" packaging. --allow-downgrades covers
+		// the recovery case: prior run installed 1.34.x; we now demand
+		// 1.30.*; without --allow-downgrades apt refuses. Drop `-qq`
+		// so "Unable to locate package <pkg>" actually propagates as a
+		// non-zero exit (with `-qq` it can silently exit 0 — observed
+		// on the 2026-05-16 e2e where worker2 ended up with no
+		// kubectl + exit=0).
+		fmt.Sprintf("sudo -n apt-get install -y --allow-downgrades kubelet=%s kubeadm=%s kubectl=%s",
+			versionPin, versionPin, versionPin),
+		// Verify all three landed at the target minor — apt CAN exit 0
+		// with a partial install in rare edge cases (multi-arch
+		// resolver state). Fail loud if it did.
+		fmt.Sprintf("for pkg in kubelet kubeadm kubectl; do "+
+			"v=$(dpkg-query -W -f='${Version}' \"$pkg\" 2>/dev/null); "+
+			"case \"$v\" in %s.*) ;; *) echo \"ERROR: $pkg version $v not in %s\" >&2; exit 1 ;; esac; "+
+			"done", k8sMinor, versionPin),
 		"sudo -n apt-mark hold kubelet kubeadm kubectl",
 		// containerd ships with the BlueField BSP but our bf.conf
 		// cloud-init stops it as a "clean slate" for the operator.
