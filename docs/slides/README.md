@@ -11,6 +11,27 @@ doc OR converted to slides.
 |---------------------------------|---------------------------------------|
 | `dpubnkctl-overview.md`         | Customer / new-hire intro (14 slides) |
 
+## Content-density rule (avoid overflow)
+
+Marp does **not** auto-detect overflow — content past ~720px just
+clips silently in some browsers and renders past the slide bounds in
+others. A 16:9 slide at the deck's default 23px body font fits roughly:
+
+- **8 short bullets** OR
+- **6 bullets + a 5-row table** OR
+- **a single 10-line code block + 2 bullets**
+
+If you need more, split into two slides — don't shrink the body font.
+A `## H2` heading + section divider + tagline together consume ~4
+visual lines before your first bullet renders. Tables, fenced code
+blocks, and inline `![images]` all count toward the budget; nested
+bullets count double.
+
+Before committing slide edits: open the generated HTML in a browser
+(`make slides-html` then file:///…/docs/slides/dpubnkctl-overview.html)
+and step through every slide you touched — confirm nothing flows past
+the bottom edge.
+
 ## Build artefacts
 
 From the repo root:

@@ -9462,67 +9462,29 @@ section.dense img { max-height: 400px; }
 <h2 id="230-deploy-confirmed--homelab-real-run">2.3.0 deploy confirmed — homelab, real run</h2>
 <p><code>dpubnkctl e2e --yolo --no-resume</code>, clean state → <code>HTTP/1.1 200 OK</code>.</p>
 <ul>
-<li>2× BlueField-3 DPUs · <strong>DOCA 3.2.0</strong> · Ubuntu 24.04 · kernel 6.8</li>
-<li>4-node Kubernetes <strong>1.30.14</strong> · single control plane</li>
-<li>F5 Lifecycle Operator <strong>v2.21.13-0.0.28</strong> (resolved at deploy time from <code>f5-bigip-k8s-manifest</code> 2.3.0-3.2598.3-0.0.170)</li>
-<li>License CR <strong><code>STATE=Active</code></strong> <code>ENVIRONMENT=test</code> <code>MODE=connected</code><br />
-↑ tst-vs-prod auto-detected from JWT <code>jku</code> — zero operator config</li>
-<li>CNEInstance <code>Available=True</code> — all component conditions met</li>
-<li>Both <code>f5-tmm</code> pods 6/6 Ready, 2/2 readiness gates</li>
+<li>2× BF3 DPUs · DOCA 3.2 · Ubuntu 24.04 · K8s <strong>1.30.14</strong></li>
+<li>License CR <strong><code>Active</code></strong> · CNEInstance <code>Available=True</code></li>
 <li><code>Gateway demo-gw</code> <code>Programmed=True</code> @ <code>192.168.40.100</code></li>
-<li><code>destroy --yolo</code> round-trip clean: kubespray reset.yml 0 failures, License + CWC + observer finalizers stripped, <strong>zero &quot;unknown flag&quot; noise</strong></li>
 </ul>
 <table>
 <thead>
 <tr>
-<th style="text-align:left">Phase</th>
+<th style="text-align:left"></th>
 <th style="text-align:right">Wall clock</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align:left"><code>destroy</code> (incl. bnk-forge unregister)</td>
-<td style="text-align:right">2m53s</td>
+<td style="text-align:left">Manual deploy (baseline)</td>
+<td style="text-align:right">~3.5 hours</td>
 </tr>
 <tr>
-<td style="text-align:left"><code>validate</code></td>
-<td style="text-align:right">0s</td>
-</tr>
-<tr>
-<td style="text-align:left"><code>provision dpu</code> (2× BF3 in parallel)</td>
-<td style="text-align:right">12m31s</td>
-</tr>
-<tr>
-<td style="text-align:left"><code>host network setup</code></td>
-<td style="text-align:right">5s</td>
-</tr>
-<tr>
-<td style="text-align:left"><code>cluster up</code> (kubespray)</td>
-<td style="text-align:right">4m31s</td>
-</tr>
-<tr>
-<td style="text-align:left"><code>cluster join-dpus</code></td>
-<td style="text-align:right">1m3s</td>
-</tr>
-<tr>
-<td style="text-align:left"><code>deploy network</code></td>
-<td style="text-align:right">1m24s</td>
-</tr>
-<tr>
-<td style="text-align:left"><code>deploy flo</code></td>
-<td style="text-align:right">56s</td>
-</tr>
-<tr>
-<td style="text-align:left"><code>deploy cne</code> (CNEInstance + License + TMM + GatewayClass)</td>
-<td style="text-align:right">19m20s</td>
-</tr>
-<tr>
-<td style="text-align:left"><strong>TOTAL (destroy + redeploy)</strong></td>
+<td style="text-align:left"><strong><code>dpubnkctl e2e</code> (destroy + redeploy)</strong></td>
 <td style="text-align:right"><strong>~42m43s</strong></td>
 </tr>
 </tbody>
 </table>
-<p>Manual baseline for the same outcome: <strong>~3.5 hours</strong>.</p>
+<p>Dominant phases: <code>provision dpu</code> 12m31s · <code>deploy cne</code> 19m20s. All other phases combined: under 11 minutes.</p>
 <footer>github.com/mwiget/dpubnkctl</footer>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="28" data-paginate="true" data-header="dpubnkctl · BNK 2.3.0" data-footer="github.com/mwiget/dpubnkctl" data-class="section-divider" data-theme="default" data-style="/* ====================================================================

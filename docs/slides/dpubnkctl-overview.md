@@ -642,30 +642,16 @@ Every CR + manifest applied during the run is saved verbatim under `artifacts/` 
 
 `dpubnkctl e2e --yolo --no-resume`, clean state → `HTTP/1.1 200 OK`.
 
-- 2× BlueField-3 DPUs · **DOCA 3.2.0** · Ubuntu 24.04 · kernel 6.8
-- 4-node Kubernetes **1.30.14** · single control plane
-- F5 Lifecycle Operator **v2.21.13-0.0.28** (resolved at deploy time from `f5-bigip-k8s-manifest` 2.3.0-3.2598.3-0.0.170)
-- License CR **`STATE=Active`** `ENVIRONMENT=test` `MODE=connected`
-  ↑ tst-vs-prod auto-detected from JWT `jku` — zero operator config
-- CNEInstance `Available=True` — all component conditions met
-- Both `f5-tmm` pods 6/6 Ready, 2/2 readiness gates
+- 2× BF3 DPUs · DOCA 3.2 · Ubuntu 24.04 · K8s **1.30.14**
+- License CR **`Active`** · CNEInstance `Available=True`
 - `Gateway demo-gw` `Programmed=True` @ `192.168.40.100`
-- `destroy --yolo` round-trip clean: kubespray reset.yml 0 failures, License + CWC + observer finalizers stripped, **zero "unknown flag" noise**
 
-| Phase | Wall clock |
+| | Wall clock |
 | :-- | --: |
-| `destroy` (incl. bnk-forge unregister) | 2m53s |
-| `validate` | 0s |
-| `provision dpu` (2× BF3 in parallel) | 12m31s |
-| `host network setup` | 5s |
-| `cluster up` (kubespray) | 4m31s |
-| `cluster join-dpus` | 1m3s |
-| `deploy network` | 1m24s |
-| `deploy flo` | 56s |
-| `deploy cne` (CNEInstance + License + TMM + GatewayClass) | 19m20s |
-| **TOTAL (destroy + redeploy)** | **~42m43s** |
+| Manual deploy (baseline) | ~3.5 hours |
+| **`dpubnkctl e2e` (destroy + redeploy)** | **~42m43s** |
 
-Manual baseline for the same outcome: **~3.5 hours**.
+Dominant phases: `provision dpu` 12m31s · `deploy cne` 19m20s. All other phases combined: under 11 minutes.
 
 ---
 
