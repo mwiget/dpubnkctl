@@ -57,6 +57,7 @@ before driving a PoC.`,
 		newReleaseManifestCmd(),
 		newBNKForgeCmd(),
 		newSamplesCmd(),
+		newWizardCmd(),
 		newVersionCmd(),
 	)
 

@@ -28,6 +28,17 @@ func newDiscoverCmd() *cobra.Command {
 	return cmd
 }
 
+// newWizardCmd is a top-level alias for `discover wizard`. The wizard is
+// the obvious first step for an operator who doesn't want to read three
+// levels of --help, and `dpubnkctl wizard` was the first thing one test
+// engineer typed cold. Aliasing it here keeps the canonical path intact.
+func newWizardCmd() *cobra.Command {
+	cmd := newDiscoverWizardCmd()
+	cmd.Use = "wizard"
+	cmd.Short = "Interactive discovery (alias for `discover wizard`)"
+	return cmd
+}
+
 type discoverHostFlags struct {
 	pocDir     string
 	sshUser    string

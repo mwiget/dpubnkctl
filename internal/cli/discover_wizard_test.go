@@ -28,7 +28,7 @@ func TestSuggestRole(t *testing.T) {
 			totalReachable: 5,
 			noDPUHosts:     3,
 			wantRole:       "worker",
-			wantInRation:   "DPU-free hosts available for CPs",
+			wantInRation:   "DPU-free hosts available as dedicated control planes",
 		},
 		{
 			name:           "DPU host with 4 CP-free siblings → worker",
@@ -52,7 +52,7 @@ func TestSuggestRole(t *testing.T) {
 			totalReachable: 2,
 			noDPUHosts:     0,
 			wantRole:       "both",
-			wantInRation:   "doubles as CP",
+			wantInRation:   "runs control plane and worker",
 		},
 		{
 			name:           "4 hosts mixed (2 DPU + 2 CP-free) → both for DPU host",
@@ -60,7 +60,7 @@ func TestSuggestRole(t *testing.T) {
 			totalReachable: 4,
 			noDPUHosts:     2,
 			wantRole:       "both",
-			wantInRation:   "too few for a dedicated CP quorum",
+			wantInRation:   "fewer than the 3 control-plane-only nodes etcd needs for HA",
 		},
 		{
 			name:           "4 hosts mixed (2 DPU + 2 CP-free) → control-plane for DPU-free host",

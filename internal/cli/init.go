@@ -172,10 +172,12 @@ host the customer provides.
 			fmt.Fprintln(out)
 			fmt.Fprintln(out, "Next:")
 			fmt.Fprintf(out, "  cd %s\n", target)
-			fmt.Fprintln(out, "  $EDITOR poc.yaml          # set topology, expected hosts, network plan")
+			fmt.Fprintln(out, "  dpubnkctl wizard              # interactive: subnet → SSH → role per host")
+			fmt.Fprintln(out, "Or, if you'd rather edit poc.yaml directly:")
+			fmt.Fprintln(out, "  $EDITOR poc.yaml")
 			fmt.Fprintln(out, "  dpubnkctl discover host <ip> --ssh-user <u> --ssh-key keys/<file>")
 			fmt.Fprintln(out, "Or drive it with an agent:")
-			fmt.Fprintln(out, "  dpubnkctl agent claude    # prints invocation for Claude Code")
+			fmt.Fprintln(out, "  dpubnkctl agent claude        # prints invocation for Claude Code")
 			return nil
 		},
 	}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -81,6 +82,11 @@ func runDiscoverWizard(ctx context.Context, out io.Writer, in io.Reader, pocDir 
 	// 2. SSH user.
 	sshUser := ask(out, r, "SSH user", "shared across the range", "ubuntu")
 
+	// 2a. SSH port. Hardcoded 22 was hostile to labs running SSH on
+	// non-standard ports (jumphost shells, cloud images that disable 22
+	// for botnet hygiene). Re-prompt on out-of-range input.
+	sshPort := askPort(out, r, "SSH port", "shared across the range", 22)
+
 	// 3. SSH key path. Validate it exists.
 	defaultKey := os.ExpandEnv("$HOME/.ssh/id_ed25519")
 	if _, err := os.Stat(defaultKey); err != nil {
@@ -121,15 +127,19 @@ func runDiscoverWizard(ctx context.Context, out io.Writer, in io.Reader, pocDir 
 	// 6. Build SSH base config + scan.
 	known := filepath.Join(repo, "inventory", "known_hosts")
 	base := ssh.Config{
-		Port: 22, User: sshUser, KeyPath: sshKey, KnownHosts: known,
+		Port: sshPort, User: sshUser, KeyPath: sshKey, KnownHosts: known,
 	}
 	if jumphost != "" {
+		// Jumphost port stays 22 — that's the most common case and a
+		// host:port pair is also accepted in the jumphost address
+		// itself, so a non-22 jumphost is still expressible.
 		base.Jumphost = &ssh.Config{
 			Address: jumphost, Port: 22, User: jumpUser, KeyPath: jumpKey,
 			KnownHosts: known, Timeout: 4 * time.Second,
 		}
 	}
-	fmt.Fprintln(out, "\nScanning ...")
+	fmt.Fprintf(out, "\nScanning %d IP(s) ...\n", len(ips))
+	scanStart := time.Now()
 	results := discover.ScanRange(ctx, ips, discover.ScanOptions{
 		BaseSSH:      base,
 		DialTimeout:  4 * time.Second,
@@ -144,40 +154,75 @@ func runDiscoverWizard(ctx context.Context, out io.Writer, in io.Reader, pocDir 
 	}
 	var found []reachable
 	var skipped, dpuOSes int
-	for item := range results {
-		if !item.Reachable {
-			fmt.Fprintf(out, "  [skip] %-15s  %s\n", item.IP.String(), item.Reason)
-			skipped++
-			continue
+	done := 0
+	N := len(ips)
+	// Heartbeat ticker — fires only if the scan goes silent (no
+	// completions) for 10s, so the operator sees something other than
+	// `Scanning N IP(s) ...` while every probe sits in a 60s ssh dial.
+	// Reset on each completion so a healthy stream of results doesn't
+	// trigger it.
+	heartbeat := time.NewTicker(10 * time.Second)
+	defer heartbeat.Stop()
+	resultsLoop:
+	for {
+		select {
+		case item, ok := <-results:
+			if !ok {
+				break resultsLoop
+			}
+			done++
+			heartbeat.Reset(10 * time.Second)
+			prefix := fmt.Sprintf("[%*d/%d]", len(fmt.Sprintf("%d", N)), done, N)
+			if !item.Reachable {
+				fmt.Fprintf(out, "  %s [skip] %-15s  %s\n", prefix, item.IP.String(), item.Reason)
+				skipped++
+				continue
+			}
+			if item.Err != nil {
+				fmt.Fprintf(out, "  %s [err]  %-15s  %v\n", prefix, item.IP.String(), item.Err)
+				continue
+			}
+			hostname := item.Result.Host.Hostname
+			if hostname == "" {
+				hostname = sanitizeHostKey(item.IP.String())
+			}
+			// A reachable IP that's actually a BlueField DPU OS (PCI bridges
+			// in 15b3:*) must NOT enter the host-candidate list. It belongs
+			// as a child of its server's dpus[] block, populated later by
+			// the per-host discover under the parent server's identity.
+			if item.Result.IsDPU {
+				fmt.Fprintf(out, "  %s [dpu]  %-15s  %s — DPU OS detected; excluded from host list\n",
+					prefix, item.IP.String(), hostname)
+				dpuOSes++
+				continue
+			}
+			fmt.Fprintf(out, "  %s [ok]   %-15s  %s — %s, %d DPU(s)\n",
+				prefix, item.IP.String(), hostname, orDash(item.Result.Host.OS.PrettyName), len(item.Result.DPUs))
+			found = append(found, reachable{ip: item.IP.String(), hostname: hostname, result: item.Result})
+		case <-heartbeat.C:
+			fmt.Fprintf(out, "  ... %d/%d done, elapsed %s (probes can take up to 60s each)\n",
+				done, N, time.Since(scanStart).Round(time.Second))
 		}
-		if item.Err != nil {
-			fmt.Fprintf(out, "  [err]  %-15s  %v\n", item.IP.String(), item.Err)
-			continue
-		}
-		hostname := item.Result.Host.Hostname
-		if hostname == "" {
-			hostname = sanitizeHostKey(item.IP.String())
-		}
-		// A reachable IP that's actually a BlueField DPU OS (PCI bridges
-		// in 15b3:*) must NOT enter the host-candidate list. It belongs
-		// as a child of its server's dpus[] block, populated later by
-		// the per-host discover under the parent server's identity.
-		if item.Result.IsDPU {
-			fmt.Fprintf(out, "  [dpu]  %-15s  %s — DPU OS detected; excluded from host list\n",
-				item.IP.String(), hostname)
-			dpuOSes++
-			continue
-		}
-		fmt.Fprintf(out, "  [ok]   %-15s  %s — %s, %d DPU(s)\n",
-			item.IP.String(), hostname, orDash(item.Result.Host.OS.PrettyName), len(item.Result.DPUs))
-		found = append(found, reachable{ip: item.IP.String(), hostname: hostname, result: item.Result})
 	}
 	sort.Slice(found, func(i, j int) bool { return found[i].ip < found[j].ip })
-	fmt.Fprintf(out, "\nReachable hosts: %d   DPU OS detected: %d   Unreachable: %d\n\n",
+	fmt.Fprintf(out, "\nScanned %d IP(s) in %s.\n", N, time.Since(scanStart).Round(time.Second))
+	fmt.Fprintf(out, "Reachable hosts: %d   DPU OS detected: %d   Unreachable: %d\n\n",
 		len(found), dpuOSes, skipped)
 
 	if len(found) == 0 {
-		return fmt.Errorf("no reachable hosts — nothing to merge")
+		// Scan completed without error; the range simply had no SSH-
+		// reachable hosts. Don't surface this as `error:` exit 1 — that
+		// reads as if the tool itself blew up and sends operators on a
+		// wild-goose chase. Exit cleanly with diagnostics instead.
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "No reachable hosts in the scanned range. Common causes:")
+		fmt.Fprintln(out, "  • Subnet/range is wrong — try a single known IP first.")
+		fmt.Fprintln(out, "  • SSH is on a different port than the one you entered.")
+		fmt.Fprintln(out, "  • SSH key doesn't authenticate as the user you supplied.")
+		fmt.Fprintln(out, "  • mgmt VLAN/firewall is blocking outbound SSH from this host.")
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "Re-run with the correct range/credentials.")
+		return nil
 	}
 
 	// 7. Per-host role assignment (the SE call). Pre-compute the count
@@ -191,6 +236,9 @@ func runDiscoverWizard(ctx context.Context, out io.Writer, in io.Reader, pocDir 
 		}
 	}
 	fmt.Fprintln(out, "Now assign each reachable host a cluster role.")
+	fmt.Fprintln(out, "A k8s control plane needs 1 node (lab) or 3+ nodes (HA — etcd needs an odd quorum).")
+	fmt.Fprintln(out, "The wizard suggests roles based on what's reachable; override per host as needed.")
+	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "  control-plane = k8s control plane only")
 	fmt.Fprintln(out, "  worker        = k8s worker only")
 	fmt.Fprintln(out, "  both          = control plane AND worker (typical 2-node PoC)")
@@ -217,10 +265,18 @@ func runDiscoverWizard(ctx context.Context, out io.Writer, in io.Reader, pocDir 
 			return err
 		}
 		hostFlags := &discoverHostFlags{
-			sshUser: sshUser, sshKey: sshKey, sshPort: 22, jumphost: jumphost,
+			sshUser: sshUser, sshKey: sshKey, sshPort: sshPort, jumphost: jumphost,
 			role: choice,
 		}
 		mergedInto := updatePoCWithHost(p, found[i].hostname, found[i].ip, hostFlags, sshKey, found[i].result)
+		// Auto-fill DPU hostname + tmfifo_ip defaults so the embedded
+		// validate at the end of the wizard doesn't immediately yell about
+		// two errors per DPU the wizard just merged. Conventions:
+		//   - DPU OS hostname: <host>-bf3 (documented in examples/README.md)
+		//   - tmfifo_ip:       192.168.100.2/30 (per-host private host↔DPU link)
+		// Operator can still override either by editing poc.yaml before
+		// running provision.
+		fillDPUWizardDefaults(p, found[i].ip, found[i].hostname)
 		if mergedInto {
 			fmt.Fprintf(out, "  [merged] %s — existing hosts[] entry preserved; only empty fields filled\n", found[i].hostname)
 		} else {
@@ -260,8 +316,13 @@ func runDiscoverWizard(ctx context.Context, out io.Writer, in io.Reader, pocDir 
 	fmt.Fprintln(out, "\n--- dpubnkctl validate ---")
 	vr := poc.Validate(p, repo)
 	printValidation(out, vr)
-	if !vr.Valid() {
-		fmt.Fprintf(out, "\n%d issue(s) still need attention before provisioning. Discovery itself completed successfully.\n", len(vr.Errors))
+	if total := len(vr.Errors) + len(vr.Warnings); total > 0 {
+		// Errors block phase commands outright; warnings are deferred
+		// errors (e.g. missing self-IPs that `deploy cne` will trip on).
+		// Lump them in the same count so the operator sees the full
+		// punch list, not just the blocking subset.
+		fmt.Fprintf(out, "\n%d issue(s) still need attention before provisioning (%d error(s), %d warning(s)). Discovery itself completed successfully.\n",
+			total, len(vr.Errors), len(vr.Warnings))
 	}
 	return nil
 }
@@ -289,17 +350,20 @@ func runDiscoverWizard(ctx context.Context, out io.Writer, in io.Reader, pocDir 
 //
 // Operators can override per host — the suggestion just biases the
 // default and explains why.
+// Kubernetes control-plane HA needs an odd number of nodes (1 for a lab,
+// 3+ for HA — etcd quorum). suggestRole uses 3 as the dedicated-CP
+// threshold below.
 func suggestRole(dpuCount, totalReachable, noDPUHosts int) (role, rationale string) {
 	if dpuCount == 0 {
-		return "control-plane", "no DPU → no data-plane role; ideal CP-only candidate"
+		return "control-plane", "no DPU → no data-plane work; ideal control-plane-only candidate"
 	}
 	if noDPUHosts >= 3 {
-		return "worker", fmt.Sprintf("has DPU(s); %d DPU-free hosts available for CPs → this host is worker only", noDPUHosts)
+		return "worker", fmt.Sprintf("has DPU(s); %d DPU-free hosts available as dedicated control planes → this host is worker only", noDPUHosts)
 	}
 	if totalReachable == 1 {
-		return "both", "single-host lab — must be control plane and worker"
+		return "both", "single-host lab — must run control plane and worker on the same node"
 	}
-	return "both", fmt.Sprintf("has DPU(s) and only %d DPU-free host(s) — too few for a dedicated CP quorum, so this host doubles as CP", noDPUHosts)
+	return "both", fmt.Sprintf("has DPU(s); only %d DPU-free host(s) — fewer than the 3 control-plane-only nodes etcd needs for HA, so this host runs control plane and worker", noDPUHosts)
 }
 
 // ask prints "label [hint] (default): " and reads a line. Empty input
@@ -322,6 +386,25 @@ func ask(out io.Writer, r *bufio.Reader, label, hint, def string) string {
 		return def
 	}
 	return v
+}
+
+// askPort prompts for a TCP port. Re-prompts on unparseable or out-of-
+// range input rather than silently falling through to the default,
+// since a typo (e.g. "2222!") followed by the default would silently
+// scan port 22 against a non-22 lab and exit 0.
+func askPort(out io.Writer, r *bufio.Reader, label, hint string, def int) int {
+	for {
+		v := ask(out, r, label, hint, fmt.Sprintf("%d", def))
+		if v == "" {
+			return def
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 65535 {
+			fmt.Fprintf(out, "  ! invalid port %q — must be an integer in 1..65535\n", v)
+			continue
+		}
+		return n
+	}
 }
 
 // askChoice prompts with a fixed set of options; default in brackets.
@@ -363,4 +446,30 @@ func ifThen(cond bool, s string) string {
 		return s
 	}
 	return ""
+}
+
+// fillDPUWizardDefaults walks p.Hosts and, for the host whose SSH address
+// matches addr, fills any empty DPU.Hostname with `<host>-bf3` and any
+// empty DPU.TmfifoIP with 192.168.100.2/30 (the host↔DPU rshim link is
+// per-host private, so every DPU can reuse the same /30 — matching the
+// pattern already in examples/two-node-homelab.yaml and the homelab).
+//
+// Empty-only: never clobbers anything the operator (or a prior wizard
+// run) has already set. For multi-DPU hosts the second+ DPU sticks with
+// the same value as well; multi-DPU is rare and the operator can adjust.
+func fillDPUWizardDefaults(p *poc.PoC, addr, hostName string) {
+	for i := range p.Hosts {
+		if p.Hosts[i].SSH.Address != addr {
+			continue
+		}
+		for j := range p.Hosts[i].DPUs {
+			if p.Hosts[i].DPUs[j].Hostname == "" {
+				p.Hosts[i].DPUs[j].Hostname = hostName + "-bf3"
+			}
+			if p.Hosts[i].DPUs[j].TmfifoIP == "" {
+				p.Hosts[i].DPUs[j].TmfifoIP = "192.168.100.2/30"
+			}
+		}
+		return
+	}
 }
