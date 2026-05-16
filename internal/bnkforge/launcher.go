@@ -19,7 +19,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -91,14 +93,42 @@ type Client struct {
 
 // NewClient returns a Client configured to talk to the bnk-forge
 // listener at cfg.URL with sane timeouts.
+//
+// TLS posture: bnk-forge defaults to self-signed certs on localhost so
+// we skip verify when the URL host resolves to a loopback address.
+// For non-loopback URLs (operator pointed poc.yaml at a shared
+// bnk-forge on the lab network) we keep verify on — otherwise an on-
+// path attacker can MITM the admin login and capture the cluster
+// kubeconfig we POST during registration. Operators with a real-cert
+// gap can supply a CA bundle via SSL_CERT_FILE.
 func NewClient(cfg Config) *Client {
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // self-signed cert
+	tr := &http.Transport{}
+	if isLoopbackURL(cfg.URL) {
+		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // localhost self-signed
 	}
 	return &Client{
 		BaseURL: strings.TrimRight(cfg.URL, "/"),
 		HTTP:    &http.Client{Transport: tr, Timeout: 30 * time.Second},
 	}
+}
+
+// isLoopbackURL returns true if rawURL points at 127.0.0.0/8, ::1, or
+// the literal host "localhost". Used to gate InsecureSkipVerify so the
+// "self-signed cert is fine" exemption only applies on-machine.
+func isLoopbackURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Health hits /api/system/health. Returns nil if the listener answered
