@@ -580,34 +580,9 @@ func destroyClusterReset(ctx context.Context, repo string, p *poc.PoC, out io.Wr
 	if _, err := cluster.CheckContainerRuntime(ctx); err != nil {
 		return err
 	}
-	files, err := cluster.Render(p, plan)
+	invDir, err := cluster.StageInventory(repo, p, plan)
 	if err != nil {
 		return err
-	}
-	invDir := filepath.Join(repo, "artifacts", "kubespray-inventory")
-	for name, content := range files {
-		full := filepath.Join(invDir, name)
-		_ = os.MkdirAll(filepath.Dir(full), 0o755)
-		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
-			return err
-		}
-	}
-	keysDir := filepath.Join(invDir, "keys")
-	if err := os.MkdirAll(keysDir, 0o700); err != nil {
-		return err
-	}
-	for hostName, h := range plan.HostByName {
-		src := h.SSH.KeyRef
-		if !filepath.IsAbs(src) {
-			src = filepath.Join(repo, src)
-		}
-		data, err := os.ReadFile(src)
-		if err != nil {
-			return fmt.Errorf("read ssh key for %s (%s): %w", hostName, src, err)
-		}
-		if err := os.WriteFile(filepath.Join(keysDir, hostName+".pem"), data, 0o600); err != nil {
-			return err
-		}
 	}
 	logPath := filepath.Join(repo, "artifacts", "cluster-reset.log")
 	logFile, err := os.Create(logPath)

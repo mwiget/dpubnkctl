@@ -124,37 +124,11 @@ func runClusterUp(ctx context.Context, out io.Writer, f *clusterUpFlags) error {
 	// 2. Regenerate inventory + stage SSH keys into the inventory tree
 	//    (kubespray container reads them from /inventory/keys/<host>.pem).
 	fmt.Fprintln(out, "[2/6] Regenerating kubespray inventory ...")
-	files, err := cluster.Render(p, plan)
+	invDir, err := cluster.StageInventory(repo, p, plan)
 	if err != nil {
 		return err
 	}
-	invDir := filepath.Join(repo, "artifacts", "kubespray-inventory")
-	for name, content := range files {
-		full := filepath.Join(invDir, name)
-		_ = os.MkdirAll(filepath.Dir(full), 0o755)
-		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
-			return err
-		}
-	}
-	keysDir := filepath.Join(invDir, "keys")
-	if err := os.MkdirAll(keysDir, 0o700); err != nil {
-		return err
-	}
-	for hostName, h := range plan.HostByName {
-		src := h.SSH.KeyRef
-		if !filepath.IsAbs(src) {
-			src = filepath.Join(repo, src)
-		}
-		data, err := os.ReadFile(src)
-		if err != nil {
-			return fmt.Errorf("read ssh key for %s (%s): %w", hostName, src, err)
-		}
-		dst := filepath.Join(keysDir, hostName+".pem")
-		if err := os.WriteFile(dst, data, 0o600); err != nil {
-			return err
-		}
-	}
-	fmt.Fprintf(out, "      wrote %d files + %d ssh keys under %s\n", len(files), len(plan.HostByName), invDir)
+	fmt.Fprintf(out, "      staged inventory + %d ssh keys under %s\n", len(plan.HostByName), invDir)
 
 	// 3. Pull kubespray image.
 	if f.pull {

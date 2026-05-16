@@ -5,6 +5,7 @@ package cluster
 import (
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -100,6 +101,52 @@ func BuildPlan(p *poc.PoC) Plan {
 // KubesprayPinForCLI is exposed so the CLI layer can show the pin in
 // `cluster plan` output without importing internal/version directly.
 func KubesprayPinForCLI() string { return version.KubesprayVersion }
+
+// StageInventory renders the kubespray inventory tree to
+// <repo>/artifacts/kubespray-inventory/ and stages each host's SSH
+// private key under inventory/keys/<host>.pem at mode 0600. Used by
+// `cluster up`, `cluster reset`, and `destroy` — all three drive
+// kubespray in a Docker container and read the rendered tree from a
+// bind-mount. Returns the inventory directory path.
+//
+// keys/ is created at 0o700 so other local users on the operator's
+// jumphost can't read the staged SSH keys even briefly between the
+// mkdir and the per-file WriteFile(0o600).
+func StageInventory(repo string, p *poc.PoC, plan Plan) (string, error) {
+	files, err := Render(p, plan)
+	if err != nil {
+		return "", err
+	}
+	invDir := filepath.Join(repo, "artifacts", "kubespray-inventory")
+	for name, content := range files {
+		full := filepath.Join(invDir, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			return "", err
+		}
+	}
+	keysDir := filepath.Join(invDir, "keys")
+	if err := os.MkdirAll(keysDir, 0o700); err != nil {
+		return "", err
+	}
+	for hostName, h := range plan.HostByName {
+		src := h.SSH.KeyRef
+		if !filepath.IsAbs(src) {
+			src = filepath.Join(repo, src)
+		}
+		data, err := os.ReadFile(src)
+		if err != nil {
+			return "", fmt.Errorf("read ssh key for %s (%s): %w", hostName, src, err)
+		}
+		dst := filepath.Join(keysDir, hostName+".pem")
+		if err := os.WriteFile(dst, data, 0o600); err != nil {
+			return "", err
+		}
+	}
+	return invDir, nil
+}
 
 // pickEtcd returns an odd-sized quorum-safe subset of the control plane.
 func pickEtcd(cp []string) []string {
