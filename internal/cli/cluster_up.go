@@ -28,6 +28,7 @@ type clusterUpFlags struct {
 	insecureKubeconfig bool
 	timeout            time.Duration
 	playbook           string
+	stageOnly          bool
 }
 
 func newClusterUpCmd() *cobra.Command {
@@ -64,6 +65,7 @@ Required gates:
 	cmd.Flags().BoolVar(&f.insecureKubeconfig, "insecure-kubeconfig", false, "When network.cluster_apiserver_address is unset, fall back to insecure-skip-tls-verify in the fetched kubeconfig (without this flag, cluster up refuses to fetch and the operator must run with mgmt covered by the apiserver cert SAN)")
 	cmd.Flags().DurationVar(&f.timeout, "timeout", 90*time.Minute, "Wall-clock timeout for the kubespray run")
 	cmd.Flags().StringVar(&f.playbook, "playbook", "cluster.yml", "Playbook to run (use reset.yml for tear-down)")
+	cmd.Flags().BoolVar(&f.stageOnly, "stage-only", false, "Stage the kubespray inventory + ssh keys + ssh_config under artifacts/kubespray-inventory and exit. Non-destructive — does not require --yolo. Use this to verify the rendered ssh_config / ansible_ssh_common_args wiring before committing to a real run.")
 	return cmd
 }
 
@@ -77,8 +79,14 @@ func runClusterUp(ctx context.Context, out io.Writer, f *clusterUpFlags) error {
 		return fmt.Errorf("not a PoC repo (%s): %w", repo, err)
 	}
 
-	if err := requireTwoGates(f.yolo, "--confirm-cluster", f.confirmCluster, p.Metadata.Name, "cluster bring-up"); err != nil {
-		return err
+	// --stage-only is non-destructive (renders inventory + writes keys
+	// under the PoC repo, no docker run, no host mutation) so it skips
+	// the destructive-action gates. The real `cluster up` still requires
+	// both --yolo and --confirm-cluster.
+	if !f.stageOnly {
+		if err := requireTwoGates(f.yolo, "--confirm-cluster", f.confirmCluster, p.Metadata.Name, "cluster bring-up"); err != nil {
+			return err
+		}
 	}
 	if err := enforceValidateForPhase(out, p, repo, poc.PhaseCluster, false); err != nil {
 		return err
@@ -127,6 +135,18 @@ func runClusterUp(ctx context.Context, out io.Writer, f *clusterUpFlags) error {
 		return err
 	}
 	fmt.Fprintf(out, "      staged inventory + %d ssh keys under %s\n", len(plan.HostByName), invDir)
+
+	if f.stageOnly {
+		fmt.Fprintln(out, "\n--stage-only: stopping before docker pull. Inspect the staged tree:")
+		fmt.Fprintf(out, "  %s/\n", invDir)
+		fmt.Fprintf(out, "  ├── hosts.yml\n")
+		fmt.Fprintf(out, "  ├── ssh_config           (rendered iff any host has a jumphost)\n")
+		fmt.Fprintf(out, "  ├── group_vars/all/all.yml\n")
+		fmt.Fprintf(out, "  ├── group_vars/k8s_cluster/k8s-cluster.yml\n")
+		fmt.Fprintf(out, "  └── keys/                (one .pem per host, plus -jump.pem for split-identity hops)\n\n")
+		fmt.Fprintln(out, "Re-run without --stage-only and with --yolo --confirm-cluster <NAME> to actually bring the cluster up.")
+		return nil
+	}
 
 	// 3. Pull kubespray image.
 	if f.pull {
