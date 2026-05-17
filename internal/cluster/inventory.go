@@ -144,8 +144,118 @@ func StageInventory(repo string, p *poc.PoC, plan Plan) (string, error) {
 		if err := os.WriteFile(dst, data, 0o600); err != nil {
 			return "", err
 		}
+
+		// Stage the jumphost key when set + different from the target key.
+		// The kubespray ansible container picks it up via inventory/ssh_config
+		// (rendered below) which references /inventory/keys/<host>-jump.pem.
+		if h.SSH.Jumphost != "" && h.SSH.JumphostKeyRef != "" && h.SSH.JumphostKeyRef != h.SSH.KeyRef {
+			jsrc := h.SSH.JumphostKeyRef
+			if !filepath.IsAbs(jsrc) {
+				jsrc = filepath.Join(repo, jsrc)
+			}
+			jdata, err := os.ReadFile(jsrc)
+			if err != nil {
+				return "", fmt.Errorf("read jumphost ssh key for %s (%s): %w", hostName, jsrc, err)
+			}
+			jdst := filepath.Join(keysDir, hostName+"-jump.pem")
+			if err := os.WriteFile(jdst, jdata, 0o600); err != nil {
+				return "", err
+			}
+		}
+	}
+
+	// Render the inventory-local ssh_config that the kubespray ansible
+	// container will use via `ansible_ssh_common_args: -F /inventory/ssh_config`.
+	// Empty body when no host needs a jumphost — the file is harmless to
+	// always render and keeps the layout uniform.
+	if sshCfg := renderInventorySSHConfig(plan); sshCfg != "" {
+		if err := os.WriteFile(filepath.Join(invDir, "ssh_config"), []byte(sshCfg), 0o600); err != nil {
+			return "", err
+		}
 	}
 	return invDir, nil
+}
+
+// renderInventorySSHConfig produces the per-PoC ssh_config that the
+// kubespray ansible container picks up via `-F /inventory/ssh_config`.
+//
+// For each host with a jumphost set in poc.yaml, two Host stanzas are
+// emitted:
+//
+//   - <jumphost-alias>      — the bastion hop, with its own IdentityFile
+//                             (host.SSH.JumphostKeyRef when set, else
+//                             the target's KeyRef — matches the runtime
+//                             behaviour of sshConfigForHost in
+//                             internal/cli/provision_dpu.go)
+//   - <target-address>      — the actual host ansible will SSH to;
+//                             keyed on `Host <addr>` so ansible's
+//                             `ansible_host: <addr>` matches the stanza
+//                             via ssh's literal-host matching rules.
+//                             ProxyJump points at the jumphost-alias.
+//
+// Hosts without a jumphost contribute nothing to ssh_config — ansible's
+// `ansible_ssh_private_key_file` (set per-host in hosts.yml) is enough.
+//
+// StrictHostKeyChecking=no + UserKnownHostsFile=/dev/null is consistent
+// with the cluster-wide `ansible_host_key_checking: false` in
+// group_vars/all.yml; the operator trusts the lab network at this stage.
+// For production-shaped runs, swap this for a populated known_hosts and
+// flip both knobs back on.
+func renderInventorySSHConfig(plan Plan) string {
+	var b strings.Builder
+	any := false
+	header := "# Managed by dpubnkctl — DO NOT EDIT.\n" +
+		"# Per-host SSH config (ProxyJump + per-hop identity) for the kubespray\n" +
+		"# ansible container, mounted at /inventory/ssh_config.\n\n"
+	for _, name := range sortedHostNames(plan.HostByName) {
+		h := plan.HostByName[name]
+		if h.SSH.Jumphost == "" {
+			continue
+		}
+		if !any {
+			b.WriteString(header)
+			any = true
+		}
+		jumpAlias := name + "-jump"
+		jumpUser := h.SSH.User
+		if h.SSH.JumphostUser != "" {
+			jumpUser = h.SSH.JumphostUser
+		}
+		jumpKey := "/inventory/keys/" + name + ".pem"
+		if h.SSH.JumphostKeyRef != "" && h.SSH.JumphostKeyRef != h.SSH.KeyRef {
+			jumpKey = "/inventory/keys/" + name + "-jump.pem"
+		}
+		// Jumphost stanza.
+		fmt.Fprintf(&b, "Host %s\n", jumpAlias)
+		fmt.Fprintf(&b, "    HostName %s\n", h.SSH.Jumphost)
+		fmt.Fprintf(&b, "    User %s\n", jumpUser)
+		fmt.Fprintf(&b, "    IdentityFile %s\n", jumpKey)
+		fmt.Fprintf(&b, "    IdentitiesOnly yes\n")
+		fmt.Fprintf(&b, "    StrictHostKeyChecking no\n")
+		fmt.Fprintf(&b, "    UserKnownHostsFile /dev/null\n")
+		fmt.Fprintf(&b, "    LogLevel ERROR\n\n")
+		// Target stanza. `Host` keyed on the SSH address so ansible's
+		// literal `ssh <ansible_host>` invocation matches.
+		fmt.Fprintf(&b, "Host %s\n", h.SSH.Address)
+		fmt.Fprintf(&b, "    HostName %s\n", h.SSH.Address)
+		fmt.Fprintf(&b, "    User %s\n", h.SSH.User)
+		fmt.Fprintf(&b, "    IdentityFile /inventory/keys/%s.pem\n", name)
+		fmt.Fprintf(&b, "    IdentitiesOnly yes\n")
+		fmt.Fprintf(&b, "    ProxyJump %s\n", jumpAlias)
+		fmt.Fprintf(&b, "    StrictHostKeyChecking no\n")
+		fmt.Fprintf(&b, "    UserKnownHostsFile /dev/null\n")
+		fmt.Fprintf(&b, "    LogLevel ERROR\n\n")
+	}
+	return b.String()
+}
+
+func sortedHostNames(m map[string]*poc.Host) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // pickEtcd returns an odd-sized quorum-safe subset of the control plane.
@@ -222,6 +332,13 @@ func renderHostsYAML(p *poc.PoC, plan Plan) (string, error) {
 		}
 		if h.SSH.Port != 0 && h.SSH.Port != 22 {
 			entry["ansible_port"] = h.SSH.Port
+		}
+		// ProxyJump: when the operator's machine can't reach the target
+		// host directly (transatlantic VPN, lab behind a bastion), point
+		// ansible at /inventory/ssh_config which holds the per-host
+		// Host stanzas + per-hop IdentityFile. See renderInventorySSHConfig.
+		if h.SSH.Jumphost != "" {
+			entry["ansible_ssh_common_args"] = "-F /inventory/ssh_config"
 		}
 		hostsBlock[name] = entry
 	}

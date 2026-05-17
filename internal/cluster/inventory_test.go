@@ -167,6 +167,79 @@ func TestRender_DataPlaneNodeIP(t *testing.T) {
 	}
 }
 
+func TestRender_NoJumphost_NoSSHCommonArgs(t *testing.T) {
+	// Without a jumphost, hosts.yml must NOT emit ansible_ssh_common_args
+	// and renderInventorySSHConfig must produce an empty string.
+	p := fixture("both")
+	plan := BuildPlan(p)
+	files, err := Render(p, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(files["hosts.yml"], "ansible_ssh_common_args") {
+		t.Errorf("hosts.yml should not emit ansible_ssh_common_args without a jumphost:\n%s", files["hosts.yml"])
+	}
+	if got := renderInventorySSHConfig(plan); got != "" {
+		t.Errorf("renderInventorySSHConfig should be empty without a jumphost; got:\n%s", got)
+	}
+}
+
+func TestRender_JumphostSharedKey(t *testing.T) {
+	// Jumphost set, but JumphostKeyRef unset → re-use the target's key
+	// for both hops. ssh_config references the same /inventory/keys/<host>.pem.
+	p := fixture("both")
+	p.Hosts[0].SSH.Jumphost = "10.196.23.100"
+	p.Hosts[0].SSH.KeyRef = "keys/mgx-21.pem"
+	plan := BuildPlan(p)
+	files, err := Render(p, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(files["hosts.yml"], "ansible_ssh_common_args: -F /inventory/ssh_config") {
+		t.Errorf("hosts.yml should include ansible_ssh_common_args when jumphost is set:\n%s", files["hosts.yml"])
+	}
+	sshCfg := renderInventorySSHConfig(plan)
+	for _, want := range []string{
+		"Host h1-jump",
+		"HostName 10.196.23.100",
+		"IdentityFile /inventory/keys/h1.pem", // shared with target
+		"ProxyJump h1-jump",
+		"Host 10.0.0.10",
+	} {
+		if !strings.Contains(sshCfg, want) {
+			t.Errorf("ssh_config missing %q\n%s", want, sshCfg)
+		}
+	}
+	if strings.Contains(sshCfg, "h1-jump.pem") {
+		t.Errorf("ssh_config should NOT reference a separate jump key when JumphostKeyRef is unset:\n%s", sshCfg)
+	}
+}
+
+func TestRender_JumphostSeparateKey(t *testing.T) {
+	// Jumphost + JumphostUser + JumphostKeyRef all set → separate stanza
+	// uses the jump key + jump user, target stanza keeps target key + user.
+	p := fixture("both")
+	p.Hosts[0].SSH.Jumphost = "10.196.23.100"
+	p.Hosts[0].SSH.JumphostUser = "operator"
+	p.Hosts[0].SSH.JumphostKeyRef = "keys/workstation.ed25519"
+	p.Hosts[0].SSH.User = "ubuntu"
+	p.Hosts[0].SSH.KeyRef = "keys/jumper.ed25519"
+	plan := BuildPlan(p)
+	sshCfg := renderInventorySSHConfig(plan)
+	for _, want := range []string{
+		"Host h1-jump",
+		"User operator",                            // jumphost user override
+		"IdentityFile /inventory/keys/h1-jump.pem", // separate jump key
+		"Host 10.0.0.10",
+		"User ubuntu",                         // target keeps own user
+		"IdentityFile /inventory/keys/h1.pem", // target keeps own key
+	} {
+		if !strings.Contains(sshCfg, want) {
+			t.Errorf("ssh_config missing %q\n%s", want, sshCfg)
+		}
+	}
+}
+
 func TestLocalizeKubeconfig_Insecure(t *testing.T) {
 	// kubespray's apiserver_loadbalancer_domain_name path: server points
 	// at the data-plane IP that the operator can't route to.
