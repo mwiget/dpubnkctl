@@ -292,6 +292,18 @@ func ValidateForPhase(p *PoC, repoDir string, minPhase Phase) ValidationResult {
 	if len(p.Provisioning.DPUNTP) == 0 {
 		c.err(PhaseProvision, "provisioning.dpu_ntp is empty (DPU chrony needs at least one source)")
 	}
+	if p.Provisioning.BFBOnHost != "" {
+		// Must be absolute — provision_dpu passes it verbatim to bfb-install
+		// on the host. A relative path could land somewhere unexpected
+		// depending on the user's home directory and is almost certainly
+		// an operator typo.
+		if !filepath.IsAbs(p.Provisioning.BFBOnHost) {
+			c.err(PhaseProvision, "provisioning.bfb_on_host %q must be an absolute path on the host (e.g. /var/cache/dpubnkctl/bfb/<name>.bfb)", p.Provisioning.BFBOnHost)
+		}
+		if p.Provisioning.BFBURL != "" {
+			c.warn(PhaseProvision, "provisioning.bfb_on_host is set — provisioning.bfb_url is ignored")
+		}
+	}
 
 	// --- BNK credentials (only required at `deploy flo` / `deploy cne`) ---
 	if p.BNK.FARKeyRef == "" {

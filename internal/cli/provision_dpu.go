@@ -161,20 +161,34 @@ func runProvisionDPUMulti(ctx context.Context, out io.Writer, hostnames []string
 	fmt.Fprintf(out, "Image:  %s   (DOCA %s)\n", p.Versions.BFBImage, p.Versions.DOCA)
 	fmt.Fprintf(out, "Hosts:  %s\n\n", strings.Join(hostnames, ", "))
 
-	// Cache BFB once on the operator laptop, shared across all jobs.
-	fmt.Fprintf(out, "[cache] BFB (%s) ...\n", p.Versions.BFBImage)
-	bfbProgress := func(written, total int64) {
-		if total > 0 {
-			fmt.Fprintf(out, "[cache]   downloading: %d / %d MiB (%.1f%%)\n",
-				written>>20, total>>20, float64(written)/float64(total)*100)
+	// BFB sourcing. Two modes:
+	//   - Default: download into the operator-laptop cache (EnsureBFB),
+	//     then SFTP-push to each host inside pushAndFlash.
+	//   - provisioning.bfb_on_host set: assume the BFB is already at the
+	//     given absolute path on every host; skip the local cache and
+	//     skip the SFTP upload. Designed for slow/expensive operator
+	//     uplinks (transatlantic VPN, metered home internet, air-gapped
+	//     labs) where 1.5 GB twice over the WAN is the bottleneck.
+	var bfbPath string
+	if p.Provisioning.BFBOnHost != "" {
+		fmt.Fprintf(out, "[cache] BFB pre-staged on host at %s — skipping local download + SFTP push\n", p.Provisioning.BFBOnHost)
+		fmt.Fprintf(out, "[cache]   pushAndFlash will stat the remote path before bfb-install runs\n\n")
+	} else {
+		fmt.Fprintf(out, "[cache] BFB (%s) ...\n", p.Versions.BFBImage)
+		bfbProgress := func(written, total int64) {
+			if total > 0 {
+				fmt.Fprintf(out, "[cache]   downloading: %d / %d MiB (%.1f%%)\n",
+					written>>20, total>>20, float64(written)/float64(total)*100)
+			}
 		}
-	}
-	bfbPath, err := provision.EnsureBFB(ctx, p.Provisioning.BFBCacheDir, p.Versions.BFBImage, p.Versions.BFBURL, bfbProgress)
-	if err != nil {
-		return fmt.Errorf("bfb cache: %w", err)
-	}
-	if st, _ := os.Stat(bfbPath); st != nil {
-		fmt.Fprintf(out, "[cache]   ready: %s (%d MiB)\n\n", bfbPath, st.Size()>>20)
+		var err error
+		bfbPath, err = provision.EnsureBFB(ctx, p.Provisioning.BFBCacheDir, p.Versions.BFBImage, p.Versions.BFBURL, bfbProgress)
+		if err != nil {
+			return fmt.Errorf("bfb cache: %w", err)
+		}
+		if st, _ := os.Stat(bfbPath); st != nil {
+			fmt.Fprintf(out, "[cache]   ready: %s (%d MiB)\n\n", bfbPath, st.Size()>>20)
+		}
 	}
 
 	// Fan out — one goroutine per host. journalMu guards shared journal file.
@@ -194,7 +208,7 @@ func runProvisionDPUMulti(ctx context.Context, out io.Writer, hostnames []string
 		go func() {
 			defer wg.Done()
 			w := perHostWriter(out, j.hostname, len(jobs) > 1)
-			err := flashOneJob(ctx, w, repo, p, j, bfbPath, f, &journalMu)
+			err := flashOneJob(ctx, w, repo, p, j, bfbPath, p.Provisioning.BFBOnHost, f, &journalMu)
 			results <- result{hostname: j.hostname, err: err}
 		}()
 	}
@@ -236,7 +250,13 @@ func runProvisionDPUMulti(ctx context.Context, out io.Writer, hostnames []string
 // per-host writer (multi-host mode); otherwise it streams plainly. The
 // pipeline is split into five phase helpers so each is ~30 lines and
 // individually readable; flashOneJob is now just the orchestrator.
-func flashOneJob(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j flashJob, bfbPath string, f *provisionDPUFlags, journalMu *sync.Mutex) error {
+//
+// bfbPath is the local-laptop path to the BFB image, used when we have
+// to SFTP-push it to the host. bfbOnHost is the absolute path of an
+// operator-pre-staged BFB on the host (provisioning.bfb_on_host); when
+// set, pushAndFlash skips the upload and uses this path directly.
+// Exactly one of bfbPath / bfbOnHost is non-empty.
+func flashOneJob(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j flashJob, bfbPath, bfbOnHost string, f *provisionDPUFlags, journalMu *sync.Mutex) error {
 	logPath := filepath.Join(repo, "artifacts", j.hostname+"-flash.log")
 
 	fmt.Fprintf(w, "DPU:    %s   mode=%s lag=%v hostname=%s tmfifo=%s\n",
@@ -248,7 +268,7 @@ func flashOneJob(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j fl
 	}
 	defer client.Close()
 
-	if err := pushAndFlash(ctx, w, repo, p, j, bfbPath, logPath, client, f.flashTimeout, journalMu); err != nil {
+	if err := pushAndFlash(ctx, w, repo, p, j, bfbPath, bfbOnHost, logPath, client, f.flashTimeout, journalMu); err != nil {
 		return err
 	}
 
@@ -306,27 +326,56 @@ func connectAndCheck(ctx context.Context, w io.Writer, repo string, j flashJob, 
 // streaming output to w + per-host log file. Steps 3+4 of the flash
 // pipeline. Journals fine-grained failure status (push bfb / push
 // bf.conf / transport / exit N) so post-mortem can distinguish them.
-func pushAndFlash(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j flashJob, bfbPath, logPath string, client *ssh.Client, flashTimeout time.Duration, journalMu *sync.Mutex) error {
-	fmt.Fprintln(w, "[3/7] Pushing BFB + bf.conf to host /tmp ...")
-	remoteBFB := "/tmp/" + p.Versions.BFBImage
+//
+// When bfbOnHost is non-empty, the BFB is assumed to already exist at
+// that absolute path on the host; we stat it (fail-fast if missing or
+// empty) and skip the SFTP push entirely. bf.conf is still pushed (it's
+// rendered per-DPU and small).
+func pushAndFlash(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j flashJob, bfbPath, bfbOnHost, logPath string, client *ssh.Client, flashTimeout time.Duration, journalMu *sync.Mutex) error {
+	var remoteBFB string
 	remoteCfg := "/tmp/dpubnkctl-bf.cfg"
 	pushCtx, pushCancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer pushCancel()
-	pushProgress := func(written, total int64) {
-		if total > 0 {
-			fmt.Fprintf(w, "      sftp: %d / %d MiB (%.1f%%)\n",
-				written>>20, total>>20, float64(written)/float64(total)*100)
+
+	if bfbOnHost != "" {
+		fmt.Fprintln(w, "[3/7] Verifying pre-staged BFB on host ...")
+		statCtx, statCancel := context.WithTimeout(ctx, 30*time.Second)
+		size, err := client.RemoteStat(statCtx, bfbOnHost)
+		statCancel()
+		if err != nil {
+			journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (bfb_on_host missing)", logPath, err.Error())
+			return fmt.Errorf("bfb_on_host %s: %w (stage the BFB on the host before provision dpu, or unset provisioning.bfb_on_host)", bfbOnHost, err)
 		}
+		if size == 0 {
+			journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (bfb_on_host empty)", logPath, bfbOnHost)
+			return fmt.Errorf("bfb_on_host %s exists but is empty — partial download?", bfbOnHost)
+		}
+		remoteBFB = bfbOnHost
+		fmt.Fprintf(w, "      ok: %s (%d MiB)\n", remoteBFB, size>>20)
+		if err := client.PushBytes(pushCtx, []byte(j.rendered), remoteCfg); err != nil {
+			journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (push bf.conf)", logPath, err.Error())
+			return fmt.Errorf("push bf.conf: %w", err)
+		}
+		fmt.Fprintf(w, "      pushed %s (bf.conf only)\n", remoteCfg)
+	} else {
+		fmt.Fprintln(w, "[3/7] Pushing BFB + bf.conf to host /tmp ...")
+		remoteBFB = "/tmp/" + p.Versions.BFBImage
+		pushProgress := func(written, total int64) {
+			if total > 0 {
+				fmt.Fprintf(w, "      sftp: %d / %d MiB (%.1f%%)\n",
+					written>>20, total>>20, float64(written)/float64(total)*100)
+			}
+		}
+		if err := client.PushFile(pushCtx, bfbPath, remoteBFB, pushProgress); err != nil {
+			journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (push bfb)", logPath, err.Error())
+			return fmt.Errorf("push bfb: %w", err)
+		}
+		if err := client.PushBytes(pushCtx, []byte(j.rendered), remoteCfg); err != nil {
+			journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (push bf.conf)", logPath, err.Error())
+			return fmt.Errorf("push bf.conf: %w", err)
+		}
+		fmt.Fprintf(w, "      pushed %s + %s\n", remoteBFB, remoteCfg)
 	}
-	if err := client.PushFile(pushCtx, bfbPath, remoteBFB, pushProgress); err != nil {
-		journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (push bfb)", logPath, err.Error())
-		return fmt.Errorf("push bfb: %w", err)
-	}
-	if err := client.PushBytes(pushCtx, []byte(j.rendered), remoteCfg); err != nil {
-		journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (push bf.conf)", logPath, err.Error())
-		return fmt.Errorf("push bf.conf: %w", err)
-	}
-	fmt.Fprintf(w, "      pushed %s + %s\n", remoteBFB, remoteCfg)
 
 	fmt.Fprintln(w, "[4/7] Running bfb-install (5–15 minutes) ...")
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {

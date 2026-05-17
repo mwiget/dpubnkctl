@@ -400,6 +400,40 @@ func TestValidate_ShellSafeFieldsHappy(t *testing.T) {
 	}
 }
 
+func TestValidate_BFBOnHostHappy(t *testing.T) {
+	p, repo := goodPoC(t)
+	p.Provisioning.BFBOnHost = "/var/cache/dpubnkctl/bfb/bf-bundle-3.2.0-113.bfb"
+	r := Validate(p, repo)
+	if !r.Valid() {
+		t.Errorf("bfb_on_host with absolute path should validate clean; got: %v", r.Errors)
+	}
+	if len(r.Warnings) > 0 {
+		t.Errorf("bfb_on_host alone shouldn't warn; got: %v", r.Warnings)
+	}
+}
+
+func TestValidate_BFBOnHostRelativeRejected(t *testing.T) {
+	p, repo := goodPoC(t)
+	p.Provisioning.BFBOnHost = "bfb/bf-bundle.bfb"
+	r := Validate(p, repo)
+	if !errorContains(r, "bfb_on_host") {
+		t.Errorf("relative bfb_on_host should fail validation; got: %v", r.Errors)
+	}
+}
+
+func TestValidate_BFBOnHostShadowsURL(t *testing.T) {
+	p, repo := goodPoC(t)
+	p.Provisioning.BFBOnHost = "/var/cache/dpubnkctl/bfb/bf-bundle.bfb"
+	p.Provisioning.BFBURL = "https://internal-mirror.example.com/bfb.tar"
+	r := Validate(p, repo)
+	if !r.Valid() {
+		t.Errorf("both set should still validate clean (warning, not error); got errors: %v", r.Errors)
+	}
+	if !warningContains(r, "bfb_url is ignored") {
+		t.Errorf("setting both bfb_on_host and bfb_url should warn; got warnings: %v", r.Warnings)
+	}
+}
+
 func errorContains(r ValidationResult, substr string) bool {
 	for _, e := range r.Errors {
 		if strings.Contains(e, substr) {

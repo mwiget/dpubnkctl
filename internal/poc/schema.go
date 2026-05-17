@@ -229,6 +229,33 @@ type Provisioning struct {
 	DPUNTP             []string `yaml:"dpu_ntp"`
 	BFBURL             string   `yaml:"bfb_url,omitempty"`     // override of binary-pinned default
 	BFBCacheDir        string   `yaml:"bfb_cache_dir"`          // ~/.cache/dpubnkctl/bfb by default
+
+	// BFBOnHost, when non-empty, is an absolute path on the data-plane
+	// host where the BFB image is already staged. Setting this skips
+	// both the local download (EnsureBFB) and the SFTP upload
+	// (pushAndFlash), reusing the pre-staged file in place — designed
+	// for operators on slow/expensive links (transatlantic VPN, metered
+	// home internet, air-gapped labs) who can stage the BFB into the lab
+	// once via curl/wget from a fast pipe.
+	//
+	// When set:
+	//   - provision_dpu skips EnsureBFB entirely (no local cache use,
+	//     no network egress from the laptop for the BFB)
+	//   - pushAndFlash skips PushFile and uses this path as remoteBFB
+	//     directly
+	//   - a remote stat confirms the file exists and has size > 0 before
+	//     bfb-install runs; missing file fails fast with a clear error
+	//
+	// Path must be absolute. BFBURL and BFBCacheDir are ignored when
+	// this is set (validate emits a warning). Typical usage:
+	//
+	//   provisioning:
+	//     bfb_on_host: /var/cache/dpubnkctl/bfb/bf-bundle-3.2.0-113_25.10_ubuntu-24.04_64k_prod.bfb
+	//
+	// with the operator having pre-staged the file via:
+	//
+	//   ssh host 'wget -O <path> https://content.mellanox.com/.../<image>.bfb'
+	BFBOnHost string `yaml:"bfb_on_host,omitempty"`
 }
 
 type BNK struct {

@@ -3,6 +3,7 @@ package ssh
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -73,6 +74,29 @@ func (c *Client) PushFile(ctx context.Context, localPath, remotePath string, pro
 		progress(written, total)
 	}
 	return nil
+}
+
+// RemoteStat returns the size and modification time of the file at
+// remotePath via SFTP, or an error wrapping os.ErrNotExist if the file
+// does not exist. Used to detect pre-staged BFBs (provisioning.bfb_on_host)
+// so provision_dpu can skip the SFTP upload.
+func (c *Client) RemoteStat(ctx context.Context, remotePath string) (int64, error) {
+	client, err := sftp.NewClient(c.conn)
+	if err != nil {
+		return 0, fmt.Errorf("sftp init: %w", err)
+	}
+	defer client.Close()
+	st, err := client.Stat(remotePath)
+	if err != nil {
+		// pkg/sftp surfaces SSH_FX_NO_SUCH_FILE as an error whose chain
+		// includes os.ErrNotExist; wrap with the sentinel for callers.
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, fmt.Errorf("stat %s: %w", remotePath, os.ErrNotExist)
+		}
+		return 0, fmt.Errorf("stat %s: %w", remotePath, err)
+	}
+	_ = ctx
+	return st.Size(), nil
 }
 
 // PushBytes writes data to remotePath via SFTP. Convenience wrapper for
