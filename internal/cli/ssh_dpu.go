@@ -23,6 +23,13 @@ import (
 // the moment a second host's DPU connects). The trust boundary is the
 // jumphost: its host key IS pinned via inventory/known_hosts on first
 // successful connection.
+//
+// When the host itself is behind a bastion (host.SSH.Jumphost set), the
+// returned config nests THREE hops: operator → bastion → host → DPU.
+// The bastion can use a different user/key from the host via
+// host.SSH.JumphostUser / host.SSH.JumphostKeyRef (same fields used by
+// sshConfigForHost in provision_dpu.go — keeping the precedence
+// consistent across every SSH-driven phase).
 func dpuSSHConfig(repo string, host *poc.Host, dpu *poc.DPU) (ssh.Config, error) {
 	if dpu == nil || dpu.TmfifoIP == "" {
 		return ssh.Config{}, fmt.Errorf("dpu has no tmfifo_ip")
@@ -33,19 +40,43 @@ func dpuSSHConfig(repo string, host *poc.Host, dpu *poc.DPU) (ssh.Config, error)
 		hostKey = filepath.Join(repo, hostKey)
 	}
 	known := filepath.Join(repo, "inventory", "known_hosts")
-	return ssh.Config{
-		Address: dpuIP,
-		Port:    22,
-		User:    "ubuntu",
-		KeyPath: hostKey,
-		Timeout: 30 * time.Second,
-		Jumphost: &ssh.Config{
-			Address:    host.SSH.Address,
-			Port:       host.SSH.Port,
-			User:       host.SSH.User,
-			KeyPath:    hostKey,
+	// Inner-most: host. Used as the ProxyJump for the DPU target.
+	hostHop := &ssh.Config{
+		Address:    host.SSH.Address,
+		Port:       host.SSH.Port,
+		User:       host.SSH.User,
+		KeyPath:    hostKey,
+		KnownHosts: known,
+		Timeout:    30 * time.Second,
+	}
+	// If the host itself is behind a bastion, chain a second hop.
+	if host.SSH.Jumphost != "" {
+		jumpUser := host.SSH.User
+		if host.SSH.JumphostUser != "" {
+			jumpUser = host.SSH.JumphostUser
+		}
+		jumpKey := hostKey
+		if host.SSH.JumphostKeyRef != "" {
+			jumpKey = host.SSH.JumphostKeyRef
+			if !filepath.IsAbs(jumpKey) {
+				jumpKey = filepath.Join(repo, jumpKey)
+			}
+		}
+		hostHop.Jumphost = &ssh.Config{
+			Address:    host.SSH.Jumphost,
+			Port:       22,
+			User:       jumpUser,
+			KeyPath:    jumpKey,
 			KnownHosts: known,
 			Timeout:    30 * time.Second,
-		},
+		}
+	}
+	return ssh.Config{
+		Address:  dpuIP,
+		Port:     22,
+		User:     "ubuntu",
+		KeyPath:  hostKey,
+		Timeout:  30 * time.Second,
+		Jumphost: hostHop,
 	}, nil
 }
