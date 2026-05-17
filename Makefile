@@ -9,7 +9,7 @@ all: build-all
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
 DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-BNK     := 2.2.0
+BNK     := 2.3.0
 
 LDFLAGS := -X 'github.com/mwiget/dpubnkctl/internal/version.Version=$(VERSION)' \
            -X 'github.com/mwiget/dpubnkctl/internal/version.Commit=$(COMMIT)' \
