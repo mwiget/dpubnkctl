@@ -375,3 +375,64 @@ When you exercise a new bare-metal topology, document its quirks here
 versions that needed special handling). Anything that's "obvious in
 hindsight but cost a half-day to figure out" belongs here. See
 `examples/` for pre-canned `poc.yaml` shapes that mirror common labs.
+
+### Switch fabric discovery before poc.yaml
+
+Whenever you stand up a new lab, run the `switch-discovery` Claude
+Code skill (or an equivalent manual sweep) **before** drafting the
+poc.yaml `network:` block. It captures LLDP from host+DPU, logs into
+the upstream leaves (Cumulus NVUE / Arista EOS / NX-OS / SONiC),
+and produces a `journal/<date>-switch-fabric.md` report enumerating:
+
+- Spines + leaves, OS versions, mgmt IPs
+- Redundancy model: **MLAG vs EVPN-MH vs direct-attached**. EVPN-MH
+  fingerprint: `nv show mlag` reports `enable off` while bonds carry
+  `evpn multihoming segment` with a *shared* system-mac across both
+  leaves. From the host's perspective LACP still bundles cleanly,
+  even though the leaves themselves don't peer.
+- Per-DPU-port → switch-port → bond/po → bridge → VLAN trunk + MFS
+  table. **A bare swp with no bond is the #1 reason LACP partner
+  shows `churned` on the DPU**; the bond stays "up" because each
+  slave has individual link, but slaves end up in different LACP
+  aggregator IDs and traffic never bundles. Verify *both* leaves
+  present the bond before chasing DPU-side gremlins.
+- Per-port `MFS` ≥ planned `network.dpu_mtu` (gotcha #8 lives here).
+
+Read-only discipline: never apply switch config from this skill,
+even when the diff is obvious. Render the exact NVUE/EOS lines and
+hand them to the operator with switch-config authority.
+
+### ailab (F5 SJC) — Nvidia SN5600 + Cumulus 5.9.3, EVPN-MH
+
+- Dual-leaf rack with `ailab-leaf03` (10.196.23.242 / lo 10.255.0.13)
+  and `ailab-leaf04` (10.196.23.241 / lo 10.255.0.14). Spines
+  `ailab-spine01/02` connect via 800G uplinks per leaf. Jumphost
+  (`ubuntu@10.196.23.100`, internally `jumper-pm`) attaches to
+  `ailab-leaf03 swp65` at 10G.
+- **MLAG is off.** Redundancy is **EVPN Multihoming** with a shared
+  ES system-mac `44:38:39:AA:00:02`. Each tenant LAG appears as
+  `bondNN` on both leaves, same `local-id NN`, same system-mac.
+- Standard tenant trunk on the host-facing bonds: untagged PVID 1,
+  tagged **3, 10, 20, 30, 40, 50, 60, 400** (mapped to VNIs
+  3, 1010, 1020, 1030, 1040, 1050, 1060, 1400 in `br_default`).
+  Some bonds use VLAN 60 or VLAN 400 as the untagged PVID instead
+  of 1 — read it from `bridge -c vlan show`, don't assume.
+- **Trap:** DPUs on `mgx-21` and `mgx-20` arrived with their leaf
+  swps bare — no bond, no ES, no L2. LLDP confirms peer identity
+  fine, but DPU `bond0` reports `Partner Churn State: churned` and
+  slaves end up in *different* aggregator IDs. Other DPUs in the
+  rack (mt25xxxx serial-named) are properly bonded. The fix is
+  switch-side (add a bond+ES on each leaf for the matching swp);
+  no DPU-side workaround will form a real LAG.
+- BNK 2.3 VLAN plan that matches the existing trunk: `internal=50`
+  (VNI 1050) for node IP + apiserver + TMM south, `external=40`
+  (VNI 1040) for TMM north + Gateway VIPs. Matches the
+  `examples/two-node-homelab.yaml` defaults exactly.
+- Mgmt path quirk: on `mgx-21`, the host's default route
+  (198.18.0.21/24 → 198.18.0.1) traverses **DPU2** (host PF
+  `enP2p3s0f0np0` = `0002:03:00.0`), not DPU1. Reflashing DPU2 will
+  sever host SSH; size every PoC on this hardware around using
+  DPU1 (`0000:03:00.0`) and leaving DPU2 untouched.
+- BMC/oob mgmt switch: Arista DCS-7010T-48 (`AILABMGMTF0201`),
+  VLAN 500 untagged for host BMC NIC and DPU `oob_net0`. Jumbo
+  MFS 9236 on those ports.
