@@ -408,14 +408,14 @@ func pushAndFlash(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j f
 // so a first-boot timeout here is logged as a warning and we still
 // proceed to SW_RESET. Step 5 of the flash pipeline.
 func waitFirstBoot(ctx context.Context, w io.Writer, client *ssh.Client, j flashJob, f *provisionDPUFlags) {
-	dpuIP := tmfifoHostPart(j.dpu.TmfifoIP)
+	addrs := dpuProbeAddrs(j.dpu)
 	dpuName := dpuLabel(j.dpu)
-	if f.skipDPUWait || dpuIP == "" {
+	if f.skipDPUWait || len(addrs) == 0 {
 		fmt.Fprintln(w, "[5/7] (skipping DPU SSH wait)")
 		return
 	}
-	fmt.Fprintf(w, "[5/7] Waiting for %s first boot (via tmfifo) ...\n", dpuName)
-	if err := waitForDPUSSHWithGrace(ctx, client, dpuIP, f.dpuWaitTimeout); err != nil {
+	fmt.Fprintf(w, "[5/7] Waiting for %s first boot (probing %s) ...\n", dpuName, strings.Join(addrs, ", "))
+	if err := waitForDPUSSHWithGrace(ctx, client, addrs, f.dpuWaitTimeout); err != nil {
 		fmt.Fprintf(w, "      WARN: first boot wait timed out (%v) — continuing to SW_RESET anyway\n", err)
 		return
 	}
@@ -428,7 +428,7 @@ func waitFirstBoot(ctx context.Context, w io.Writer, client *ssh.Client, j flash
 // flash is marked POST_FLASH_UNREACHABLE so downstream phases don't
 // press on into cluster-join time. Steps 6+7 of the flash pipeline.
 func swResetAndWaitSecondBoot(ctx context.Context, w io.Writer, client *ssh.Client, j flashJob, f *provisionDPUFlags, journalMu *sync.Mutex, repo, logPath string) error {
-	dpuIP := tmfifoHostPart(j.dpu.TmfifoIP)
+	addrs := dpuProbeAddrs(j.dpu)
 	dpuName := dpuLabel(j.dpu)
 	skip := f.skipPostFlashReboot || f.skipDPUWait
 	if skip {
@@ -442,16 +442,16 @@ func swResetAndWaitSecondBoot(ctx context.Context, w io.Writer, client *ssh.Clie
 	} else {
 		fmt.Fprintln(w, "      reset issued; allowing DPU to reboot ...")
 	}
-	if dpuIP == "" {
-		fmt.Fprintln(w, "[7/7] (no second boot wait — tmfifo_ip empty)")
+	if len(addrs) == 0 {
+		fmt.Fprintln(w, "[7/7] (no second boot wait — tmfifo_ip and oob_ip both empty)")
 		return nil
 	}
-	fmt.Fprintf(w, "[7/7] Waiting for %s second boot (via tmfifo) ...\n", dpuName)
+	fmt.Fprintf(w, "[7/7] Waiting for %s second boot (probing %s) ...\n", dpuName, strings.Join(addrs, ", "))
 	// Give the reset a moment to actually start before polling.
 	time.Sleep(8 * time.Second)
-	if err := waitForDPUSSHWithGrace(ctx, client, dpuIP, f.dpuWaitTimeout); err != nil {
+	if err := waitForDPUSSHWithGrace(ctx, client, addrs, f.dpuWaitTimeout); err != nil {
 		journaled(journalMu, repo, j.hostname, j.dpu, "POST_FLASH_UNREACHABLE", logPath, err.Error())
-		return fmt.Errorf("DPU %s never came back after SW_RESET (timeout + grace expired) — check rshim console for kernel panic, BL2 hang, or PCIe reset failure", dpuName)
+		return fmt.Errorf("DPU %s never came back after SW_RESET (timeout + grace expired) — probed %s; check rshim console for kernel panic, BL2 hang, or PCIe reset failure", dpuName, strings.Join(addrs, ", "))
 	}
 	fmt.Fprintf(w, "      %s is reachable after reboot.\n", dpuName)
 	return nil
@@ -469,8 +469,10 @@ func swResetAndWaitSecondBoot(ctx context.Context, w io.Writer, client *ssh.Clie
 //
 // Skipped entirely when the operator opted out of post-flash waits.
 func postFlashVerify(ctx context.Context, w io.Writer, repo string, j flashJob, f *provisionDPUFlags, journalMu *sync.Mutex, logPath string) error {
-	dpuIP := tmfifoHostPart(j.dpu.TmfifoIP)
-	skip := f.skipPostFlashReboot || f.skipDPUWait || dpuIP == ""
+	// Verification needs a way to reach the DPU (verifyDPUSubFunctions
+	// runs `mlnx-sf -a show` over SSH). Skip when no probe address is
+	// configured at all — matches the skip logic in swResetAndWaitSecondBoot.
+	skip := f.skipPostFlashReboot || f.skipDPUWait || len(dpuProbeAddrs(j.dpu)) == 0
 	if !skip {
 		if err := verifyDPUSubFunctions(ctx, repo, j, w); err != nil {
 			journaled(journalMu, repo, j.hostname, j.dpu, "POST_FLASH_SF_INCOMPLETE", logPath, err.Error())
@@ -778,15 +780,59 @@ func tmfifoHostPart(cidr string) string {
 	return cidr
 }
 
+// dpuProbeAddrs returns the list of IPv4 addresses on which the DPU
+// SHOULD answer SSH after bfb-install: tmfifo first (the canonical
+// rshim path the operator's host can reach without the lab fabric),
+// then oob_ip if set (independent of rshim's host-side .1/30 state).
+//
+// Two-target probing is what makes the ailab single-node PoC robust:
+// a `systemctl restart rshim` (e.g. operator clearing an orphaned
+// console reader) wipes the host's 192.168.100.1/30 on tmfifo_net0,
+// after which the tmfifo route to 192.168.100.2 silently fails. With
+// oob_ip in the probe list, the wait succeeds anyway because the DPU
+// is reachable over its dedicated mgmt path.
+func dpuProbeAddrs(d *poc.DPU) []string {
+	if d == nil {
+		return nil
+	}
+	var addrs []string
+	if ip := tmfifoHostPart(d.TmfifoIP); ip != "" {
+		addrs = append(addrs, ip)
+	}
+	if ip := tmfifoHostPart(d.OOBIP); ip != "" {
+		addrs = append(addrs, ip)
+	}
+	return addrs
+}
+
+// ensureHostTmfifoIP idempotently brings tmfifo_net0 up and assigns
+// 192.168.100.1/30 on the host. The rshim kernel module *should* do
+// this at module load, but `systemctl restart rshim` wipes the address;
+// without it the second-boot SSH wait silently times out because the
+// 192.168.100.2 route doesn't exist on the host. Errors are swallowed —
+// the most common is "RTNETLINK answers: File exists" when the address
+// is already present, which is the success case.
+func ensureHostTmfifoIP(ctx context.Context, host *ssh.Client) {
+	_ = host.Run(ctx, "sudo -n ip link set tmfifo_net0 up 2>/dev/null; "+
+		"sudo -n ip addr add 192.168.100.1/30 dev tmfifo_net0 2>/dev/null; true")
+}
+
 // waitForDPUSSHWithGrace runs the primary wait, and on timeout extends
 // once for an additional 30s "grace" before reporting failure. The
 // homelab PoC saw both boot waits expire on the millisecond while the
 // DPU was actually responding — rshim/cloud-init settling races the
 // primary timeout. One extra burst absorbs that without raising the
 // primary (which would slow the happy path).
-func waitForDPUSSHWithGrace(ctx context.Context, host *ssh.Client, dpuIP string, primary time.Duration) error {
+//
+// addrs is the list of candidate IPv4 addresses to probe (tmfifo, then
+// oob). Returns nil if ANY address responds.
+func waitForDPUSSHWithGrace(ctx context.Context, host *ssh.Client, addrs []string, primary time.Duration) error {
+	if len(addrs) == 0 {
+		return fmt.Errorf("no DPU probe addresses configured (tmfifo_ip and oob_ip both empty)")
+	}
+	ensureHostTmfifoIP(ctx, host)
 	first, fcancel := context.WithTimeout(ctx, primary)
-	err := waitForDPUSSH(first, host, dpuIP)
+	err := waitForDPUSSH(first, host, addrs)
 	fcancel()
 	if err == nil {
 		return nil
@@ -796,19 +842,28 @@ func waitForDPUSSHWithGrace(ctx context.Context, host *ssh.Client, dpuIP string,
 	}
 	grace, gcancel := context.WithTimeout(ctx, 30*time.Second)
 	defer gcancel()
-	return waitForDPUSSH(grace, host, dpuIP)
+	return waitForDPUSSH(grace, host, addrs)
 }
 
-// waitForDPUSSH polls TCP/22 on dpuIP from the host every 5 s.
-func waitForDPUSSH(ctx context.Context, host *ssh.Client, dpuIP string) error {
-	cmd := fmt.Sprintf("timeout 4 bash -c '</dev/tcp/%s/22' && echo open || echo closed", dpuIP)
+// waitForDPUSSH polls TCP/22 from the host on each address in addrs
+// every 5 s. Returns nil as soon as ANY address responds with "open" —
+// so a tmfifo-route gap (host-side .1/30 wiped by an rshim restart, or
+// kernel rshim module not yet ready) doesn't mask a DPU that's
+// perfectly reachable via its oob_ip.
+func waitForDPUSSH(ctx context.Context, host *ssh.Client, addrs []string) error {
+	if len(addrs) == 0 {
+		return fmt.Errorf("no DPU probe addresses")
+	}
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		r := host.Run(ctx, cmd)
-		if r.OK() && strings.TrimSpace(r.Stdout) == "open" {
-			return nil
+		for _, ip := range addrs {
+			cmd := fmt.Sprintf("timeout 4 bash -c '</dev/tcp/%s/22' && echo open || echo closed", ip)
+			r := host.Run(ctx, cmd)
+			if r.OK() && strings.TrimSpace(r.Stdout) == "open" {
+				return nil
+			}
 		}
 		select {
 		case <-ctx.Done():
