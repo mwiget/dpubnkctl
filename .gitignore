@@ -19,5 +19,11 @@ coverage.txt
 # Local PoC working dirs (created by `dpubnkctl init`)
 # Each PoC repo has its own .gitignore for keys/JWT/FAR.
 
+# Agent-sandbox-persistent PoC repos. Living inside /workspace lets the
+# Docker Desktop bind mount survive container restarts; .gitignore keeps
+# them out of dpubnkctl's git history. Operator can still version them
+# separately under /workspace/lab/<name>/ if needed.
+/lab/
+
 # Agent scratch — per-clone, not shared.
 CLAUDE.md

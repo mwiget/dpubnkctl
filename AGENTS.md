@@ -40,6 +40,14 @@ go vet ./...
 
 No fancy tooling — stdlib + cobra + yaml.v3 + golang.org/x/crypto/ssh + sftp.
 
+If the developer host is an Apple Silicon Mac, `make build` produces a
+darwin/arm64 binary that won't execute inside the Linux/arm64 sandbox
+where Claude Code agents run (Docker Desktop's linuxkit VM cannot exec
+Mach-O). Run `make build-all` to additionally produce
+`bin/dpubnkctl-linux-arm64`, which the agent can invoke for
+`validate` / `samples` / `init` against the working tree. Both
+binaries share the same source and ldflags — only `GOOS` differs.
+
 ---
 
 ## Required gates on every destructive command

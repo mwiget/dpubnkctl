@@ -1,4 +1,10 @@
-.PHONY: build install test clean tidy fmt vet smoke slides
+.PHONY: all build build-linux-arm64 build-all install test clean tidy fmt vet smoke slides
+
+# Default target: build both binaries. The host-native build is what
+# the developer runs (typically darwin/arm64 on a Mac); the linux/arm64
+# build is what a Claude Code agent inside the Docker Desktop sandbox
+# can execute. Same source, same ldflags.
+all: build-all
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
@@ -13,6 +19,21 @@ LDFLAGS := -X 'github.com/mwiget/dpubnkctl/internal/version.Version=$(VERSION)' 
 build:
 	@mkdir -p bin
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/dpubnkctl ./cmd/dpubnkctl
+
+# Cross-build for the Linux/arm64 sandbox a Claude Code agent runs in
+# when the developer host is an Apple Silicon Mac. Same source, same
+# ldflags — just a different GOOS so the agent can `validate` / `init`
+# / `samples` against the working tree without a darwin Mach-O blocker.
+build-linux-arm64:
+	@mkdir -p bin
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
+	    go build -trimpath -ldflags "$(LDFLAGS)" \
+	    -o bin/dpubnkctl-linux-arm64 ./cmd/dpubnkctl
+
+# Build both binaries — host-native (typically darwin/arm64 on a Mac)
+# and linux/arm64 for the agent sandbox. Run this after any change
+# that an agent might want to validate end-to-end.
+build-all: build build-linux-arm64
 
 install: build
 	install -m 0755 bin/dpubnkctl $(HOME)/.local/bin/dpubnkctl
