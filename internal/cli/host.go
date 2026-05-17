@@ -213,6 +213,26 @@ func setupOneHost(ctx context.Context, out io.Writer, repo string, h *poc.Host, 
 			return fmt.Errorf("verify: %s does not show %s\n%s", port, want, r.Stdout)
 		}
 		fmt.Fprintf(out, "%s up: %s %s\n", tag, port, strings.TrimSpace(r.Stdout))
+
+		// MTU check: kernel silently clamps a VLAN child to the parent's
+		// MTU when the parent is smaller. Without this assertion, a host
+		// whose parent_iface comes up at MTU 1500 (cloud-init default)
+		// produces VLAN sub-ifs at 1500 even though netplan asks for
+		// 9000 — verify says "ok" because the IP is there, but jumbo
+		// frames from TMM later fragment-and-die. Catch the clamp here.
+		wantMTU := v.MTU
+		if wantMTU == 0 {
+			wantMTU = defMTU
+		}
+		mtuCmd := fmt.Sprintf("cat /sys/class/net/%s/mtu 2>&1", port)
+		mr := c.Run(ctx, mtuCmd)
+		if !mr.OK() {
+			return fmt.Errorf("verify: read MTU of %s: %s", port, strings.TrimSpace(mr.Stderr+mr.Stdout))
+		}
+		gotMTU := strings.TrimSpace(mr.Stdout)
+		if gotMTU != fmt.Sprintf("%d", wantMTU) {
+			return fmt.Errorf("verify: %s MTU is %s, want %d — parent_iface %s likely smaller than %d (kernel clamps VLAN children); check for an /etc/netplan/*.yaml that sets a smaller MTU on the parent", port, gotMTU, wantMTU, dp.ParentIface, wantMTU)
+		}
 	}
 	return nil
 }
@@ -391,6 +411,28 @@ func renderHostNetplan(parent string, vlans []poc.HostDataPlaneVLAN, defaultMTU 
 	b.WriteString("network:\n")
 	b.WriteString("  version: 2\n")
 	b.WriteString("  renderer: networkd\n")
+	// Bump the parent PF's MTU to match the VLAN children. Without this,
+	// a host whose parent_iface comes up at MTU 1500 (cloud-init default
+	// on a MAAS-installed Ubuntu 24.04 host, observed on the ailab
+	// single-node PoC) fails to create VLAN sub-interfaces with
+	// `enp3s0f0np0: Could not create stacked netdev: Invalid argument` —
+	// the kernel rejects a child MTU larger than the parent. Netplan
+	// deep-merges ethernets definitions across files (later filename
+	// wins per-property), so this overrides any earlier 50-cloud-init
+	// value for `mtu:` without disturbing `match:` / `set-name:`.
+	parentMTU := defaultMTU
+	for _, v := range vlans {
+		mtu := v.MTU
+		if mtu == 0 {
+			mtu = defaultMTU
+		}
+		if mtu > parentMTU {
+			parentMTU = mtu
+		}
+	}
+	b.WriteString("  ethernets:\n")
+	fmt.Fprintf(&b, "    %s:\n", parent)
+	fmt.Fprintf(&b, "      mtu: %d\n", parentMTU)
 	b.WriteString("  vlans:\n")
 	for _, v := range vlans {
 		mtu := v.MTU
