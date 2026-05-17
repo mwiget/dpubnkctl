@@ -278,6 +278,28 @@ const (
 )
 
 func joinOneDPU(ctx context.Context, repo string, j dpuJob, jc *cluster.JoinCommand, nodeIP, k8sMinor string, f *clusterJoinDPUsFlags, w io.Writer) (joinOutcome, error) {
+	// Pre-dial step: make sure the host's tmfifo_net0 has 192.168.100.1/30
+	// before we try to reach the DPU at 192.168.100.2. The rshim kernel
+	// module *should* assign the host address at module load, but any
+	// `systemctl restart rshim` (operator clearing an orphaned console
+	// reader, or any other lifecycle event) wipes it. Without the .1/30,
+	// the DPU dial times out with "context deadline exceeded" — observed
+	// twice on the ailab single-node PoC across `provision dpu` and
+	// `cluster join-dpus`. Idempotent — `ip addr add` returns "File exists"
+	// (which ensureHostTmfifoIP swallows) when the address is already set.
+	hostCfg, err := sshConfigForHost(repo, j.host, 30*time.Second)
+	if err != nil {
+		return joinOutcomeJoined, fmt.Errorf("host ssh config: %w", err)
+	}
+	hostDialCtx, hostCancel := context.WithTimeout(ctx, 30*time.Second)
+	hostC, err := ssh.Dial(hostDialCtx, hostCfg)
+	hostCancel()
+	if err != nil {
+		return joinOutcomeJoined, fmt.Errorf("ssh host (for tmfifo prep): %w", err)
+	}
+	ensureHostTmfifoIP(ctx, hostC)
+	hostC.Close()
+
 	cfg, err := dpuSSHConfig(repo, j.host, j.dpu)
 	if err != nil {
 		return joinOutcomeJoined, err
