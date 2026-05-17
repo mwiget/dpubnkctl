@@ -170,6 +170,21 @@ type SSH struct {
 	User     string `yaml:"user"`
 	KeyRef   string `yaml:"key_ref"` // path under keys/, gitignored
 	Jumphost string `yaml:"jumphost,omitempty"`
+
+	// JumphostUser overrides SSH.User for the jumphost hop only.
+	// Default (empty) reuses SSH.User. Useful when the jumphost account
+	// differs from the target's account.
+	JumphostUser string `yaml:"jumphost_user,omitempty"`
+
+	// JumphostKeyRef overrides SSH.KeyRef for the jumphost hop only.
+	// Default (empty) reuses SSH.KeyRef — fine when the same key opens
+	// both hops. Set this when the jumphost account is authorised with
+	// a *different* key than the target (e.g. operator's workstation
+	// key opens the jumphost, while a separate per-lab key opens the
+	// hosts behind it). Path conventions match SSH.KeyRef: relative
+	// paths resolve against the PoC repo root, absolute paths land
+	// outside (e.g. ~/.ssh/id_ed25519 captured at /workspace/lab/...).
+	JumphostKeyRef string `yaml:"jumphost_key_ref,omitempty"`
 }
 
 type BMC struct {

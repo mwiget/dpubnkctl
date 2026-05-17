@@ -738,9 +738,29 @@ func sshConfigForHost(repo string, h *poc.Host, timeout time.Duration) (ssh.Conf
 		Timeout:    timeout,
 	}
 	if h.SSH.Jumphost != "" {
+		// Default: reuse the target's user + key for the jumphost hop.
+		// Override either independently via SSH.JumphostUser /
+		// SSH.JumphostKeyRef when the jumphost account is authorised
+		// with a different identity (common when the operator's
+		// workstation key opens the jumphost while a separate per-lab
+		// key opens the targets behind it).
+		jumpUser := h.SSH.User
+		if h.SSH.JumphostUser != "" {
+			jumpUser = h.SSH.JumphostUser
+		}
+		jumpKey := keyPath
+		if h.SSH.JumphostKeyRef != "" {
+			jumpKey = h.SSH.JumphostKeyRef
+			if !filepath.IsAbs(jumpKey) {
+				jumpKey = filepath.Join(repo, jumpKey)
+			}
+			if _, err := os.Stat(jumpKey); err != nil {
+				return ssh.Config{}, fmt.Errorf("ssh jumphost key %s: %w", jumpKey, err)
+			}
+		}
 		cfg.Jumphost = &ssh.Config{
 			Address: h.SSH.Jumphost, Port: 22,
-			User: h.SSH.User, KeyPath: keyPath,
+			User: jumpUser, KeyPath: jumpKey,
 			KnownHosts: filepath.Join(repo, "inventory", "known_hosts"),
 			Timeout:    timeout,
 		}
