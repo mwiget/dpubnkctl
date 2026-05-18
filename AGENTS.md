@@ -108,7 +108,7 @@ DPU connections via ProxyJump deliberately skip per-DPU known_hosts because ever
          healthy cluster returns empty — done. A race-hit cluster
          returns one or more sriov-cni / sriov-device-plugin pods.
       2. On detection only: rollout-restart `kube-multus-ds`,
-         `kube-sriov-cni-ds-amd64`, `kube-sriov-device-plugin-amd64`.
+         `kube-sriov-cni-ds`, `kube-sriov-device-plugin`.
          Wait for all three to converge.
       3. Sweep any pod still in `Pending` and `kubectl delete` so
          the kubelet retries against the fresh CNI state.

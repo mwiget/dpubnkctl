@@ -169,8 +169,8 @@ func runDeployNetwork(ctx context.Context, out io.Writer, f *deployNetworkFlags)
 		friendly string
 	}{
 		{"kube-system", "kube-multus-ds", "Multus"},
-		{"kube-system", "kube-sriov-cni-ds-amd64", "SR-IOV CNI"},
-		{"kube-system", "kube-sriov-device-plugin-amd64", "SR-IOV device plugin"},
+		{"kube-system", "kube-sriov-cni-ds", "SR-IOV CNI"},
+		{"kube-system", "kube-sriov-device-plugin", "SR-IOV device plugin"},
 	}
 	for _, ro := range rollouts {
 		fmt.Fprintf(out, "      waiting on daemonset/%s ...\n", ro.dsName)
@@ -336,8 +336,8 @@ var networkDaemonSets = []struct {
 	name      string
 }{
 	{"kube-system", "kube-multus-ds"},
-	{"kube-system", "kube-sriov-cni-ds-amd64"},
-	{"kube-system", "kube-sriov-device-plugin-amd64"},
+	{"kube-system", "kube-sriov-cni-ds"},
+	{"kube-system", "kube-sriov-device-plugin"},
 }
 
 // restartContainerdEverywhere SSHes to every host AND every DPU in
