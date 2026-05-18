@@ -1,0 +1,148 @@
+# Description: Single-node lab behind a jumphost — 1 host + 1 BlueField-3 DPU,
+# operator on a remote/VPN workstation that can't directly route to the lab.
+#
+# This is the canonical shape for any PoC where the operator's machine
+# reaches the lab only through a bastion + the apiserver IP isn't on a
+# subnet the operator's machine knows. Two split-identity hops, BFB
+# pre-staged on the host, kubectl reachability via an SSH-tunnel
+# container, bnk-forge registered with the bastion as a linked SSH
+# credential. See AGENTS.md → "Transatlantic operator pattern" for the
+# full rationale and the matching dpubnkctl features
+# (jumphost_user/jumphost_key_ref, bfb_on_host, ProxyJump in kubespray
+# inventory, etc.).
+#
+# After extraction:
+#   1. Edit every CUSTOMIZE field below to match your environment.
+#   2. Run `dpubnkctl validate` to confirm the schema is happy.
+#   3. Drop F5 license material into keys/ (FAR tgz + JWT).
+#   4. Pre-stage the BFB on the lab host (see provisioning.bfb_on_host).
+#   5. Start the SSH-tunnel container for kubectl reachability
+#      (see Day-2 README — published-port `ssh -L`).
+#   6. `dpubnkctl e2e --yolo` to run the full pipeline.
+
+apiVersion: dpubnkctl.f5.com/v1alpha1
+kind: PoC
+metadata:
+    name: poc-single-jump                   # CUSTOMIZE: per-PoC name (lowercase RFC 1123 label, must match --confirm-cluster later)
+    customer: ACME Labs                     # CUSTOMIZE: customer / lab name (free-form)
+    bnk_version: 2.3.0
+
+versions:
+    doca: 3.2.0
+    bfb_image: bf-bundle-3.2.0-113_25.10_ubuntu-24.04_64k_prod.bfb
+    k8s: "1.30"
+    containerd: 1.7.23
+    runc: 1.2.1
+    pause_tag: "3.10"
+
+topology:
+    mode: single-node
+    lag: true                                # set to false if your DPU's p0/p1 land on switch ports not bonded together (works fine single-node — the host↔DPU PCIe path is silicon-internal and doesn't depend on the upstream LAG)
+    control_plane_count: 1
+    expected_hosts: 1
+    expected_dpus_per_host: 1
+
+network:
+    internal_cidr: 10.244.0.0/16             # CUSTOMIZE: pod/service CIDR — must not overlap any subnet in use
+    pod_mtu: 8900
+    dpu_mtu: 9000
+    vlans:
+        - name: external
+          id: 40
+          subnet: 10.40.0.0/24               # CUSTOMIZE: north-south VLAN subnet (TMM external selfip + Gateway VIPs)
+        - name: internal
+          id: 50
+          subnet: 10.50.0.0/24               # CUSTOMIZE: east-west / control-plane VLAN subnet (apiserver, node IP, TMM south)
+    cluster_apiserver_address: 10.50.0.21    # CUSTOMIZE: MUST equal host1's internal VLAN IP below (single-CP — no separate VIP listener)
+    node_ip_role: internal
+
+provisioning:
+    dpu_password_hash_ref: keys/dpu_password.hash
+    dpu_dns:
+        - 8.8.8.8
+        - 1.1.1.1
+    dpu_dns_domains:
+        - lab.example.com                    # CUSTOMIZE: DNS search domain for the DPU
+    dpu_ntp:
+        - pool.ntp.org
+    bfb_cache_dir: ~/.cache/dpubnkctl/bfb    # operator-side cache (only used when bfb_on_host is unset)
+    # ------------------------------------------------------------------
+    # Pre-staged BFB — avoid SFTP-ing 1.5 GB over your slow uplink twice.
+    # Stage the BFB on the lab host once, before `dpubnkctl provision dpu`:
+    #
+    #   ssh <host> 'mkdir -p /var/cache/dpubnkctl/bfb && \
+    #     wget -O /var/cache/dpubnkctl/bfb/bf-bundle-3.2.0-113_25.10_ubuntu-24.04_64k_prod.bfb \
+    #     https://content.mellanox.com/BlueField/BFBs/Ubuntu24.04/bf-bundle-3.2.0-113_25.10_ubuntu-24.04_64k_prod.bfb'
+    #
+    # Then set the absolute path here. dpubnkctl skips EnsureBFB +
+    # PushFile and uses this path directly. Unset to fall back to the
+    # default operator-laptop cache + SFTP.
+    # ------------------------------------------------------------------
+    bfb_on_host: /var/cache/dpubnkctl/bfb/bf-bundle-3.2.0-113_25.10_ubuntu-24.04_64k_prod.bfb
+
+hosts:
+    - name: host1                            # CUSTOMIZE: host shortname (RFC 1123 label)
+      role: both                             # CP + worker on the single node
+      ssh:
+        address: 10.10.0.10                  # CUSTOMIZE: host's lab-internal IP — NOT directly reachable from the operator's machine
+        port: 22
+        user: ubuntu
+        key_ref: keys/lab-host.pem           # CUSTOMIZE: lab-provided key that opens the host. Falls back to jumphost identity if unset.
+        # --------------------------------------------------------------
+        # Two-key SSH chain:
+        #   - workstation key (in ~/.ssh/ on the operator's machine,
+        #     OR stashed under keys/ for container-restart resilience)
+        #     opens the bastion.
+        #   - lab-host key opens the host *behind* the bastion.
+        # When jumphost_user / jumphost_key_ref are unset, dpubnkctl
+        # reuses the target's user / key for the jumphost hop — fine
+        # when the same identity opens both.
+        # --------------------------------------------------------------
+        jumphost: bastion.example.com        # CUSTOMIZE: address the operator CAN reach (FQDN or IP)
+        jumphost_user: ubuntu                # CUSTOMIZE: jumphost SSH user (optional — defaults to ssh.user)
+        jumphost_key_ref: keys/workstation.ed25519  # CUSTOMIZE: operator's key for the bastion (optional — defaults to key_ref)
+      mgmt_iface: eth0                       # CUSTOMIZE: host's mgmt iface name (the one carrying ssh.address). Used for diagram + report symmetry only.
+      data_plane:
+        parent_iface: ens16f0np0             # CUSTOMIZE: host-side data-plane PF (run `lspci -d 15b3:` on the host to find)
+        vlans:
+            - role: external
+              tag: 40
+              ip: 10.40.0.21/24              # CUSTOMIZE: host's external-VLAN IP
+            - role: internal
+              tag: 50
+              ip: 10.50.0.21/24              # CUSTOMIZE: host's internal-VLAN IP — MUST match cluster_apiserver_address above
+      dpus:
+        - pci: "0000:03:00.0"                # CUSTOMIZE: DPU PCIe BDF (run `dpubnkctl discover host <ip>` to find — typically the first BF3)
+          mode: dpu
+          lag: true                          # match topology.lag above
+          hostname: host1-bf3                # CUSTOMIZE: DPU OS hostname (RFC 1123 label, baked into the BFB at flash time)
+          tmfifo_ip: 192.168.100.2/30        # rshim convention — keep .2/30 unless your host's rshim conflicts
+          oob_ip: 192.168.10.21/22           # CUSTOMIZE: DPU oob_net0 (GigE OOB mgmt) IP — DHCP-assigned at first boot, capture once known
+          bmc_ip: 192.168.10.22              # CUSTOMIZE: DPU BMC IP (sibling of oob_ip on the same mgmt switch)
+          vlans:
+            - role: external
+              tag: 40
+              ip: 10.40.0.5/24               # CUSTOMIZE: DPU external IP (used by TMM north-south)
+            - role: internal
+              tag: 50
+              ip: 10.50.0.5/24               # CUSTOMIZE: DPU internal IP (used by TMM east-west)
+
+bnk:
+    far_key_ref: keys/f5-far-auth-key.tgz    # drop the F5 FAR tarball here
+    jwt_ref: keys/.jwt                       # drop the F5 TEEM JWT here (CWC routes to prod vs tst by the JWT's `jku` header)
+    external_selfip: 10.40.0.100             # CUSTOMIZE: TMM north-south self-IP (must be in `external` VLAN subnet)
+    internal_selfip: 10.50.0.100             # CUSTOMIZE: TMM east-west self-IP (must be in `internal` VLAN subnet)
+
+agent:
+    default: claude
+
+bnk_forge:
+    enabled: true                            # CUSTOMIZE: set false if you don't have bnk-forge running locally
+    repo_path: ~/git/bnk-forge
+    url: https://localhost                   # Mac-native dpubnkctl; from inside an agent container that drives docker on the Mac, override to https://host.docker.internal
+    project_color: "#0a3a5c"
+    # Operator's bastion is registered as a global SSH credential in
+    # bnk-forge by `dpubnkctl bnk-forge launch` and linked from the
+    # project via `ssh_credential_id`. The cluster's kubeconfig
+    # already encodes `host.docker.internal:NNNNN` from the tunnel
+    # container, so kubectl works from bnk-forge's own containers.

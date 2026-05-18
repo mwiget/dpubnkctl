@@ -684,6 +684,27 @@ Dominant phase: `provision dpu` 12m15s (DPU reflash). Every other phase under 6 
 
 ---
 
+<!-- _class: dense -->
+
+## 2.3.0 confirmed — ailab single-node, transatlantic operator
+
+Different shape, same outcome. Operator on a Mac, transatlantic VPN, lab apiserver not directly routable; bastion-only access; aarch64 host (Grace) with one BF3 DPU joined as worker.
+
+| Phase | Wall | Notable |
+|---|---|---|
+| `discover` + switch-probe | 15 min | LLDP host+DPU, SSH'd both leaves (Cumulus SN5600 / EVPN-MH), VLAN trunk inventory |
+| `provision dpu` | 10 min | BFB pre-staged on host via `provisioning.bfb_on_host` — zero VPN traffic for the 1.5 GB image |
+| `host network setup` | 30 s | `parent_iface` MTU bump rendered alongside VLAN children (cloud-init had it at 1500) |
+| `cluster up` | 17 min | kubespray via `ProxyJump` in inventory `ssh_config`, per-hop `IdentityFile` |
+| `cluster join-dpus` | 5 min | 3-hop SSH chain (operator → bastion → host → DPU); auto-rotated host tmfifo .1/30 |
+| `deploy network` / `flo` / `cne` | 14 min | helm/kubectl via published-port SSH tunnel container @ `host.docker.internal:16443` |
+
+End state: License `Active` (TST), CNEInstance Available, TMM 6/6 with both readiness gates True, BNK 2.3 cluster registered in local bnk-forge with linked SSH credential for the bastion. **Zero changes to the lab fabric** — single-node doesn't need an upstream LAG, so the operator can validate end-to-end before the network team finalises the switch-side bond.
+
+New schema fields landed in this round: `ssh.jumphost_user`, `ssh.jumphost_key_ref` (split-identity hops), `provisioning.bfb_on_host` (pre-staged image, skip SFTP). New reusable Claude Code skill: `switch-discovery` (LLDP + leaf inspection + read-only discipline).
+
+---
+
 <!-- _class: section-divider -->
 
 <div class="num">Part 5</div>

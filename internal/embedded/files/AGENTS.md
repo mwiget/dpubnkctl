@@ -165,3 +165,130 @@ and the TEEM endpoint is derived by the F5 Cluster-Wide Controller (CWC)
 from the JWT's `jku` header — operators no longer pass it. The CWC's
 own API certs are pre-created via the `f5-cert-gen` helm chart (pulled
 from the release manifest) before FLO is installed.
+
+---
+
+## Transatlantic operator pattern (operator behind a bastion)
+
+A standard pattern when the operator's workstation can't directly
+route to the lab subnet — VPN-anchored on a remote office, customer
+allows only an external bastion + lab-internal hosts behind it.
+`dpubnkctl` carries this end-to-end:
+
+- **Two-key SSH chain.** The bastion's auth identity is usually
+  *different* from the lab host's identity (operator workstation key
+  opens the bastion; a lab-provided per-PoC key opens the host).
+  `poc.yaml`'s `ssh:` block carries both:
+
+  ```yaml
+  hosts:
+    - name: host1
+      ssh:
+        address: 198.18.0.21          # lab-internal
+        user: ubuntu
+        key_ref: keys/lab-host.pem    # opens the lab host
+        jumphost: bastion.example.com
+        jumphost_user: ubuntu          # optional; defaults to ssh.user
+        jumphost_key_ref: keys/workstation.pem  # opens the bastion
+  ```
+
+  Both keys get plumbed through every phase: `sshConfigForHost`
+  (direct SSH from the operator), `dpuSSHConfig` (operator → bastion
+  → host → DPU), and the kubespray inventory (next item). Default
+  precedence: target's user/key reused for the jumphost if the
+  override fields are unset.
+
+- **ProxyJump in the kubespray inventory.** Kubespray runs inside a
+  Docker container with `--network=host`, so it inherits the
+  operator's routing — which doesn't reach the lab. dpubnkctl stages
+  an `inventory/ssh_config` with per-host `Host` stanzas + per-hop
+  `IdentityFile`, mounted at `/inventory/ssh_config` inside the
+  ansible container, referenced via
+  `ansible_ssh_common_args: -F /inventory/ssh_config`. Each host's
+  jumphost key is staged at `/inventory/keys/<host>-jump.pem` when
+  it differs from the target key.
+
+- **Apiserver reachable via a tunnel container.** When the operator
+  drives deploy phases (helm/kubectl in containers) from a workstation
+  that can't route to the apiserver's IP, the practical pattern is a
+  tiny published-port SSH tunnel container that the kubeconfig points
+  at via `host.docker.internal:NNNNN`:
+
+  ```bash
+  docker run -d --name dpubnkctl-apiserver-tunnel \
+    -p 16443:16443 --restart unless-stopped \
+    -e SSH_PRIVKEY="$(cat keys/workstation.pem)" alpine sh -c '
+      apk add openssh-client >/dev/null &&
+      echo "$SSH_PRIVKEY" > /tmp/k && chmod 600 /tmp/k &&
+      exec ssh -L 0.0.0.0:16443:198.18.0.21:6443 -N -i /tmp/k \
+        -o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes \
+        ubuntu@bastion.example.com'
+  ```
+
+  Then patch the localized kubeconfig: `server:
+  https://host.docker.internal:16443` + `insecure-skip-tls-verify:
+  true` (cert SAN doesn't include `host.docker.internal`). The same
+  kubeconfig works from containerized helm/kubectl on the operator's
+  Mac AND from another agent's container — both resolve
+  `host.docker.internal` to the Mac host where the tunnel is
+  published.
+
+  Mac-native kubectl needs either an `/etc/hosts` entry
+  `127.0.0.1 host.docker.internal` or a separate kubeconfig copy
+  with `server: https://localhost:NNNNN`.
+
+- **Pre-staged BFB on the lab host.** Shipping 1.5 GB twice across the
+  WAN (origin → operator cache → SFTP → host `/tmp`) is the slowest
+  step on a transatlantic VPN. Stage the BFB once *inside* the lab
+  with `wget` on the host from `content.mellanox.com`, then set
+  `provisioning.bfb_on_host: /var/cache/dpubnkctl/bfb/<name>.bfb`
+  in `poc.yaml`. `dpubnkctl provision dpu` skips `EnsureBFB` +
+  `PushFile` and uses the pre-staged path directly. Verified by
+  `RemoteStat` before bfb-install runs; missing file fails fast.
+
+### Lab-host prep gotchas (Ubuntu 24.04 / aarch64)
+
+- **Cloud-init's `50-cloud-init.yaml` ships parent_iface at MTU 1500.**
+  Adding a VLAN sub-iface at MTU 9000 on top fails with `Could not
+  create stacked netdev: Invalid argument` (kernel rejects child MTU
+  > parent), OR silently clamps to 1500 with no errors visible. The
+  host-netplan renderer emits an explicit `ethernets:` block bumping
+  the parent MTU to match the largest VLAN child (netplan
+  deep-merges definitions across files; later filename wins
+  per-property), and verify reads `/sys/class/net/<vlan>/mtu` to
+  catch the silent-clamp path.
+
+- **DOCA host package install on aarch64.** The NVIDIA repo for
+  `doca/3.2.0/ubuntu24.04/aarch64/` is the DPU OS repo (kernel
+  packages for BF3), not a host repo. For a host that doesn't have
+  any DOCA tooling yet, the minimum-viable host-prep is:
+
+  1. Add NVIDIA repo + GPG key
+  2. `apt install -y --no-install-recommends rshim mft mstflint
+     mlxbf-bootctl mlxbf-bootimages-signed`
+
+  `bfb-install` ships with the Ubuntu universe `rshim` package, not
+  with anything in the DOCA repo (counterintuitive).
+  `kernel-mft-dkms` is optional unless you need `mst start` to load
+  PCI access modules; `mlxconfig -d <BDF>` works without it.
+
+### bnk-forge integration limitations (observed 2026-05)
+
+- **`infra_*` fields on the project resource don't persist.**
+  `PUT /api/projects/{id}` accepts `infra_enabled`, `infra_host`,
+  `infra_ssh_username`, `infra_auth_type`, `infra_os_type` in the
+  body and returns `"Project updated successfully"`, but every
+  re-fetch shows them null. The `ssh_credential_id` link works
+  correctly via the same endpoint — attach the bastion as a global
+  SSH credential, link it via `ssh_credential_id`, and don't rely
+  on the project's per-row `infra_host` field.
+
+- **`PUT` is replace-style, not patch.** Omitting a field clears it.
+  Always send the full project body when updating.
+
+- **Cluster registration uses the kubeconfig's `current-context`.**
+  Default kubeadm-generated kubeconfigs use
+  `kubernetes-admin@cluster.local`, NOT `cluster.local`. The cluster
+  create body's `context:` field must match exactly or
+  `POST /api/k8s/clusters/{id}/test` returns
+  `Expected object with name X in contexts list`.
