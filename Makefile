@@ -1,4 +1,4 @@
-.PHONY: all build build-linux-arm64 build-all install test clean tidy fmt vet smoke slides
+.PHONY: all build build-linux-arm64 build-darwin-arm64 build-all install test clean tidy fmt vet smoke slides release release-linux-amd64 release-darwin-arm64
 
 # Default target: build both binaries. The host-native build is what
 # the developer runs (typically darwin/arm64 on a Mac); the linux/arm64
@@ -30,10 +30,48 @@ build-linux-arm64:
 	    go build -trimpath -ldflags "$(LDFLAGS)" \
 	    -o bin/dpubnkctl-linux-arm64 ./cmd/dpubnkctl
 
+# Cross-build for darwin/arm64 from a non-Mac host (e.g. a Linux CI
+# runner or the agent sandbox cutting a release). On an Apple Silicon
+# Mac, `build` already produces the same binary natively — this target
+# exists so the same release artifact can be reproduced from anywhere.
+build-darwin-arm64:
+	@mkdir -p bin
+	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 \
+	    go build -trimpath -ldflags "$(LDFLAGS)" \
+	    -o bin/dpubnkctl-darwin-arm64 ./cmd/dpubnkctl
+
 # Build both binaries — host-native (typically darwin/arm64 on a Mac)
 # and linux/arm64 for the agent sandbox. Run this after any change
 # that an agent might want to validate end-to-end.
 build-all: build build-linux-arm64
+
+# --- release artifacts --------------------------------------------------
+#
+# Produce versioned, sha256-checksummed binaries matching the asset
+# naming on github.com/mwiget/dpubnkctl/releases (e.g.
+# dpubnkctl-v2.3.0-linux-amd64 + .sha256). Run from a clean checkout
+# of the release tag so $(VERSION) resolves to e.g. v2.3.0.
+#
+#   git checkout v2.3.0
+#   make release
+#   gh release upload v2.3.0 bin/dpubnkctl-v2.3.0-* --clobber
+release-linux-amd64:
+	@mkdir -p bin
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+	    go build -trimpath -ldflags "$(LDFLAGS)" \
+	    -o bin/dpubnkctl-$(VERSION)-linux-amd64 ./cmd/dpubnkctl
+	cd bin && sha256sum dpubnkctl-$(VERSION)-linux-amd64 \
+	    > dpubnkctl-$(VERSION)-linux-amd64.sha256
+
+release-darwin-arm64:
+	@mkdir -p bin
+	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 \
+	    go build -trimpath -ldflags "$(LDFLAGS)" \
+	    -o bin/dpubnkctl-$(VERSION)-darwin-arm64 ./cmd/dpubnkctl
+	cd bin && sha256sum dpubnkctl-$(VERSION)-darwin-arm64 \
+	    > dpubnkctl-$(VERSION)-darwin-arm64.sha256
+
+release: release-linux-amd64 release-darwin-arm64
 
 install: build
 	install -m 0755 bin/dpubnkctl $(HOME)/.local/bin/dpubnkctl
