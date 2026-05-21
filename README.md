@@ -333,10 +333,12 @@ dpubnkctl agent openai-compat           # any OpenAI-compatible REPL
 
 Both workflows above end with `dpubnkctl e2e --yolo` which runs every
 phase. If you'd rather drive phases one at a time (for diagnostics,
-partial reruns, or curriculum-style demos):
+partial reruns, or curriculum-style demos), the canonical order matches
+what `dpubnkctl e2e --help` prints:
 
 ```bash
-dpubnkctl provision dpus --yolo --confirm-flash <hostnames>
+dpubnkctl validate
+dpubnkctl provision dpu <hosts> --yolo --confirm-flash <hosts>
 dpubnkctl host network setup --yolo --confirm-cluster <name>
 dpubnkctl cluster up --yolo --confirm-cluster <name>
 dpubnkctl cluster join-dpus --yolo --confirm-cluster <name>
@@ -345,8 +347,10 @@ dpubnkctl deploy flo --yolo --confirm-deploy <name>
 dpubnkctl deploy cne --yolo --confirm-deploy <name>
 ```
 
-Every phase is idempotent and gated by `--yolo` plus a `--confirm-*
-<name>` that must equal `poc.yaml.metadata.name`.
+`<hosts>` is the comma-separated hostname list for `--confirm-flash`
+*and* the positional argument list for `provision dpu` — both must
+match (typo guard). `<name>` is `poc.yaml.metadata.name`. Every phase
+is idempotent and gated by `--yolo` plus its `--confirm-*` flag.
 
 ## Repo layout (the binary itself)
 
