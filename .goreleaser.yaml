@@ -53,9 +53,11 @@ changelog:
   sort: asc
   filters:
     exclude:
-      - "^docs:"
-      - "^test:"
-      - "^chore:"
+      # Allow an optional Conventional Commits scope, e.g. `docs(README):`,
+      # which the bare `^docs:` form would otherwise miss.
+      - "^docs(\\(.+\\))?:"
+      - "^test(\\(.+\\))?:"
+      - "^chore(\\(.+\\))?:"
 
 release:
   draft: false
