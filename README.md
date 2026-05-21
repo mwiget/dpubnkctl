@@ -28,11 +28,13 @@ Drives a PoC from raw hardware to a working BNK deployment in five phases:
    configure VLAN/LAG networking
 3. **host network setup** — netplan VLAN sub-interfaces on each host
    for the data-plane fabric (e.g. `external40`, `internal41`)
-4. **cluster** — bring up Kubernetes via kubespray, join DPU workers
-   externally, install CNI/Multus/SR-IOV/storage
-5. **deploy** — install BNK platform: cert-manager, FLO (with FAR
-   image-pull secret + bnk-ca cert chain), CNEInstance, F5SPKVlan
-   self-IPs
+4. **cluster** — bring up Kubernetes via kubespray (Calico CNI), then
+   join DPU workers externally via kubeadm
+5. **deploy** — install BNK platform: Multus + SR-IOV + NADs +
+   local-path-provisioner (`deploy network`), cert-manager + FLO
+   (with FAR image-pull secret + bnk-ca cert chain, `deploy flo`),
+   CNEInstance + F5SPKVlan self-IPs + License CR + GatewayClass
+   (`deploy cne`)
 
 Symmetric **`destroy`** tears the same stack down — `bnk` (workload
 + FLO + cert-manager) → `dpus` (kubeadm reset over SSH) → `cluster`
