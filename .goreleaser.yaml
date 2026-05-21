@@ -1,0 +1,75 @@
+version: 2
+
+project_name: dpubnkctl
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: dpubnkctl
+    main: ./cmd/dpubnkctl
+    binary: dpubnkctl
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/mwiget/dpubnkctl/internal/version.Version={{.Version}}
+      - -X github.com/mwiget/dpubnkctl/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/mwiget/dpubnkctl/internal/version.BuildDate={{.Date}}
+      - -X github.com/mwiget/dpubnkctl/internal/version.BNKVersion=2.3.0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      # We only ship darwin/arm64 (Apple Silicon). Intel Macs out of scope.
+      - goos: darwin
+        goarch: amd64
+
+archives:
+  - id: default
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats: [tar.gz]
+    files:
+      - LICENSE
+      - README.md
+      - AGENTS.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ .Tag }}-next"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  draft: false
+  prerelease: false
+  header: |
+    ## dpubnkctl {{ .Tag }}
+
+    Pinned to **BNK 2.3.0** on bare-metal hosts with NVIDIA BlueField-3 DPUs.
+
+    Download the archive for your platform, extract `dpubnkctl`,
+    and place it on your `$PATH`. Verify with:
+
+    ```
+    dpubnkctl version
+    ```
+  footer: |
+    **Full changelog**: https://github.com/mwiget/dpubnkctl/compare/{{ .PreviousTag }}...{{ .Tag }}

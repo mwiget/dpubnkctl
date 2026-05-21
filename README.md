@@ -1,5 +1,7 @@
 # dpubnkctl
 
+[![Release](https://img.shields.io/github/v/release/mwiget/dpubnkctl?label=download)](https://github.com/mwiget/dpubnkctl/releases/latest)
+
 Single-binary CLI to deploy F5 BIG-IP Next for Kubernetes (BNK) on bare-metal
 hosts with NVIDIA BlueField DPUs.
 
@@ -160,6 +162,34 @@ through F5's normal channels — never via this binary:
 
 Drop those into `keys/` of the PoC repo `init` creates. Everything else
 is in the binary.
+
+## Download
+
+Prebuilt binaries for each tagged release are on the
+[**GitHub Releases page**](https://github.com/mwiget/dpubnkctl/releases/latest) —
+three archives per release plus a `checksums.txt`:
+
+| Platform | Archive |
+|---|---|
+| Linux (Intel/AMD) | `dpubnkctl_<version>_linux_amd64.tar.gz` |
+| Linux (ARM64) | `dpubnkctl_<version>_linux_arm64.tar.gz` |
+| macOS (Apple Silicon) | `dpubnkctl_<version>_darwin_arm64.tar.gz` |
+
+One-liner install (Linux amd64; swap the suffix for your platform):
+
+```bash
+VERSION=$(curl -fsSL https://api.github.com/repos/mwiget/dpubnkctl/releases/latest | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
+curl -fsSL "https://github.com/mwiget/dpubnkctl/releases/download/${VERSION}/dpubnkctl_${VERSION#v}_linux_amd64.tar.gz" \
+  | tar -xz -C /tmp dpubnkctl
+sudo install -m 0755 /tmp/dpubnkctl /usr/local/bin/dpubnkctl
+dpubnkctl version
+```
+
+Releases follow `v<bnk-version>-<n>` — e.g. `v2.3.0-1`, `v2.3.0-2`.
+The `2.3.0` prefix tracks the pinned BNK release; the `-n` suffix
+increments per dpubnkctl-only iteration.
+
+Or build from source — see [Build](#build) below.
 
 ## Requirements
 
