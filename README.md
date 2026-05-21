@@ -1,5 +1,8 @@
 # dpubnkctl
 
+![Go](https://img.shields.io/github/go-mod/go-version/mwiget/dpubnkctl)
+![License](https://img.shields.io/github/license/mwiget/dpubnkctl)
+![Last commit](https://img.shields.io/github/last-commit/mwiget/dpubnkctl)
 [![Release](https://img.shields.io/github/v/release/mwiget/dpubnkctl?label=download)](https://github.com/mwiget/dpubnkctl/releases/latest)
 
 Single-binary CLI to deploy F5 BIG-IP Next for Kubernetes (BNK) on bare-metal
