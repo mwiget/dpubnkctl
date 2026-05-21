@@ -323,7 +323,7 @@ dpubnkctl agent gemini                  # Gemini
 dpubnkctl agent aider                   # Aider
 dpubnkctl agent pi                      # pi (https://pi.dev/)
 dpubnkctl agent opencode                # opencode (https://opencode.ai/)
-dpubnkctl agent openai-compat           # any OpenAI-compatible REPL
+dpubnkctl agent openai                  # any OpenAI-compatible REPL (set --llm-endpoint)
 
 # Then inside the agent session, e.g.:
 #   "Read AGENTS.md, act as the pre-sales SE persona. Confirm scope with me."
