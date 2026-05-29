@@ -13,7 +13,7 @@ ServiceIPFamily: ipv4
 sharedComponentNamespace: {{.SharedComponentNamespace}}
 
 image:
-  repository: repo.f5.com/images
+  repository: {{.RegistryHost}}/images
   name: f5-lifecycle-operator
   pullPolicy: Always
 
@@ -31,16 +31,16 @@ fluentbit_sidecar:
 "f5-spk-crds-common":
   versionValidator:
     image:
-      repository: repo.f5.com/images
+      repository: {{.RegistryHost}}/images
 
 "f5-spk-crds-service-proxy":
   versionValidator:
     image:
-      repository: repo.f5.com/images
+      repository: {{.RegistryHost}}/images
 
 "f5-ipam-operator":
   image:
-    repository: repo.f5.com/images
+    repository: {{.RegistryHost}}/images
     pullPolicy: Always
   namespace: {{.Namespace}}
   nameOverride: f5-ipam-operator

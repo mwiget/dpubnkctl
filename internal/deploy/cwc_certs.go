@@ -46,14 +46,13 @@ func PullF5CertGen(ctx context.Context, auth OCIAuth, chartVersion, destDir stri
 	// land arbitrary commands in the sh -c invocation. Inside the
 	// script, $USERNAME / $CHART_VERSION expand once at sh parse time —
 	// they're already inside the shell, no further quoting needed.
-	const script = `set -e
-cat | helm registry login ` + version.FARRegistryHost + ` --username "$USERNAME" --password-stdin >/dev/null
-cd /work
-rm -f "f5-cert-gen-${CHART_VERSION}.tgz"
-rm -rf cert-gen
-helm pull oci://` + version.FARRegistryHost + `/utils/f5-cert-gen --version "$CHART_VERSION" -d . >/dev/null
-tar -xzf "f5-cert-gen-${CHART_VERSION}.tgz"
-`
+	script := "set -e\n" +
+		"cat | helm registry login " + version.GetFARRegistryHost() + " --username \"$USERNAME\" --password-stdin >/dev/null\n" +
+		"cd /work\n" +
+		"rm -f \"f5-cert-gen-${CHART_VERSION}.tgz\"\n" +
+		"rm -rf cert-gen\n" +
+		"helm pull oci://" + version.GetFARRegistryHost() + "/utils/f5-cert-gen --version \"$CHART_VERSION\" -d . >/dev/null\n" +
+		"tar -xzf \"f5-cert-gen-${CHART_VERSION}.tgz\"\n"
 	cmd := exec.CommandContext(ctx, "docker",
 		"run", "--rm", "-i",
 		"-v", absDest+":/work",

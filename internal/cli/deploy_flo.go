@@ -17,10 +17,11 @@ import (
 )
 
 type deployFLOFlags struct {
-	pocDir        string
-	yolo          bool
-	confirmDeploy string
-	skipPull      bool
+		pocDir        string
+		yolo          bool
+		confirmDeploy string
+		skipPull      bool
+		dev           bool
 }
 
 func newDeployFLOCmd() *cobra.Command {
@@ -31,7 +32,7 @@ func newDeployFLOCmd() *cobra.Command {
 		Long: `Phase 4b.1 — install the F5 Lifecycle Operator on the cluster:
 
   1. Tools preflight (alpine/k8s container).
-  2. Pull release-manifest (` + version.CNEManifestVersion + `) to resolve
+	2. Pull release-manifest (` + version.GetCNEManifestVersion() + `) to resolve
      the FLO + cert-gen chart versions for this BNK release. Caches to
      <poc>/artifacts/release-manifest/, persists p.Versions.FLOChart back
      to poc.yaml.
@@ -63,10 +64,12 @@ Required gates:
 	cmd.Flags().BoolVar(&f.yolo, "yolo", false, "Acknowledge cluster writes")
 	cmd.Flags().StringVar(&f.confirmDeploy, "confirm-deploy", "", "Must equal poc.yaml.metadata.name (typo guard)")
 	cmd.Flags().BoolVar(&f.skipPull, "skip-pull", false, "Skip docker pull of alpine/k8s image")
+	cmd.Flags().BoolVar(&f.dev, "dev", false, "Use devrepo.f5.com instead of repo.f5.com for all F5 registry/chart references")
 	return cmd
 }
 
 func runDeployFLO(ctx context.Context, out io.Writer, f *deployFLOFlags) error {
+	version.SetDevRepo(f.dev)
 	repo, err := resolvePoCDir(f.pocDir)
 	if err != nil {
 		return err
@@ -98,7 +101,7 @@ func runDeployFLO(ctx context.Context, out io.Writer, f *deployFLOFlags) error {
 	fmt.Fprintf(out, "PoC:        %s\n", p.Metadata.Name)
 	fmt.Fprintf(out, "Cluster:    %s\n", kubeconfig)
 	fmt.Fprintf(out, "JWT:        %s\n", jwtPath)
-	fmt.Fprintf(out, "Manifest:   %s\n\n", version.CNEManifestVersion)
+		fmt.Fprintf(out, "Manifest:   %s\n\n", version.GetCNEManifestVersion())
 
 	r := &deploy.Runner{KubeconfigPath: kubeconfig, Out: prefixWriter{w: out, prefix: "      | "}}
 	if !f.skipPull {
@@ -112,13 +115,13 @@ func runDeployFLO(ctx context.Context, out io.Writer, f *deployFLOFlags) error {
 	// 2. Pull release-manifest. Resolves FLO + cert-gen chart versions
 	// from F5's bill-of-materials chart; without this we can't pin the
 	// helm install or know which f5-cert-gen revision to run.
-	fmt.Fprintln(out, "[2/10] Pulling release-manifest from repo.f5.com ...")
+	fmt.Fprintf(out, "[2/10] Pulling release-manifest from %s ...\n", version.GetFARRegistryHost())
 	farAuth, err := deploy.ExtractFARRegistryAuth(farPath)
 	if err != nil {
 		return fmt.Errorf("extract FAR registry credentials: %w", err)
 	}
 	mfCache := filepath.Join(repo, "artifacts", "release-manifest")
-	manifest, err := deploy.PullReleaseManifest(ctx, farAuth, version.CNEManifestVersion, mfCache)
+		manifest, err := deploy.PullReleaseManifest(ctx, farAuth, version.GetCNEManifestVersion(), mfCache)
 	if err != nil {
 		return fmt.Errorf("pull release-manifest: %w", err)
 	}
@@ -225,7 +228,7 @@ func runDeployFLO(ctx context.Context, out io.Writer, f *deployFLOFlags) error {
 	fmt.Fprintf(out, "      rendered values → %s\n", rendered)
 	if err := r.HelmUpgradeOCI(ctx, farAuth,
 		"flo",
-		version.FLOChartOCIRef,
+		version.GetFLOChartOCIRef(),
 		"f5-operators",
 		floVer,
 		values,
@@ -284,5 +287,5 @@ func floChartLabel(p *poc.PoC) string {
 	if v := strings.TrimSpace(p.Versions.FLOChart); v != "" {
 		return v
 	}
-	return "(unresolved — pulled from release-manifest " + version.CNEManifestVersion + " at deploy time)"
+		return "(unresolved — pulled from release-manifest " + version.GetCNEManifestVersion() + " at deploy time)"
 }

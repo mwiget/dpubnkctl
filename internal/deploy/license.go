@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"github.com/mwiget/dpubnkctl/internal/version"
 )
 
 // JWTInfo describes the parsed JWT we use to pick prod vs tst FLO values.
@@ -33,8 +35,8 @@ type JWTInfo struct {
 //     authoritative because each environment (prod / tst / future stg)
 //     publishes its own keys and only verifies tokens signed by them.
 //     Substring matches on the hostname:
-//       product-tst.apis.f5networks.net → tst
-//       product.apis.f5.com             → prod
+//     product-tst.apis.f5networks.net → tst
+//     product.apis.f5.com             → prod
 //
 //  2. claims.sub prefix — "TST-*" is a strong secondary signal when
 //     jku is missing or unrecognized (e.g. hand-crafted test tokens).
@@ -50,9 +52,16 @@ func InspectJWT(jwtPath string) (*JWTInfo, error) {
 		return nil, fmt.Errorf("read jwt %s: %w", jwtPath, err)
 	}
 	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return nil, fmt.Errorf("jwt %s: file is empty — drop a valid JWT (header.payload.signature) into this path", jwtPath)
+	}
 	parts := strings.Split(token, ".")
 	if len(parts) < 2 {
-		return nil, fmt.Errorf("jwt %s: not a JWT (need at least header.payload, got %d parts)", jwtPath, len(parts))
+		preview := token
+		if len(preview) > 80 {
+			preview = preview[:80] + "..."
+		}
+		return nil, fmt.Errorf("jwt %s: not a JWT (need at least header.payload, got %d parts); first bytes: %q", jwtPath, len(parts), preview)
 	}
 
 	hdr, err := decodeJWTSegment(parts[0])
@@ -225,18 +234,18 @@ func isServiceAccountJSON(b []byte) bool {
 func buildGARDockerConfig(saJSON []byte) []byte {
 	saB64 := base64.StdEncoding.EncodeToString(saJSON)
 	auth := base64.StdEncoding.EncodeToString([]byte("_json_key_base64:" + saB64))
-	cfg := fmt.Sprintf(`{"auths":{"repo.f5.com":{"auth":%q}}}`, auth)
+	cfg := fmt.Sprintf(`{"auths":{%q:{"auth":%q}}}`, version.GetFARRegistryHost(), auth)
 	return []byte(cfg)
 }
 
 // UnwrapGARAuth is the inverse of buildGARDockerConfig: given a
-// dockerconfigjson with auths.repo.f5.com.auth, returns the raw
+// dockerconfigjson with auths.<registry>.auth, returns the raw
 // service-account JSON. Used by `helm registry login` which needs the
 // password directly. Handles both auth forms in case an operator
 // supplies a hand-crafted dockerconfigjson:
 //
-//   _json_key:<raw-json>            (older bnk-forge convention)
-//   _json_key_base64:<base64-json>  (current f5-bnk convention)
+//	_json_key:<raw-json>            (older bnk-forge convention)
+//	_json_key_base64:<base64-json>  (current f5-bnk convention)
 func UnwrapGARAuth(dockerCfg []byte) (string, error) {
 	var cfg struct {
 		Auths map[string]struct {
@@ -246,9 +255,10 @@ func UnwrapGARAuth(dockerCfg []byte) (string, error) {
 	if err := json.Unmarshal(dockerCfg, &cfg); err != nil {
 		return "", err
 	}
-	entry, ok := cfg.Auths["repo.f5.com"]
+	host := version.GetFARRegistryHost()
+	entry, ok := cfg.Auths[host]
 	if !ok {
-		return "", fmt.Errorf("dockerconfigjson has no auths.repo.f5.com")
+		return "", fmt.Errorf("dockerconfigjson has no auths.%s", host)
 	}
 	raw, err := base64.StdEncoding.DecodeString(entry.Auth)
 	if err != nil {

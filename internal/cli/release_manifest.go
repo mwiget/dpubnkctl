@@ -32,6 +32,7 @@ type releaseManifestPullFlags struct {
 	version   string
 	cacheDir  string
 	verbose   bool
+	dev       bool
 }
 
 func newReleaseManifestPullCmd() *cobra.Command {
@@ -54,14 +55,16 @@ them without re-authenticating to the registry.`,
 	}
 	cmd.Flags().StringVar(&f.pocDir, "poc", "", "PoC repo path (default: current directory)")
 	cmd.Flags().StringVar(&f.version, "version", "",
-		"release-manifest version (default: binary-pinned "+version.CNEManifestVersion+")")
+			"release-manifest version (default: binary-pinned "+version.GetCNEManifestVersion()+")")
 	cmd.Flags().StringVar(&f.cacheDir, "cache", "",
 		"cache directory (default: <poc>/artifacts/release-manifest)")
 	cmd.Flags().BoolVarP(&f.verbose, "verbose", "v", false, "list every chart + image in the manifest")
+	cmd.Flags().BoolVar(&f.dev, "dev", false, "Use devrepo.f5.com instead of repo.f5.com for all F5 registry/chart references")
 	return cmd
 }
 
 func runReleaseManifestPull(ctx context.Context, out io.Writer, f *releaseManifestPullFlags) error {
+	version.SetDevRepo(f.dev)
 	repo, err := resolvePoCDir(f.pocDir)
 	if err != nil {
 		return err
@@ -85,10 +88,10 @@ func runReleaseManifestPull(ctx context.Context, out io.Writer, f *releaseManife
 	}
 	target := f.version
 	if target == "" {
-		target = version.CNEManifestVersion
+			target = version.GetCNEManifestVersion()
 	}
 
-	fmt.Fprintf(out, "Pulling release-manifest %s from %s ...\n", target, version.ReleaseManifestRepo)
+	fmt.Fprintf(out, "Pulling release-manifest %s from %s ...\n", target, version.GetReleaseManifestRepo())
 	fmt.Fprintf(out, "  cache:  %s\n\n", cache)
 
 	m, err := deploy.PullReleaseManifest(ctx, auth, target, cache)

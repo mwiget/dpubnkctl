@@ -2,7 +2,7 @@ apiVersion: k8s.f5.com/v1
 kind: CNEInstance
 metadata:
   name: {{.InstanceName}}
-  namespace: default
+  namespace: {{.Namespace}}
 spec:
   product:
     gatewayAPI: true
@@ -21,7 +21,7 @@ spec:
     clusterIssuer: bnk-ca-cluster-issuer
   deploymentSize: "{{.DeploymentSize}}"
   registry:
-    uri: repo.f5.com
+    uri: {{.RegistryHost}}
     imagePullSecrets:
     - name: far-secret
     imagePullPolicy: Always

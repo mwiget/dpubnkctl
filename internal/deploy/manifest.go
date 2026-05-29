@@ -129,7 +129,8 @@ func (m *ReleaseManifest) RawYAML() []byte { return m.rawManifest }
 // the FAR tgz).
 func PullReleaseManifest(ctx context.Context, auth OCIAuth, manifestVersion, cacheDir string) (*ReleaseManifest, error) {
 	if manifestVersion == "" {
-		manifestVersion = version.CNEManifestVersion
+		manifestVersion = version.GetCNEManifestVersion()
+		manifestVersion = version.GetCNEManifestVersion()
 	}
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir cache %s: %w", cacheDir, err)
@@ -157,17 +158,17 @@ func PullReleaseManifest(ctx context.Context, auth OCIAuth, manifestVersion, cac
 	// PullF5CertGen (commit 0e63fa1 / review S-M6) — same threat model:
 	// --network=host alpine/k8s container running as root inside docker
 	// means an injection here is consequential.
-	const script = `set -e
-cat | helm registry login ` + version.FARRegistryHost + ` --username "$USERNAME" --password-stdin >/dev/null
-cd /work
-rm -f "f5-bigip-k8s-manifest-${MANIFEST_VERSION}.tgz"
-rm -rf "f5-bigip-k8s-manifest-${MANIFEST_VERSION}"
-helm pull ` + version.ReleaseManifestRepo + `/` + version.ReleaseManifestChart + ` --version "$MANIFEST_VERSION" -d . >/dev/null
-tar -xzf "f5-bigip-k8s-manifest-${MANIFEST_VERSION}.tgz"
-echo '---DPUBNKCTL-MANIFEST-BEGIN---'
-cat "f5-bigip-k8s-manifest-${MANIFEST_VERSION}/bigip-k8s-manifest-${MANIFEST_VERSION}.yaml"
-echo '---DPUBNKCTL-MANIFEST-END---'
-`
+	script := "set -e\n" +
+// ...existing code...
+		"cat | helm registry login " + version.GetFARRegistryHost() + " --username \"$USERNAME\" --password-stdin >/dev/null\n" +
+		"cd /work\n" +
+		"rm -f \"f5-bigip-k8s-manifest-${MANIFEST_VERSION}.tgz\"\n" +
+		"rm -rf \"f5-bigip-k8s-manifest-${MANIFEST_VERSION}\"\n" +
+		"helm pull " + version.GetReleaseManifestRepo() + "/" + version.GetReleaseManifestChart() + " --version \"$MANIFEST_VERSION\" -d . >/dev/null\n" +
+		"tar -xzf \"f5-bigip-k8s-manifest-${MANIFEST_VERSION}.tgz\"\n" +
+		"echo '---DPUBNKCTL-MANIFEST-BEGIN---'\n" +
+		"cat \"f5-bigip-k8s-manifest-${MANIFEST_VERSION}/bigip-k8s-manifest-${MANIFEST_VERSION}.yaml\"\n" +
+		"echo '---DPUBNKCTL-MANIFEST-END---'\n"
 
 	dockerArgs := []string{
 		"run", "--rm", "-i",
@@ -237,7 +238,7 @@ func ExtractFARRegistryAuth(farTgzPath string) (OCIAuth, error) {
 		return OCIAuth{}, err
 	}
 	return OCIAuth{
-		RegistryHost: version.FARRegistryHost,
+		RegistryHost: version.GetFARRegistryHost(),
 		Username:     "_json_key",
 		Password:     saJSON,
 	}, nil

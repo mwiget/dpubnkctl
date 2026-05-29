@@ -6,6 +6,7 @@ import (
 	"text/template"
 
 	"github.com/mwiget/dpubnkctl/internal/embedded"
+	"github.com/mwiget/dpubnkctl/internal/version"
 )
 
 // FLOInputs are substituted into the embedded FLO values template.
@@ -19,6 +20,7 @@ type FLOInputs struct {
 	Namespace                string // FLO release namespace (default f5-operators)
 	SharedComponentNamespace string // CWC + license + observer namespace (default f5-cne-core)
 	ClusterIssuer            string // cert-manager ClusterIssuer FLO uses for internal CAs
+	RegistryHost             string // F5 registry hostname (repo.f5.com or devrepo.f5.com)
 }
 
 // RenderFLOValues substitutes the embedded flo-values.yaml.tmpl. Caller
@@ -33,6 +35,9 @@ func RenderFLOValues(in FLOInputs) (string, error) {
 	}
 	if in.ClusterIssuer == "" {
 		in.ClusterIssuer = "bnk-ca-cluster-issuer"
+	}
+	if in.RegistryHost == "" {
+		in.RegistryHost = version.GetFARRegistryHost()
 	}
 	raw, err := embedded.Templates.ReadFile("templates/flo-values.yaml.tmpl")
 	if err != nil {
@@ -52,9 +57,9 @@ func RenderFLOValues(in FLOInputs) (string, error) {
 // CertIssuerChain returns the YAML for the bnk-ca cert-issuer chain
 // FLO references as global.certmgr.clusterIssuer = bnk-ca-cluster-issuer:
 //
-//   1. ClusterIssuer/selfsigned-bnk        (selfsigned root)
-//   2. Certificate/bnk-ca in cert-manager  (CA cert + key, signed by selfsigned-bnk)
-//   3. ClusterIssuer/bnk-ca-cluster-issuer (uses bnk-ca secret as the CA)
+//  1. ClusterIssuer/selfsigned-bnk        (selfsigned root)
+//  2. Certificate/bnk-ca in cert-manager  (CA cert + key, signed by selfsigned-bnk)
+//  3. ClusterIssuer/bnk-ca-cluster-issuer (uses bnk-ca secret as the CA)
 //
 // All three resources go to the cert-manager namespace per cert-manager's
 // "namespace where ClusterIssuer's secret lives" convention (set by
