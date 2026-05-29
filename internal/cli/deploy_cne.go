@@ -14,6 +14,7 @@ import (
 
 	"github.com/mwiget/dpubnkctl/internal/deploy"
 	"github.com/mwiget/dpubnkctl/internal/poc"
+	"github.com/mwiget/dpubnkctl/internal/version"
 )
 
 type deployCNEFlags struct {
@@ -24,6 +25,8 @@ type deployCNEFlags struct {
 	cneReadyTimeout     time.Duration
 	licenseReadyTimeout time.Duration
 	licenseMode         string
+	namespace           string
+	dev                 bool
 }
 
 func newDeployCNECmd() *cobra.Command {
@@ -77,10 +80,13 @@ Required gates:
 	// know they're re-applying.
 	cmd.Flags().DurationVar(&f.licenseReadyTimeout, "license-ready-timeout", 15*time.Minute, "How long to wait for the License CR to reach Active")
 	cmd.Flags().StringVar(&f.licenseMode, "license-mode", "connected", "License CR operationMode: connected or disconnected")
+	cmd.Flags().StringVar(&f.namespace, "namespace", "default", "Kubernetes namespace for the CNEInstance and related resources")
+	cmd.Flags().BoolVar(&f.dev, "dev", false, "Use devrepo.f5.com instead of repo.f5.com for all F5 registry/chart references")
 	return cmd
 }
 
 func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
+	version.SetDevRepo(f.dev)
 	repo, err := resolvePoCDir(f.pocDir)
 	if err != nil {
 		return err
@@ -114,8 +120,8 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 	fmt.Fprintln(out, "      ok")
 
 	// 2. Apply CNEInstance — FLO watches it and reconciles the downstream
-	//    BNK CRs (TMM, dssm, observer, ...). Lands in `default` per the
-	//    cne-instance.yaml.tmpl namespace (commit 0270d78).
+	//    BNK CRs (TMM, dssm, observer, ...). The namespace is controlled
+	//    by the --namespace flag (defaults to "default").
 	//
 	//    CNEInstance's existence is what triggers FLO's crd-installer to
 	//    reconcile the BNK-specific CRDs (License, F5SPKVlan) — confirmed
@@ -124,7 +130,41 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 	//    License + F5SPKVlan applications must wait for the CRD to exist
 	//    (`--for=create`) before kubectl apply, regardless of step order.
 	fmt.Fprintln(out, "[2/6] Rendering + applying CNEInstance ...")
-	cne, err := deploy.RenderCNEInstance(p)
+	ns := f.namespace
+
+	// Check whether the target namespace exists. If it does, inform the
+	// user; if not, create it and provision far-secret so TMM image pulls
+	// work. `kubectl get namespace` returns exit 0 if it exists, non-zero
+	// otherwise.
+	if _, nsErr := r.KubectlCapture(ctx, "get", "namespace", ns); nsErr != nil {
+		fmt.Fprintf(out, "      Namespace %q does not exist — creating it ...\n", ns)
+		if err := r.Apply(ctx, deploy.RenderNamespace(ns)); err != nil {
+			return fmt.Errorf("create namespace %s: %w", ns, err)
+		}
+		fmt.Fprintf(out, "      Namespace %s created.\n", ns)
+	} else {
+		fmt.Fprintf(out, "      Namespace %s already exists.\n", ns)
+	}
+
+	// Ensure far-secret (image-pull credential for repo.f5.com) exists in
+	// the target namespace — TMM pods reference it via imagePullSecrets.
+	// deploy flo only creates far-secret in f5-operators, default, and
+	// f5-cne-core, so for any other namespace we must provision it here.
+	// For default/f5-cne-core this is an idempotent re-apply.
+	farPath := resolveRef(repo, p.BNK.FARKeyRef)
+	if _, statErr := os.Stat(farPath); statErr == nil {
+		dockerCfg, cfgErr := deploy.ExtractFARDockerConfig(farPath)
+		if cfgErr != nil {
+			return fmt.Errorf("extract FAR docker config for namespace %s: %w", ns, cfgErr)
+		}
+		fmt.Fprintf(out, "      Ensuring far-secret in %s ...\n", ns)
+		if err := r.Apply(ctx, deploy.RenderFARSecret(ns, dockerCfg)); err != nil {
+			return fmt.Errorf("create far-secret in %s: %w", ns, err)
+		}
+	} else {
+		fmt.Fprintf(out, "      WARN: FAR credential not found at %s — skipping far-secret in %s (TMM image pulls may fail)\n", farPath, ns)
+	}
+	cne, err := deploy.RenderCNEInstance(p, ns)
 	if err != nil {
 		return err
 	}
@@ -173,11 +213,11 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 		// ...: connect: connection refused". Wait for both the
 		// deployment to exist AND become Available before applying.
 		fmt.Fprintln(out, "      Waiting for f5-cne-controller deployment (hosts the admission webhook) ...")
-		if err := r.Kubectl(ctx, "wait", "-n", "default", "--for=create",
+		if err := r.Kubectl(ctx, "wait", "-n", ns, "--for=create",
 			"deployment/f5-cne-controller", "--timeout=3m"); err != nil {
 			return fmt.Errorf("f5-cne-controller deployment was not created: %w", err)
 		}
-		if err := r.Wait(ctx, "default", "Available",
+		if err := r.Wait(ctx, ns, "Available",
 			"deployment/f5-cne-controller", 5*time.Minute); err != nil {
 			return fmt.Errorf("f5-cne-controller deployment did not become Available: %w", err)
 		}
@@ -239,7 +279,7 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 	//    and RoutingDone goes True on its own.
 	if dpuVLANCount(p) > 0 {
 		fmt.Fprintln(out, "[6/6] Restarting f5-tmm DaemonSet (race-breaker for RoutingDone gate) ...")
-		if err := r.Kubectl(ctx, "rollout", "restart", "-n", "default",
+		if err := r.Kubectl(ctx, "rollout", "restart", "-n", ns,
 			"daemonset/f5-tmm"); err != nil {
 			return fmt.Errorf("rollout restart f5-tmm: %w", err)
 		}
@@ -259,7 +299,7 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 		// i.e. RoutingDone+ConfigurationDone both True. That's exactly the
 		// condition we want to gate on.
 		fmt.Fprintln(out, "      restart issued; waiting for rollout to complete (each pod must flip RoutingDone before Ready) ...")
-		if err := r.Kubectl(ctx, "rollout", "status", "-n", "default",
+		if err := r.Kubectl(ctx, "rollout", "status", "-n", ns,
 			"daemonset/f5-tmm", "--timeout=10m"); err != nil {
 			return fmt.Errorf("f5-tmm rollout did not converge to Ready: %w", err)
 		}
@@ -284,7 +324,7 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 	//    stuck.
 	fmt.Fprintln(out, "      Waiting for CNEInstance Available (DaemonSet restart needs ~5 min to converge) ...")
 	fmt.Fprintln(out, "      Requires Multus CNI + NADs in default (sf-external, sf-internal — installed by `deploy network`).")
-	if err := r.Wait(ctx, "default", "Available",
+	if err := r.Wait(ctx, ns, "Available",
 		"cneinstance/bnk-instance", f.cneReadyTimeout); err != nil {
 		return fmt.Errorf("CNEInstance not Available within %s — check `kubectl get cneinstance -A` and the per-component conditions in its .status. Common causes: license stuck (kubectl -n f5-cne-core get license), Multus DS not Ready (kubectl -n kube-system get ds kube-multus-ds), TMM image pull (kubectl -n default describe pod -l app=f5-tmm): %w", f.cneReadyTimeout, err)
 	}

@@ -580,7 +580,7 @@ func renderRunMarkdown(r runReport, p *poc.PoC) string {
 	fmt.Fprintln(&b)
 	fmt.Fprintf(&b, "- **dpubnkctl:** %s  (targets BNK %s)\n", version.Version, version.BNKVersion)
 	fmt.Fprintf(&b, "- **FLO chart:** %s\n", floChartLabel(p))
-	fmt.Fprintf(&b, "- **CNE manifest:** %s\n\n", version.CNEManifestVersion)
+		fmt.Fprintf(&b, "- **CNE manifest:** %s\n\n", version.GetCNEManifestVersion())
 
 	// Embed the topology diagrams so any markdown reader (or grep) sees
 	// the cluster shape inline with the results. Wrap in a fenced code

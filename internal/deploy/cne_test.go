@@ -41,14 +41,14 @@ func cneFixture() *poc.PoC {
 
 func TestRenderCNEInstance_DPUEnabled(t *testing.T) {
 	p := cneFixture()
-	out, err := RenderCNEInstance(p)
+	out, err := RenderCNEInstance(p, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
 		"kind: CNEInstance",
 		`manifestVersion: "2.3.0-3.2598.3-0.0.170"`,
-		"enabled: true", // dpu.enabled
+		"enabled: true",           // dpu.enabled
 		`deploymentSize: "Large"`, // 2 DPUs → Large
 		"- sf-external",
 		"- sf-internal",
@@ -73,8 +73,8 @@ func TestRenderF5SPKVlans_AggregatesByName(t *testing.T) {
 		"name: internal41",
 		"tag: 40",
 		"tag: 41",
-		`- "1.1"`, // external40 → 1.1
-		`- "1.2"`, // internal41 → 1.2
+		`- "1.1"`,      // external40 → 1.1
+		`- "1.2"`,      // internal41 → 1.2
 		"- 10.10.40.5", // worker1's external IP
 		"- 10.10.40.6", // worker2's external IP
 		"- 10.10.41.5",

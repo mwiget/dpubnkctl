@@ -57,7 +57,7 @@ func runClusterStatus(ctx context.Context, out io.Writer, pocDir string) error {
 	fmt.Fprintln(out, "Versions (this dpubnkctl release):")
 	fmt.Fprintf(out, "  dpubnkctl   : %s   (targets BNK %s)\n", version.Version, version.BNKVersion)
 	fmt.Fprintf(out, "  FLO chart   : %s\n", floChartLabel(p))
-	fmt.Fprintf(out, "  CNE manifest: %s\n", version.CNEManifestVersion)
+		fmt.Fprintf(out, "  CNE manifest: %s\n", version.GetCNEManifestVersion())
 	fmt.Fprintln(out)
 
 	// 1. Phase tracker from poc.yaml.status.

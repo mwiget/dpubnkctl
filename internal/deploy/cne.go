@@ -15,12 +15,14 @@ import (
 // CNEInputs is the flat shape passed to cne-instance.yaml.tmpl.
 type CNEInputs struct {
 	InstanceName       string
+	Namespace          string
 	ManifestVersion    string
 	StorageClass       string
 	DPUEnabled         bool
 	DeploymentSize     string
 	NetworkAttachments []string
 	DPUMtu             int
+	RegistryHost       string
 }
 
 // VLANInputs is one F5SPKVlan entry. Aggregated from all DPUs by tag —
@@ -43,7 +45,9 @@ type GatewayClassInputs struct {
 // dpu_enabled if any DPU exists, deploymentSize "Large" for ≥2 TMMs,
 // "Small" otherwise. NetworkAttachments hard-coded to sf-external/
 // sf-internal (operator can override later via poc.yaml.bnk).
-func RenderCNEInstance(p *poc.PoC) (string, error) {
+// namespace controls the metadata.namespace of the CNEInstance; pass ""
+// to default to "default".
+func RenderCNEInstance(p *poc.PoC, namespace string) (string, error) {
 	dpuCount := 0
 	for _, h := range p.Hosts {
 		dpuCount += len(h.DPUs)
@@ -56,14 +60,19 @@ func RenderCNEInstance(p *poc.PoC) (string, error) {
 	if mtu == 0 {
 		mtu = version.DefaultDPUMTU
 	}
+	if namespace == "" {
+		namespace = "default"
+	}
 	in := CNEInputs{
 		InstanceName:       "bnk-instance",
-		ManifestVersion:    version.CNEManifestVersion,
+		Namespace:          namespace,
+		ManifestVersion:    version.GetCNEManifestVersion(),
 		StorageClass:       "local-path",
 		DPUEnabled:         dpuCount > 0,
 		DeploymentSize:     deployment,
 		NetworkAttachments: []string{"sf-external", "sf-internal"},
 		DPUMtu:             mtu,
+		RegistryHost:       version.GetFARRegistryHost(),
 	}
 	return renderTemplate("templates/cne-instance.yaml.tmpl", in)
 }

@@ -102,7 +102,7 @@ func runDoctor(ctx context.Context, out io.Writer, pocDir string, strict, skipNe
 			{"content.mellanox.com:443", "content.mellanox.com:443", "BFB image download"},
 			{"github.com:443", "github.com:443", "cert-manager release manifests"},
 			{"quay.io:443", "quay.io:443", "kubespray container image"},
-			{"repo.f5.com:443", "repo.f5.com:443", "FLO Helm chart + BNK container images"},
+			{version.GetFARRegistryHost() + ":443", version.GetFARRegistryHost() + ":443", "FLO Helm chart + BNK container images"},
 			{"registry-1.docker.io:443", "registry-1.docker.io:443", "alpine/k8s container image"},
 		} {
 			checks = append(checks, runAndPrint(out, checkTCP(target.name, target.hostport, target.purpose, netTimeout)))
