@@ -19,7 +19,7 @@ builds:
       - -X github.com/mwiget/dpubnkctl/internal/version.Version={{.Version}}
       - -X github.com/mwiget/dpubnkctl/internal/version.Commit={{.ShortCommit}}
       - -X github.com/mwiget/dpubnkctl/internal/version.BuildDate={{.Date}}
-      - -X github.com/mwiget/dpubnkctl/internal/version.BNKVersion=2.3.0
+      - -X github.com/mwiget/dpubnkctl/internal/version.BNKVersion=2.3.1
     goos:
       - linux
       - darwin
@@ -65,7 +65,7 @@ release:
   header: |
     ## dpubnkctl {{ .Tag }}
 
-    Pinned to **BNK 2.3.0** on bare-metal hosts with NVIDIA BlueField-3 DPUs.
+    Pinned to **BNK 2.3.1** on bare-metal hosts with NVIDIA BlueField-3 DPUs.
 
     Download the archive for your platform, extract `dpubnkctl`,
     and place it on your `$PATH`. Verify with:

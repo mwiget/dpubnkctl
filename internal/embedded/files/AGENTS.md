@@ -124,9 +124,9 @@ spec:
 
 ## Pinned versions (for this dpubnkctl release)
 
-This binary builds for **BNK 2.3.0**:
+This binary builds for **BNK 2.3.1**:
 - DOCA / BFB: 3.2.0 (`bf-bundle-3.2.0-113_25.10_ubuntu-24.04_64k_prod.bfb`)
-- Release manifest: 2.3.0-3.2598.3-0.0.170
+- Release manifest: 2.3.1-3.2598.3-0.0.304
   (F5 Lifecycle Operator + CIS + cert-gen versions resolved at deploy
    time from this chart — see `dpubnkctl release-manifest pull`)
 - Kubernetes: 1.30.14

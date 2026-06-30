@@ -24,7 +24,7 @@ import (
 //	f5_helm_repo: oci://repo.f5.com
 //	f5_docker_repo: repo.f5.com
 //	releases:
-//	  - version: 2.3.0-3.2598.3-0.0.170
+//	  - version: 2.3.1-3.2598.3-0.0.304
 //	    helm_charts:
 //	      - {name: charts/f5-lifecycle-operator, version: v2.10.x-…}
 //	      - {name: utils/f5-cert-gen,            version: 0.9.x}

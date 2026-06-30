@@ -9,7 +9,7 @@ all: build-all
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
 DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-BNK     := 2.3.0
+BNK     := 2.3.1
 
 LDFLAGS := -X 'github.com/mwiget/dpubnkctl/internal/version.Version=$(VERSION)' \
            -X 'github.com/mwiget/dpubnkctl/internal/version.Commit=$(COMMIT)' \
@@ -49,12 +49,12 @@ build-all: build build-linux-arm64
 #
 # Produce versioned, sha256-checksummed binaries matching the asset
 # naming on github.com/mwiget/dpubnkctl/releases (e.g.
-# dpubnkctl-v2.3.0-linux-amd64 + .sha256). Run from a clean checkout
-# of the release tag so $(VERSION) resolves to e.g. v2.3.0.
+# dpubnkctl-v2.3.1-linux-amd64 + .sha256). Run from a clean checkout
+# of the release tag so $(VERSION) resolves to e.g. v2.3.1.
 #
-#   git checkout v2.3.0
+#   git checkout v2.3.1
 #   make release
-#   gh release upload v2.3.0 bin/dpubnkctl-v2.3.0-* --clobber
+#   gh release upload v2.3.1 bin/dpubnkctl-v2.3.1-* --clobber
 release-linux-amd64:
 	@mkdir -p bin
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \

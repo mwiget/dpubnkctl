@@ -5,10 +5,10 @@ var (
 	Version    = "dev"
 	Commit     = "none"
 	BuildDate  = "unknown"
-	BNKVersion = "2.3.0"
+	BNKVersion = "2.3.1"
 )
 
-// Pinned defaults for BNK 2.3.0. These travel with the binary; a different
+// Pinned defaults for BNK 2.3.1. These travel with the binary; a different
 // dpubnkctl release targets a different BNK version. The FLO/CIS/cert-gen
 // chart versions are NOT pinned here — they're resolved at deploy time
 // from the f5-bigip-k8s-manifest release-manifest chart (see
@@ -77,7 +77,7 @@ const (
 	// CNEManifestVersion is the version coordinate inside the release
 	// manifest. CNEInstance.spec.manifestVersion references it directly;
 	// PullReleaseManifest uses it as the --version arg to helm pull.
-	CNEManifestVersion = "2.3.0-3.2598.3-0.0.170"
+	CNEManifestVersion = "2.3.1-3.2598.3-0.0.304"
 
 	// FARRegistryHost is the OCI registry hostname for all F5-published
 	// charts and images. The release manifest itself, FLO, CIS, and

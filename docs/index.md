@@ -6,7 +6,7 @@ title: dpubnkctl
 
 F5 BIG-IP Next for Kubernetes — deploy in one binary, drive with an agent.
 
-Targets **BNK 2.3.0** on NVIDIA BlueField-3 DPUs (DOCA 3.2.0, Ubuntu 24.04). Maintenance fixes for 2.2.0 live on the `release-2.2.0` branch.
+Targets **BNK 2.3.1** on NVIDIA BlueField-3 DPUs (DOCA 3.2.0, Ubuntu 24.04). Maintenance fixes for 2.2.0 live on the `release-2.2.0` branch; the 2.3.0 line lives on `release-2.3.0`.
 
 ## Slide decks
 

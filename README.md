@@ -61,7 +61,7 @@ Per topology:
 - **Each DPU runs LAG or non-LAG.** LAG bonds p0+p1 into one fabric uplink (single VLAN trunk on the switch side); non-LAG uses p0 + p1 as two independent uplinks with `vlans[].uplink: p0|p1`.
 - **No fixed upper bound on hosts/DPUs.** The schema and pipeline accept arbitrary host + DPU counts; specific shapes have been exercised against bare-metal labs of the topologies listed above.
 
-Pinned to BNK 2.3.0 / Kubernetes 1.30.14 / DOCA 3.2.0 / release manifest 2.3.0-3.2598.3-0.0.170 (FLO chart resolved at deploy time). A different BNK release ships a different `dpubnkctl` build.
+Pinned to BNK 2.3.1 / Kubernetes 1.30.14 / DOCA 3.2.0 / release manifest 2.3.1-3.2598.3-0.0.304 (FLO chart resolved at deploy time). A different BNK release ships a different `dpubnkctl` build.
 
 ## Two operating modes
 
@@ -92,13 +92,13 @@ The binary doesn't ship an LLM — you choose the model and endpoint
 ## Versioning
 
 This binary is **per-BNK-release.** Building from `main` today targets
-**BNK 2.3.0** with these pins:
+**BNK 2.3.1** with these pins:
 
 | Component | Version |
 |-----------|---------|
 | DOCA / BFB | 3.2.0 (`bf-bundle-3.2.0-113_25.10_ubuntu-24.04_64k_prod.bfb`) |
 | F5 Lifecycle Operator chart | resolved at deploy time from release manifest |
-| Release manifest | 2.3.0-3.2598.3-0.0.170 |
+| Release manifest | 2.3.1-3.2598.3-0.0.304 |
 | cert-manager | v1.16.2 |
 | Kubernetes | 1.30.14 (kubespray v2.28.1) |
 | containerd | 1.7.23 |

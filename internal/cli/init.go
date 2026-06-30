@@ -137,7 +137,7 @@ Owned by the pre-sales SE persona.
 
 | Date | Decision | Rationale | Alternative rejected |
 |------|----------|-----------|----------------------|
-| %s | PoC created with dpubnkctl defaults (BNK 2.3.0, DOCA 3.2.0, release-manifest 2.3.0-3.2598.3-0.0.170) | binary-pinned baseline | manual stack composition |
+| %s | PoC created with dpubnkctl defaults (BNK 2.3.1, DOCA 3.2.0, release-manifest 2.3.1-3.2598.3-0.0.304) | binary-pinned baseline | manual stack composition |
 `, name, time.Now().UTC().Format("2006-01-02"))
 			if err := os.WriteFile(filepath.Join(abs, "decisions.md"), []byte(decisions), 0o644); err != nil {
 				return err
