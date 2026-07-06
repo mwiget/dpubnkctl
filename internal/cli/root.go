@@ -59,6 +59,7 @@ before driving a PoC.`,
 		newSamplesCmd(),
 		newWizardCmd(),
 		newVersionCmd(),
+		newSchemaCmd(),
 	)
 
 	return root
