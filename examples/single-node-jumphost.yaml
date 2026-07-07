@@ -75,8 +75,18 @@ provisioning:
     #     https://content.mellanox.com/BlueField/BFBs/Ubuntu24.04/bf-bundle-3.2.0-113_25.10_ubuntu-24.04_64k_prod.bfb'
     #
     # Then set the absolute path here. dpubnkctl skips EnsureBFB +
-    # PushFile and uses this path directly. Unset to fall back to the
-    # default operator-laptop cache + SFTP.
+    # PushFile and uses this path directly, and sha256-verifies it on the
+    # host before flashing. Unset to fall back to the default
+    # operator-laptop cache + SFTP.
+    #
+    # ALTERNATIVE — let dpubnkctl curl the BFB for you (no manual staging):
+    #   provisioning:
+    #     bfb_fetch: host                       # host curls the BFB itself
+    #     bfb_host_cache_dir: /var/cache/dpubnkctl/bfb   # optional (this is the default)
+    # `bfb_fetch: host` and `bfb_on_host` are mutually exclusive — the
+    # former automates the wget above (atomic curl + retries), reuses a
+    # matching staged copy, and verifies the sha256 on the host. Override
+    # per-run with `--bfb-fetch host`.
     # ------------------------------------------------------------------
     bfb_on_host: /var/cache/dpubnkctl/bfb/bf-bundle-3.2.0-113_25.10_ubuntu-24.04_64k_prod.bfb
 

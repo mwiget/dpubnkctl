@@ -15,6 +15,19 @@ const (
 	FileName   = "poc.yaml"
 )
 
+// BFB fetch modes for Provisioning.BFBFetch. "push" (the default when
+// empty) downloads the BFB into the operator's local cache and SFTP-
+// pushes it to each host; "host" makes each host curl the BFB directly
+// so it never round-trips the runner. See Provisioning.BFBFetch.
+const (
+	BFBFetchPush = "push"
+	BFBFetchHost = "host"
+
+	// DefaultBFBHostCacheDir is where `bfb_fetch: host` stages the image
+	// on the host when Provisioning.BFBHostCacheDir is unset.
+	DefaultBFBHostCacheDir = "/var/cache/dpubnkctl/bfb"
+)
+
 type PoC struct {
 	APIVersion   string       `yaml:"apiVersion"`
 	Kind         string       `yaml:"kind"`
@@ -271,6 +284,31 @@ type Provisioning struct {
 	//
 	//   ssh host 'wget -O <path> https://content.mellanox.com/.../<image>.bfb'
 	BFBOnHost string `yaml:"bfb_on_host,omitempty"`
+
+	// BFBSHA256, when non-empty, is the expected sha256 hex digest of the
+	// BFB image and overrides the binary-pinned version.BFBImageSHA256.
+	// Use it to pin a custom or older BFB whose digest differs from the
+	// release-pinned one. Precedence: this value > version.BFBImageSHA256
+	// > empty (integrity not enforced — validate warns). Applies to every
+	// fetch mode: the local download (push), the pre-staged file
+	// (bfb_on_host), and the host-fetched file (bfb_fetch: host).
+	BFBSHA256 string `yaml:"bfb_sha256,omitempty"`
+
+	// BFBFetch selects how the BFB reaches the host: "push" (default when
+	// empty) downloads to the operator's local cache and SFTP-pushes it;
+	// "host" makes the host curl the BFB directly from BFBURL/BFBBaseURL
+	// (see BFBFetchPush/BFBFetchHost), so a 1.5 GB image never round-trips
+	// a slow runner→host link. `bfb_fetch: host` and an explicit
+	// bfb_on_host are mutually exclusive (validate errors). The
+	// `--bfb-fetch` flag on `provision dpu` overrides this.
+	BFBFetch string `yaml:"bfb_fetch,omitempty"`
+
+	// BFBHostCacheDir is the directory on the host where `bfb_fetch: host`
+	// stages the image (as <dir>/<bfb_image>). Defaults to
+	// DefaultBFBHostCacheDir (/var/cache/dpubnkctl/bfb) when empty. A
+	// staged file whose sha256 already matches is reused without re-
+	// fetching, so the dir doubles as a persistent per-host BFB cache.
+	BFBHostCacheDir string `yaml:"bfb_host_cache_dir,omitempty"`
 }
 
 type BNK struct {

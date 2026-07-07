@@ -25,6 +25,8 @@ type provisionDPUFlags struct {
 	yolo                bool
 	confirmFlash        string // single name OR comma-separated list matching args
 	bfbURL              string
+	bfbFetch            string // "" (use PoC) | push | host — overrides provisioning.bfb_fetch
+	skipBFBChecksum     bool
 	flashTimeout        time.Duration
 	dpuWaitTimeout      time.Duration
 	bf3SettleTimeout    time.Duration
@@ -70,6 +72,8 @@ every host's plan is READY.`,
 	cmd.Flags().BoolVar(&f.yolo, "yolo", false, "Acknowledge that this command is destructive")
 	cmd.Flags().StringVar(&f.confirmFlash, "confirm-flash", "", "Comma-separated list of hostnames — must match the positional args (typo guard)")
 	cmd.Flags().StringVar(&f.bfbURL, "bfb-url", "", "Override the BFB download URL (defaults to binary-pinned)")
+	cmd.Flags().StringVar(&f.bfbFetch, "bfb-fetch", "", "How the BFB reaches the host: push (download locally + SFTP) | host (host curls it directly). Overrides provisioning.bfb_fetch")
+	cmd.Flags().BoolVar(&f.skipBFBChecksum, "skip-bfb-checksum", false, "Skip the host-side sha256 verification of the BFB (bfb_on_host / bfb_fetch: host) — for the unpinned/dev case")
 	cmd.Flags().DurationVar(&f.flashTimeout, "flash-timeout", 25*time.Minute, "Per-flash bfb-install timeout")
 	cmd.Flags().DurationVar(&f.dpuWaitTimeout, "dpu-wait-timeout", 10*time.Minute, "How long to wait for the DPU to come back via tmfifo (each wait)")
 	cmd.Flags().BoolVar(&f.skipDPUWait, "skip-dpu-wait", false, "Don't wait for the DPU to reboot — return as soon as bfb-install exits (also skips post-flash reboot)")
@@ -86,6 +90,26 @@ type flashJob struct {
 	host     *poc.Host
 	dpu      *poc.DPU
 	rendered string
+}
+
+// bfb source modes for bfbPlan.mode.
+const (
+	bfbModePush   = "push"   // download to local cache, SFTP-push to host
+	bfbModeOnHost = "onhost" // reuse an operator-pre-staged file (bfb_on_host)
+	bfbModeFetch  = "fetch"  // host curls the BFB itself (bfb_fetch: host)
+)
+
+// bfbPlan is the resolved decision of how the BFB reaches each host,
+// computed once (from PoC + flags) and shared read-only across the
+// per-host flash goroutines. Exactly one of localPath (push) / hostPath
+// (onhost, fetch) names the image; fetchURL is set only for fetch.
+type bfbPlan struct {
+	mode         string
+	localPath    string // push: local cache path to SFTP to the host
+	hostPath     string // onhost/fetch: absolute path of the BFB on the host
+	fetchURL     string // fetch: URL the host curls the BFB from
+	expectedSHA  string // resolved digest (ExpectedBFBSHA256); "" = unpinned
+	skipChecksum bool   // --skip-bfb-checksum
 }
 
 func runProvisionDPUMulti(ctx context.Context, out io.Writer, hostnames []string, f *provisionDPUFlags) error {
@@ -161,34 +185,21 @@ func runProvisionDPUMulti(ctx context.Context, out io.Writer, hostnames []string
 	fmt.Fprintf(out, "Image:  %s   (DOCA %s)\n", p.Versions.BFBImage, p.Versions.DOCA)
 	fmt.Fprintf(out, "Hosts:  %s\n\n", strings.Join(hostnames, ", "))
 
-	// BFB sourcing. Two modes:
-	//   - Default: download into the operator-laptop cache (EnsureBFB),
-	//     then SFTP-push to each host inside pushAndFlash.
-	//   - provisioning.bfb_on_host set: assume the BFB is already at the
-	//     given absolute path on every host; skip the local cache and
-	//     skip the SFTP upload. Designed for slow/expensive operator
-	//     uplinks (transatlantic VPN, metered home internet, air-gapped
-	//     labs) where 1.5 GB twice over the WAN is the bottleneck.
-	var bfbPath string
-	if p.Provisioning.BFBOnHost != "" {
-		fmt.Fprintf(out, "[cache] BFB pre-staged on host at %s — skipping local download + SFTP push\n", p.Provisioning.BFBOnHost)
-		fmt.Fprintf(out, "[cache]   pushAndFlash will stat the remote path before bfb-install runs\n\n")
-	} else {
-		fmt.Fprintf(out, "[cache] BFB (%s) ...\n", p.Versions.BFBImage)
-		bfbProgress := func(written, total int64) {
-			if total > 0 {
-				fmt.Fprintf(out, "[cache]   downloading: %d / %d MiB (%.1f%%)\n",
-					written>>20, total>>20, float64(written)/float64(total)*100)
-			}
-		}
-		var err error
-		bfbPath, err = provision.EnsureBFB(ctx, p.Provisioning.BFBCacheDir, p.Versions.BFBImage, p.Versions.BFBURL, bfbProgress)
-		if err != nil {
-			return fmt.Errorf("bfb cache: %w", err)
-		}
-		if st, _ := os.Stat(bfbPath); st != nil {
-			fmt.Fprintf(out, "[cache]   ready: %s (%d MiB)\n\n", bfbPath, st.Size()>>20)
-		}
+	// BFB sourcing. Three modes, resolved once here into a bfbPlan that
+	// the per-host goroutines act on:
+	//   - push (default): download into the operator-laptop cache
+	//     (EnsureBFB, verified against the pin), then SFTP-push to each
+	//     host inside pushAndFlash.
+	//   - bfb_on_host set: reuse an operator-pre-staged file at the given
+	//     absolute path on every host; skip local cache + SFTP push, and
+	//     sha256-verify it on the host before flashing.
+	//   - bfb_fetch: host: the host curls the BFB itself (never round-
+	//     trips the runner), then sha256-verifies it. Both host modes are
+	//     for slow/expensive operator uplinks (transatlantic VPN, metered
+	//     home internet) where 1.5 GB over the WAN is the bottleneck.
+	plan, err := resolveBFBPlan(ctx, out, p, f)
+	if err != nil {
+		return err
 	}
 
 	// Fan out — one goroutine per host. journalMu guards shared journal file.
@@ -208,7 +219,7 @@ func runProvisionDPUMulti(ctx context.Context, out io.Writer, hostnames []string
 		go func() {
 			defer wg.Done()
 			w := perHostWriter(out, j.hostname, len(jobs) > 1)
-			err := flashOneJob(ctx, w, repo, p, j, bfbPath, p.Provisioning.BFBOnHost, f, &journalMu)
+			err := flashOneJob(ctx, w, repo, p, j, plan, f, &journalMu)
 			results <- result{hostname: j.hostname, err: err}
 		}()
 	}
@@ -246,17 +257,80 @@ func runProvisionDPUMulti(ctx context.Context, out io.Writer, hostnames []string
 	return nil
 }
 
+// resolveBFBPlan decides how the BFB reaches each host from the PoC +
+// flags, and performs the one-time shared work (the local download for
+// push mode). The returned plan is read-only and safe to share across the
+// per-host goroutines. Precedence: --bfb-fetch flag > provisioning.bfb_fetch
+// > push. An explicit bfb_on_host and bfb_fetch: host are mutually
+// exclusive (fail fast). The expected digest resolves PoC > version pin.
+func resolveBFBPlan(ctx context.Context, out io.Writer, p *poc.PoC, f *provisionDPUFlags) (bfbPlan, error) {
+	plan := bfbPlan{
+		expectedSHA:  provision.ExpectedBFBSHA256(p.Provisioning.BFBSHA256),
+		skipChecksum: f.skipBFBChecksum,
+	}
+
+	fetchMode := p.Provisioning.BFBFetch
+	if f.bfbFetch != "" {
+		fetchMode = f.bfbFetch
+	}
+	if fetchMode == "" {
+		fetchMode = poc.BFBFetchPush
+	}
+	if fetchMode != poc.BFBFetchPush && fetchMode != poc.BFBFetchHost {
+		return bfbPlan{}, fmt.Errorf("bfb fetch mode %q invalid (must be %s or %s)", fetchMode, poc.BFBFetchPush, poc.BFBFetchHost)
+	}
+
+	if plan.expectedSHA == "" && !plan.skipChecksum {
+		fmt.Fprintln(out, "[cache] WARN: no BFB sha256 pinned (version pin empty, provisioning.bfb_sha256 unset) — integrity not enforced")
+	}
+
+	switch {
+	case p.Provisioning.BFBOnHost != "":
+		if fetchMode == poc.BFBFetchHost {
+			return bfbPlan{}, fmt.Errorf("provisioning.bfb_on_host and bfb_fetch: host are mutually exclusive — unset one (bfb_on_host reuses a manually staged file; bfb_fetch: host curls it for you)")
+		}
+		plan.mode = bfbModeOnHost
+		plan.hostPath = p.Provisioning.BFBOnHost
+		fmt.Fprintf(out, "[cache] BFB pre-staged on host at %s — skipping local download + SFTP push\n", plan.hostPath)
+		fmt.Fprintf(out, "[cache]   pushAndFlash will stat + sha256-verify the remote path before bfb-install runs\n\n")
+
+	case fetchMode == poc.BFBFetchHost:
+		plan.mode = bfbModeFetch
+		plan.hostPath = provision.BFBHostPath(p.Provisioning.BFBHostCacheDir, p.Versions.BFBImage)
+		plan.fetchURL = provision.BFBDownloadURL(p.Versions.BFBURL, p.Versions.BFBImage)
+		fmt.Fprintf(out, "[cache] bfb_fetch: host — each host will curl %s\n", plan.fetchURL)
+		fmt.Fprintf(out, "[cache]   into %s, then sha256-verify it (no runner→host push)\n\n", plan.hostPath)
+
+	default: // push
+		plan.mode = bfbModePush
+		fmt.Fprintf(out, "[cache] BFB (%s) ...\n", p.Versions.BFBImage)
+		bfbProgress := func(written, total int64) {
+			if total > 0 {
+				fmt.Fprintf(out, "[cache]   downloading: %d / %d MiB (%.1f%%)\n",
+					written>>20, total>>20, float64(written)/float64(total)*100)
+			}
+		}
+		bfbPath, err := provision.EnsureBFB(ctx, p.Provisioning.BFBCacheDir, p.Versions.BFBImage, p.Versions.BFBURL, plan.expectedSHA, bfbProgress)
+		if err != nil {
+			return bfbPlan{}, fmt.Errorf("bfb cache: %w", err)
+		}
+		plan.localPath = bfbPath
+		if st, _ := os.Stat(bfbPath); st != nil {
+			fmt.Fprintf(out, "[cache]   ready: %s (%d MiB)\n\n", bfbPath, st.Size()>>20)
+		}
+	}
+
+	return plan, nil
+}
+
 // flashOneJob runs the per-host pipeline. Writes are prefixed if w is a
 // per-host writer (multi-host mode); otherwise it streams plainly. The
 // pipeline is split into five phase helpers so each is ~30 lines and
 // individually readable; flashOneJob is now just the orchestrator.
 //
-// bfbPath is the local-laptop path to the BFB image, used when we have
-// to SFTP-push it to the host. bfbOnHost is the absolute path of an
-// operator-pre-staged BFB on the host (provisioning.bfb_on_host); when
-// set, pushAndFlash skips the upload and uses this path directly.
-// Exactly one of bfbPath / bfbOnHost is non-empty.
-func flashOneJob(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j flashJob, bfbPath, bfbOnHost string, f *provisionDPUFlags, journalMu *sync.Mutex) error {
+// plan carries the resolved BFB source (push local path, or an on-host
+// path that's pre-staged or host-fetched) plus the expected digest.
+func flashOneJob(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j flashJob, plan bfbPlan, f *provisionDPUFlags, journalMu *sync.Mutex) error {
 	logPath := filepath.Join(repo, "artifacts", j.hostname+"-flash.log")
 
 	fmt.Fprintf(w, "DPU:    %s   mode=%s lag=%v hostname=%s tmfifo=%s\n",
@@ -268,7 +342,7 @@ func flashOneJob(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j fl
 	}
 	defer client.Close()
 
-	if err := pushAndFlash(ctx, w, repo, p, j, bfbPath, bfbOnHost, logPath, client, f.flashTimeout, journalMu); err != nil {
+	if err := pushAndFlash(ctx, w, repo, p, j, plan, logPath, client, f.flashTimeout, journalMu); err != nil {
 		return err
 	}
 
@@ -322,60 +396,36 @@ func connectAndCheck(ctx context.Context, w io.Writer, repo string, j flashJob, 
 	return client, nil
 }
 
-// pushAndFlash uploads BFB + rendered bf.conf and runs bfb-install,
-// streaming output to w + per-host log file. Steps 3+4 of the flash
-// pipeline. Journals fine-grained failure status (push bfb / push
-// bf.conf / transport / exit N) so post-mortem can distinguish them.
+// pushAndFlash makes the BFB available on the host, pushes the rendered
+// bf.conf, and runs bfb-install, streaming output to w + per-host log
+// file. Steps 3+4 of the flash pipeline. Journals fine-grained failure
+// status (push bfb / push bf.conf / transport / exit N) so post-mortem
+// can distinguish them.
 //
-// When bfbOnHost is non-empty, the BFB is assumed to already exist at
-// that absolute path on the host; we stat it (fail-fast if missing or
-// empty) and skip the SFTP push entirely. bf.conf is still pushed (it's
-// rendered per-DPU and small).
-func pushAndFlash(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j flashJob, bfbPath, bfbOnHost, logPath string, client *ssh.Client, flashTimeout time.Duration, journalMu *sync.Mutex) error {
-	var remoteBFB string
+// Step 3 branches on plan.mode:
+//   - push:   SFTP the local cache copy to /tmp (already digest-verified
+//     locally by EnsureBFB).
+//   - onhost: reuse the operator-pre-staged file; stat it (fail-fast if
+//     missing/empty) and sha256-verify it on the host.
+//   - fetch:  the host curls the BFB itself (reusing a matching staged
+//     copy), then sha256-verifies it.
+//
+// bf.conf is always pushed (it's rendered per-DPU and small).
+func pushAndFlash(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j flashJob, plan bfbPlan, logPath string, client *ssh.Client, flashTimeout time.Duration, journalMu *sync.Mutex) error {
 	remoteCfg := "/tmp/dpubnkctl-bf.cfg"
 	pushCtx, pushCancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer pushCancel()
 
-	if bfbOnHost != "" {
-		fmt.Fprintln(w, "[3/7] Verifying pre-staged BFB on host ...")
-		statCtx, statCancel := context.WithTimeout(ctx, 30*time.Second)
-		size, err := client.RemoteStat(statCtx, bfbOnHost)
-		statCancel()
-		if err != nil {
-			journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (bfb_on_host missing)", logPath, err.Error())
-			return fmt.Errorf("bfb_on_host %s: %w (stage the BFB on the host before provision dpu, or unset provisioning.bfb_on_host)", bfbOnHost, err)
-		}
-		if size == 0 {
-			journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (bfb_on_host empty)", logPath, bfbOnHost)
-			return fmt.Errorf("bfb_on_host %s exists but is empty — partial download?", bfbOnHost)
-		}
-		remoteBFB = bfbOnHost
-		fmt.Fprintf(w, "      ok: %s (%d MiB)\n", remoteBFB, size>>20)
-		if err := client.PushBytes(pushCtx, []byte(j.rendered), remoteCfg); err != nil {
-			journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (push bf.conf)", logPath, err.Error())
-			return fmt.Errorf("push bf.conf: %w", err)
-		}
-		fmt.Fprintf(w, "      pushed %s (bf.conf only)\n", remoteCfg)
-	} else {
-		fmt.Fprintln(w, "[3/7] Pushing BFB + bf.conf to host /tmp ...")
-		remoteBFB = "/tmp/" + p.Versions.BFBImage
-		pushProgress := func(written, total int64) {
-			if total > 0 {
-				fmt.Fprintf(w, "      sftp: %d / %d MiB (%.1f%%)\n",
-					written>>20, total>>20, float64(written)/float64(total)*100)
-			}
-		}
-		if err := client.PushFile(pushCtx, bfbPath, remoteBFB, pushProgress); err != nil {
-			journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (push bfb)", logPath, err.Error())
-			return fmt.Errorf("push bfb: %w", err)
-		}
-		if err := client.PushBytes(pushCtx, []byte(j.rendered), remoteCfg); err != nil {
-			journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (push bf.conf)", logPath, err.Error())
-			return fmt.Errorf("push bf.conf: %w", err)
-		}
-		fmt.Fprintf(w, "      pushed %s + %s\n", remoteBFB, remoteCfg)
+	remoteBFB, err := prepareRemoteBFB(ctx, pushCtx, w, repo, p, j, plan, logPath, client, journalMu)
+	if err != nil {
+		return err
 	}
+
+	if err := client.PushBytes(pushCtx, []byte(j.rendered), remoteCfg); err != nil {
+		journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (push bf.conf)", logPath, err.Error())
+		return fmt.Errorf("push bf.conf: %w", err)
+	}
+	fmt.Fprintf(w, "      pushed %s\n", remoteCfg)
 
 	fmt.Fprintln(w, "[4/7] Running bfb-install (5–15 minutes) ...")
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
@@ -401,6 +451,125 @@ func pushAndFlash(ctx context.Context, w io.Writer, repo string, p *poc.PoC, j f
 	}
 	fmt.Fprintf(w, "      bfb-install completed — log at %s\n", logPath)
 	return nil
+}
+
+// prepareRemoteBFB runs step 3's BFB-specific work per plan.mode and
+// returns the absolute host path bfb-install should flash from.
+func prepareRemoteBFB(ctx, pushCtx context.Context, w io.Writer, repo string, p *poc.PoC, j flashJob, plan bfbPlan, logPath string, client *ssh.Client, journalMu *sync.Mutex) (string, error) {
+	switch plan.mode {
+	case bfbModeOnHost:
+		fmt.Fprintln(w, "[3/7] Verifying pre-staged BFB on host ...")
+		statCtx, statCancel := context.WithTimeout(ctx, 30*time.Second)
+		size, err := client.RemoteStat(statCtx, plan.hostPath)
+		statCancel()
+		if err != nil {
+			journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (bfb_on_host missing)", logPath, err.Error())
+			return "", fmt.Errorf("bfb_on_host %s: %w (stage the BFB on the host before provision dpu, or unset provisioning.bfb_on_host)", plan.hostPath, err)
+		}
+		if size == 0 {
+			journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (bfb_on_host empty)", logPath, plan.hostPath)
+			return "", fmt.Errorf("bfb_on_host %s exists but is empty — partial download?", plan.hostPath)
+		}
+		fmt.Fprintf(w, "      ok: %s (%d MiB)\n", plan.hostPath, size>>20)
+		if err := verifyRemoteBFBChecksum(ctx, w, client, plan); err != nil {
+			journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (bfb_on_host checksum)", logPath, err.Error())
+			return "", err
+		}
+		return plan.hostPath, nil
+
+	case bfbModeFetch:
+		if err := fetchBFBToHost(ctx, w, client, plan); err != nil {
+			journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (bfb host fetch)", logPath, err.Error())
+			return "", err
+		}
+		return plan.hostPath, nil
+
+	default: // push
+		fmt.Fprintln(w, "[3/7] Pushing BFB + bf.conf to host /tmp ...")
+		remoteBFB := "/tmp/" + p.Versions.BFBImage
+		pushProgress := func(written, total int64) {
+			if total > 0 {
+				fmt.Fprintf(w, "      sftp: %d / %d MiB (%.1f%%)\n",
+					written>>20, total>>20, float64(written)/float64(total)*100)
+			}
+		}
+		if err := client.PushFile(pushCtx, plan.localPath, remoteBFB, pushProgress); err != nil {
+			journaled(journalMu, repo, j.hostname, j.dpu, "FAILED (push bfb)", logPath, err.Error())
+			return "", fmt.Errorf("push bfb: %w", err)
+		}
+		fmt.Fprintf(w, "      pushed %s\n", remoteBFB)
+		return remoteBFB, nil
+	}
+}
+
+// verifyRemoteBFBChecksum runs sha256sum on the host and compares to the
+// resolved digest. No-op (logging why) when unpinned or --skip-bfb-checksum.
+// A generous timeout covers hashing a 1.5 GB file on slow host storage —
+// unlike the WAN push, this is host-local and finishes in seconds to tens
+// of seconds. On success prints `host BFB sha256 OK (<digest[:12]>)`.
+func verifyRemoteBFBChecksum(ctx context.Context, w io.Writer, client *ssh.Client, plan bfbPlan) error {
+	if plan.skipChecksum {
+		fmt.Fprintln(w, "      sha256 check skipped (--skip-bfb-checksum)")
+		return nil
+	}
+	if plan.expectedSHA == "" {
+		fmt.Fprintln(w, "      sha256 not pinned — skipping host integrity check (integrity not enforced)")
+		return nil
+	}
+	hashCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	got, err := provision.RemoteSHA256(hashCtx, provision.AsRunner(client), plan.hostPath)
+	if err != nil {
+		return fmt.Errorf("host BFB sha256 failed for %s: %w", plan.hostPath, err)
+	}
+	if !provision.EqualDigest(got, plan.expectedSHA) {
+		return fmt.Errorf("bfb_on_host integrity check failed: got %s, expected %s", got, plan.expectedSHA)
+	}
+	fmt.Fprintf(w, "      host BFB sha256 OK (%s)\n", got[:12])
+	return nil
+}
+
+// fetchBFBToHost implements bfb_fetch: host. It reuses a staged copy whose
+// sha256 already matches (or, unpinned, any non-empty file), otherwise it
+// has the host curl the BFB atomically and then verifies it. Streams curl
+// progress to w.
+func fetchBFBToHost(ctx context.Context, w io.Writer, client *ssh.Client, plan bfbPlan) error {
+	fmt.Fprintf(w, "[3/7] Fetching BFB on host (%s) ...\n", plan.hostPath)
+
+	// Reuse path: a matching staged copy means no re-download.
+	if plan.expectedSHA != "" && !plan.skipChecksum {
+		hashCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		got, herr := provision.RemoteSHA256(hashCtx, provision.AsRunner(client), plan.hostPath)
+		cancel()
+		if herr == nil && provision.EqualDigest(got, plan.expectedSHA) {
+			fmt.Fprintf(w, "      reusing staged BFB — host sha256 OK (%s)\n", got[:12])
+			return nil
+		}
+		if herr == nil {
+			fmt.Fprintf(w, "      staged BFB sha256 mismatch (got %s) — re-fetching\n", got[:12])
+		}
+	} else {
+		statCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		size, serr := client.RemoteStat(statCtx, plan.hostPath)
+		cancel()
+		if serr == nil && size > 0 {
+			fmt.Fprintf(w, "      reusing staged BFB %s (%d MiB; integrity not verified)\n", plan.hostPath, size>>20)
+			return nil
+		}
+	}
+
+	fmt.Fprintf(w, "      curl %s ...\n", plan.fetchURL)
+	fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+	exit, err := client.RunStream(fetchCtx, provision.HostFetchCommand(plan.fetchURL, plan.hostPath), prefixWriter{w: w, prefix: "      | "})
+	if err != nil {
+		return fmt.Errorf("host BFB fetch: %w", err)
+	}
+	if exit != 0 {
+		return fmt.Errorf("host BFB fetch exited %d — ensure curl is installed on the host and it can reach %s (see bfb_url / BFBBaseURL)", exit, plan.fetchURL)
+	}
+	fmt.Fprintf(w, "      fetched %s\n", plan.hostPath)
+	return verifyRemoteBFBChecksum(ctx, w, client, plan)
 }
 
 // waitFirstBoot polls for DPU SSH reachability after bfb-install's
