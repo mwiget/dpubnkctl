@@ -19,15 +19,21 @@ const (
 	BFBImage    = "bf-bundle-3.2.0-113_25.10_ubuntu-24.04_64k_prod.bfb"
 	BFBBaseURL  = "https://content.mellanox.com/BlueField/BFBs/Ubuntu24.04"
 
-	// BFBImageSHA256 — when non-empty, EnsureBFB verifies the downloaded
-	// file matches this hex digest before installing. Empty means
-	// integrity is not pinned and the download is trust-on-first-use;
-	// the file is still served over TLS so passive MITM is mitigated,
-	// but content substitution by the origin (or a poc.yaml-overridden
-	// bfb_url) is silent. Populate once the BFB's published checksum
-	// is confirmed against the upstream NVIDIA release notes — leave
-	// empty here pending that confirmation.
-	BFBImageSHA256 = ""
+	// BFBImageSHA256 — when non-empty, the BFB is verified against this
+	// hex digest before it is installed: EnsureBFB checks the local
+	// download, and provision_dpu runs sha256sum on the host for
+	// pre-staged (bfb_on_host) or host-fetched (bfb_fetch: host) images.
+	// A per-PoC provisioning.bfb_sha256 overrides this (e.g. a custom or
+	// older BFB); empty everywhere disables the check (trust-on-first-use,
+	// integrity not enforced) and provision warns.
+	//
+	// This digest is the published checksum served alongside the pinned
+	// BFB at content.mellanox.com/.../<BFBImage>.bfb.sha256sum — same
+	// origin as the image, so it defends against corruption/partial
+	// downloads and against a poc.yaml-overridden bfb_url pointing at a
+	// different file. When bumping BFBImage, refresh this from the new
+	// image's .sha256sum sidecar (or `sha256sum` of a known-good copy).
+	BFBImageSHA256 = "4840d8ff1ed3539eac2a1afd04378abda5104ac21f710046dce77274ca9162e4"
 
 	// K8sVersion is what we tell operators in the docs / cluster status.
 	// K8sVersionPinned is what kubespray's `kube_version` accepts.

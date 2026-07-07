@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+
+	"github.com/mwiget/dpubnkctl/internal/version"
 )
 
 // Phase tags identify the earliest pipeline phase that requires a given
@@ -303,6 +305,41 @@ func ValidateForPhase(p *PoC, repoDir string, minPhase Phase) ValidationResult {
 		if p.Provisioning.BFBURL != "" {
 			c.warn(PhaseProvision, "provisioning.bfb_on_host is set — provisioning.bfb_url is ignored")
 		}
+	}
+
+	// --- BFB fetch mode + integrity (provision) ---
+	switch p.Provisioning.BFBFetch {
+	case "", BFBFetchPush, BFBFetchHost:
+		// ok
+	default:
+		c.err(PhaseProvision, "provisioning.bfb_fetch %q invalid (must be %q or %q)", p.Provisioning.BFBFetch, BFBFetchPush, BFBFetchHost)
+	}
+	if p.Provisioning.BFBFetch == BFBFetchHost {
+		// Mutually exclusive with a manually pre-staged file — one curls
+		// the BFB for you, the other reuses what the operator staged.
+		if p.Provisioning.BFBOnHost != "" {
+			c.err(PhaseProvision, "provisioning.bfb_on_host and bfb_fetch: host are mutually exclusive — unset one")
+		}
+		// host mode needs a URL to curl from: the poc override or the
+		// binary-pinned base. Both empty means there's nothing to fetch.
+		if p.Provisioning.BFBURL == "" && p.Versions.BFBURL == "" && version.BFBBaseURL == "" {
+			c.err(PhaseProvision, "bfb_fetch: host needs a BFB URL — set versions.bfb_url (no binary-pinned base available)")
+		}
+		if p.Versions.BFBImage == "" && version.BFBImage == "" {
+			c.err(PhaseProvision, "bfb_fetch: host needs versions.bfb_image set (nothing to fetch)")
+		}
+	}
+	if p.Provisioning.BFBHostCacheDir != "" && !filepath.IsAbs(p.Provisioning.BFBHostCacheDir) {
+		// Flows into `mkdir -p`/`curl -o` on the host; a relative path
+		// would land in the SSH user's home rather than the intended
+		// system cache dir.
+		c.err(PhaseProvision, "provisioning.bfb_host_cache_dir %q must be an absolute path on the host (default %s)", p.Provisioning.BFBHostCacheDir, DefaultBFBHostCacheDir)
+	}
+	// Integrity: warn once when no digest is known for any fetch mode.
+	// Precedence mirrors provision.ExpectedBFBSHA256 (kept in sync here to
+	// avoid poc→provision import): poc override > binary pin.
+	if p.Provisioning.BFBSHA256 == "" && version.BFBImageSHA256 == "" {
+		c.warn(PhaseProvision, "no BFB sha256 is pinned (version pin empty, provisioning.bfb_sha256 unset) — BFB integrity will not be enforced for any fetch mode")
 	}
 
 	// --- BNK credentials (only required at `deploy flo` / `deploy cne`) ---

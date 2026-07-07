@@ -451,3 +451,52 @@ func warningContains(r ValidationResult, substr string) bool {
 	}
 	return false
 }
+
+func TestValidate_BFBFetchInvalid(t *testing.T) {
+	p, repo := goodPoC(t)
+	p.Provisioning.BFBFetch = "pull"
+	r := Validate(p, repo)
+	if !errorContains(r, "bfb_fetch") {
+		t.Errorf("invalid bfb_fetch not surfaced: %v", r.Errors)
+	}
+}
+
+func TestValidate_BFBFetchHostOK(t *testing.T) {
+	p, repo := goodPoC(t)
+	p.Provisioning.BFBFetch = BFBFetchHost
+	r := Validate(p, repo)
+	if !r.Valid() {
+		t.Errorf("bfb_fetch: host should validate clean (binary-pinned URL): %v", r.Errors)
+	}
+}
+
+func TestValidate_BFBFetchHostConflictsWithOnHost(t *testing.T) {
+	p, repo := goodPoC(t)
+	p.Provisioning.BFBFetch = BFBFetchHost
+	p.Provisioning.BFBOnHost = "/var/cache/dpubnkctl/bfb/x.bfb"
+	r := Validate(p, repo)
+	if !errorContains(r, "mutually exclusive") {
+		t.Errorf("bfb_on_host + bfb_fetch: host mutual-exclusion not surfaced: %v", r.Errors)
+	}
+}
+
+func TestValidate_BFBHostCacheDirMustBeAbsolute(t *testing.T) {
+	p, repo := goodPoC(t)
+	p.Provisioning.BFBFetch = BFBFetchHost
+	p.Provisioning.BFBHostCacheDir = "relative/cache"
+	r := Validate(p, repo)
+	if !errorContains(r, "bfb_host_cache_dir") {
+		t.Errorf("relative bfb_host_cache_dir not surfaced: %v", r.Errors)
+	}
+}
+
+func TestValidate_BFBSHA256OverrideSilencesUnpinnedWarning(t *testing.T) {
+	p, repo := goodPoC(t)
+	// The binary pin is populated, so the happy path already has no
+	// unpinned warning; a poc override must also keep it clean.
+	p.Provisioning.BFBSHA256 = "4840d8ff1ed3539eac2a1afd04378abda5104ac21f710046dce77274ca9162e4"
+	r := Validate(p, repo)
+	if warningContains(r, "no BFB sha256 is pinned") {
+		t.Errorf("unpinned warning should not fire when a digest is set: %v", r.Warnings)
+	}
+}
