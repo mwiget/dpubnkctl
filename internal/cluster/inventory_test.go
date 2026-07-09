@@ -167,6 +167,38 @@ func TestRender_DataPlaneNodeIP(t *testing.T) {
 	}
 }
 
+func TestRender_RshimSANs(t *testing.T) {
+	// Under rshim the host keeps its mgmt node-ip (no loadbalancer
+	// override), and the apiserver cert SANs carry both the mgmt IP and
+	// the host's tmfifo IP.
+	p := fixture("both")
+	p.Network.JoinTransport = poc.JoinTransportRshim
+	p.Hosts[0].TmfifoIP = "192.168.100.1/30"
+	plan := BuildPlan(p)
+	files, err := Render(p, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := files["group_vars/all/all.yml"]
+	for _, want := range []string{
+		"supplementary_addresses_in_ssl_keys",
+		"- 10.0.0.10",      // mgmt IP (kubectl-from-host path)
+		"- 192.168.100.1",  // tmfifo IP (DPU join path)
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("all.yml missing %q\n%s", want, all)
+		}
+	}
+	// rshim must NOT force the loadbalancer override — host stays on mgmt.
+	if strings.Contains(all, "loadbalancer_apiserver_localhost") {
+		t.Errorf("rshim should not set loadbalancer_apiserver override\n%s", all)
+	}
+	// host node-ip stays mgmt (no data-plane role lookup).
+	if !strings.Contains(files["hosts.yml"], "ip: 10.0.0.10") {
+		t.Errorf("rshim host node-ip should be mgmt 10.0.0.10\n%s", files["hosts.yml"])
+	}
+}
+
 func TestRender_NoJumphost_NoSSHCommonArgs(t *testing.T) {
 	// Without a jumphost, hosts.yml must NOT emit ansible_ssh_common_args
 	// and renderInventorySSHConfig must produce an empty string.

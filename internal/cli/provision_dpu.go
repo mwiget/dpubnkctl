@@ -122,6 +122,13 @@ func runProvisionDPUMulti(ctx context.Context, out io.Writer, hostnames []string
 		return fmt.Errorf("not a PoC repo (%s): %w", repo, err)
 	}
 
+	// rshim: allocate tmfifo addresses before rendering bf.conf (the DPU
+	// tmfifo IP is baked into the netplan) and before flashing. Persists
+	// poc.yaml so the allocation is recorded for idempotent redeploy.
+	if err := ensureTmfifoAllocated(repo, p, out); err != nil {
+		return err
+	}
+
 	// Dedup + preserve order.
 	hostnames = uniqueOrdered(hostnames)
 
@@ -584,7 +591,7 @@ func waitFirstBoot(ctx context.Context, w io.Writer, client *ssh.Client, j flash
 		return
 	}
 	fmt.Fprintf(w, "[5/7] Waiting for %s first boot (probing %s) ...\n", dpuName, strings.Join(addrs, ", "))
-	if err := waitForDPUSSHWithGrace(ctx, client, addrs, f.dpuWaitTimeout); err != nil {
+	if err := waitForDPUSSHWithGrace(ctx, client, j.host, addrs, f.dpuWaitTimeout); err != nil {
 		fmt.Fprintf(w, "      WARN: first boot wait timed out (%v) — continuing to SW_RESET anyway\n", err)
 		return
 	}
@@ -618,7 +625,7 @@ func swResetAndWaitSecondBoot(ctx context.Context, w io.Writer, client *ssh.Clie
 	fmt.Fprintf(w, "[7/7] Waiting for %s second boot (probing %s) ...\n", dpuName, strings.Join(addrs, ", "))
 	// Give the reset a moment to actually start before polling.
 	time.Sleep(8 * time.Second)
-	if err := waitForDPUSSHWithGrace(ctx, client, addrs, f.dpuWaitTimeout); err != nil {
+	if err := waitForDPUSSHWithGrace(ctx, client, j.host, addrs, f.dpuWaitTimeout); err != nil {
 		journaled(journalMu, repo, j.hostname, j.dpu, "POST_FLASH_UNREACHABLE", logPath, err.Error())
 		return fmt.Errorf("DPU %s never came back after SW_RESET (timeout + grace expired) — probed %s; check rshim console for kernel panic, BL2 hang, or PCIe reset failure", dpuName, strings.Join(addrs, ", "))
 	}
@@ -982,8 +989,35 @@ func dpuProbeAddrs(d *poc.DPU) []string {
 // the most common is "RTNETLINK answers: File exists" when the address
 // is already present, which is the success case.
 func ensureHostTmfifoIP(ctx context.Context, host *ssh.Client) {
-	_ = host.Run(ctx, "sudo -n ip link set tmfifo_net0 up 2>/dev/null; "+
-		"sudo -n ip addr add 192.168.100.1/30 dev tmfifo_net0 2>/dev/null; true")
+	ensureHostTmfifoIPCIDR(ctx, host, poc.DefaultTmfifoHostIP)
+}
+
+// ensureHostTmfifoIPFor is ensureHostTmfifoIP for a specific host, using
+// its allocated host-side tmfifo CIDR (host.tmfifo_ip). For the pool case
+// (network.tmfifo_cidr) the host lives on a carved /30, not the rshim
+// default — using the wrong address means the host can't route to the
+// DPU's tmfifo IP.
+func ensureHostTmfifoIPFor(ctx context.Context, host *ssh.Client, h *poc.Host) {
+	ensureHostTmfifoIPCIDR(ctx, host, h.TmfifoHostIP())
+}
+
+// ensureHostTmfifoIPCIDR assigns the given CIDR to tmfifo_net0. When the
+// CIDR differs from the rshim driver default, it first deletes the
+// default 192.168.100.1/30 so the two don't coexist and shadow the pool
+// address — this is the root fix for the historic "dup tmfifo" scramble
+// when more than one host reused 192.168.100.x. All commands are
+// best-effort/idempotent ("File exists" on a repeat add is the success
+// case), so errors are swallowed.
+func ensureHostTmfifoIPCIDR(ctx context.Context, host *ssh.Client, cidr string) {
+	if cidr == "" {
+		cidr = poc.DefaultTmfifoHostIP
+	}
+	cmd := "sudo -n ip link set tmfifo_net0 up 2>/dev/null; "
+	if cidr != poc.DefaultTmfifoHostIP {
+		cmd += "sudo -n ip addr del " + poc.DefaultTmfifoHostIP + " dev tmfifo_net0 2>/dev/null; "
+	}
+	cmd += "sudo -n ip addr add " + cidr + " dev tmfifo_net0 2>/dev/null; true"
+	_ = host.Run(ctx, cmd)
 }
 
 // waitForDPUSSHWithGrace runs the primary wait, and on timeout extends
@@ -995,11 +1029,11 @@ func ensureHostTmfifoIP(ctx context.Context, host *ssh.Client) {
 //
 // addrs is the list of candidate IPv4 addresses to probe (tmfifo, then
 // oob). Returns nil if ANY address responds.
-func waitForDPUSSHWithGrace(ctx context.Context, host *ssh.Client, addrs []string, primary time.Duration) error {
+func waitForDPUSSHWithGrace(ctx context.Context, host *ssh.Client, h *poc.Host, addrs []string, primary time.Duration) error {
 	if len(addrs) == 0 {
 		return fmt.Errorf("no DPU probe addresses configured (tmfifo_ip and oob_ip both empty)")
 	}
-	ensureHostTmfifoIP(ctx, host)
+	ensureHostTmfifoIPFor(ctx, host, h)
 	first, fcancel := context.WithTimeout(ctx, primary)
 	err := waitForDPUSSH(first, host, addrs)
 	fcancel()

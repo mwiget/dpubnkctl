@@ -63,6 +63,12 @@ func runProvisionPlan(ctx context.Context, out io.Writer, hostname string, f *pr
 	if err != nil {
 		return fmt.Errorf("not a PoC repo (%s): %w", repo, err)
 	}
+	// Allocate rshim tmfifo addresses in-memory so the bf.conf render
+	// below reflects them. `provision plan` is read-only, so we don't
+	// persist — `provision dpu` records the allocation to poc.yaml.
+	if _, err := poc.AllocateTmfifo(p); err != nil {
+		return err
+	}
 
 	host, err := findHost(p, hostname)
 	if err != nil {

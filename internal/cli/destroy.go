@@ -504,10 +504,59 @@ func destroyDPUs(ctx context.Context, repo string, p *poc.PoC, out io.Writer, pe
 		}
 	}
 
+	// rshim: also tear down the host-side NAT unit + MASQUERADE rule.
+	// Best-effort — never fail destroy over cleanup of a host firewall
+	// rule that's harmless if left.
+	if p.Network.IsRshim() {
+		teardownHostTmfifoNAT(ctx, repo, p, out)
+	}
+
 	if len(failures) > 0 {
 		return fmt.Errorf("%d DPU reset(s) failed:\n  - %s", len(failures), strings.Join(failures, "\n  - "))
 	}
 	return nil
+}
+
+// teardownHostTmfifoNAT disables + removes the host NAT systemd unit and
+// deletes its MASQUERADE rule + ip_forward drop-in on every host with a
+// DPU. Best-effort and idempotent; logs but never returns an error.
+func teardownHostTmfifoNAT(ctx context.Context, repo string, p *poc.PoC, out io.Writer) {
+	masqSrc := p.Network.TmfifoCIDR
+	if masqSrc == "" {
+		masqSrc = "192.168.100.0/24"
+	}
+	for i := range p.Hosts {
+		h := &p.Hosts[i]
+		if len(h.DPUs) == 0 {
+			continue
+		}
+		cfg, err := sshConfigForHost(repo, h, 30*time.Second)
+		if err != nil {
+			fmt.Fprintf(out, "      → [%s] skip NAT teardown: %v\n", h.Name, err)
+			continue
+		}
+		dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		c, err := ssh.Dial(dialCtx, cfg)
+		cancel()
+		if err != nil {
+			fmt.Fprintf(out, "      → [%s] skip NAT teardown: %v\n", h.Name, err)
+			continue
+		}
+		script := strings.Join([]string{
+			"sudo -n systemctl disable --now " + hostNATUnit + ".service 2>/dev/null || true",
+			"sudo -n rm -f /etc/systemd/system/" + hostNATUnit + ".service " + hostNATScript + " 2>/dev/null || true",
+			// Remove the MASQUERADE rule from whichever iface it's on.
+			"IFACE=$(ip route | awk '/^default/{print $5; exit}'); " +
+				"[ -n \"$IFACE\" ] && sudo -n iptables -t nat -D POSTROUTING -s " + masqSrc + " -o \"$IFACE\" -j MASQUERADE 2>/dev/null || true",
+			"echo OK",
+		}, "; ")
+		if r := c.Run(ctx, script); r.OK() {
+			fmt.Fprintf(out, "      → [%s] tmfifo NAT torn down\n", h.Name)
+		} else {
+			fmt.Fprintf(out, "      → [%s] NAT teardown best-effort (exit=%d)\n", h.Name, r.ExitCode)
+		}
+		c.Close()
+	}
 }
 
 func resetOneDPU(ctx context.Context, repo string, h *poc.Host, d *poc.DPU, timeout time.Duration, w io.Writer) error {
@@ -536,6 +585,11 @@ func resetOneDPU(ctx context.Context, repo string, h *poc.Host, d *poc.DPU, time
 		"sudo -n iptables-save 2>/dev/null | grep -v KUBE | grep -v cali | sudo -n iptables-restore 2>/dev/null || true",
 		// Drop the kubelet env file written by JoinDPU.
 		"sudo -n rm -f /etc/default/kubelet || true",
+		// Remove the rshim setup-dpu-networking unit (best-effort; absent
+		// on vlan-transport PoCs). Reached over tmfifo, which doesn't rely
+		// on the default route this unit installs — safe to remove here.
+		"sudo -n systemctl disable --now " + dpuRouteUnit + ".service 2>/dev/null || true",
+		"sudo -n rm -f /etc/systemd/system/" + dpuRouteUnit + ".service " + dpuRouteScrpt + " 2>/dev/null || true",
 		"echo OK",
 	}, "; ")
 

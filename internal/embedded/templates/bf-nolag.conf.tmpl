@@ -154,16 +154,21 @@ done
 # Bring OVS internal ports up to the physical uplink's MTU. Without this
 # they default to 1500 even when p0/p1 are 9000 — caps the bridge's
 # effective MTU and breaks anything larger than 1500 across the host
-# PCIe path (pf0hpf/pf1hpf).
-ip link set sf-external mtu $MTU || true
-ip link set sf-internal mtu $MTU || true
+# PCIe path.
+#
+# sf-external/sf-internal (OVS bridge local ports) and the VLAN ports
+# below are type=internal: OVS owns their MTU and silently overrides
+# `ip link set mtu`, so they must be raised with `ovs-vsctl mtu_request`.
+# pf0hpf/pf1hpf are real PF-representor netdevs — `ip link set` is right.
+ovs-vsctl set interface sf-external mtu_request=$MTU || true
+ovs-vsctl set interface sf-internal mtu_request=$MTU || true
 ip link set pf0hpf mtu $MTU || true
 ip link set pf1hpf mtu $MTU || true
 {{range $i, $vlan := .VLANs}}
 # vlan {{$i}} — uplink {{$vlan.Uplink}}
 ovs-vsctl --may-exist add-port {{if eq $vlan.Uplink "p1"}}sf-internal{{else}}sf-external{{end}} {{$vlan.Name}} -- set interface {{$vlan.Name}} type=internal
 ovs-vsctl set port {{$vlan.Name}} tag={{$vlan.Tag}}
-ip link set {{$vlan.Name}} mtu $MTU
+ovs-vsctl set interface {{$vlan.Name}} mtu_request=$MTU
 ip link set {{$vlan.Name}} up
 ip addr replace {{$vlan.IP}} dev {{$vlan.Name}}
 {{- if $vlan.DefaultGateway}}

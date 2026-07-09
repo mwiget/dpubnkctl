@@ -93,6 +93,37 @@ Don't do that.
 If the operator's goal is a single phase, a one-entry list is fine — the
 point is consistency, not bureaucracy.
 
+## When is a deploy done? (definition of done)
+
+A BNK deploy is **not** complete when the last phase command returns 0. It is
+complete only when the deployment is functional — verify **all** of these and
+report each one's state before declaring done:
+
+- `kubectl get nodes` — the host and every DPU node are **Ready**; each DPU's
+  InternalIP is its tmfifo IP (rshim topology).
+- The `CNEInstance` is **Ready** (all conditions True).
+- CNE/TMM workloads are **Running** on the DPU: `f5-tmm`, `f5-node-labeler`, and
+  the CNEController pods (they nodeSelect `app=f5-tmm` and tolerate `dpu=true`).
+- The **License CR is Ready/Activated** (connected-mode phone-home to F5 TEEM
+  succeeded). If disconnected mode is intended, apply the documented
+  `ErrLicensePendingVerification` handling instead of treating "Registering" as done.
+- The **Gateway smoke test passes**: scaffold the sample Gateway + HTTPRoute +
+  backend (see "Smoke-testing the deployed Gateway" below) and `curl` through the
+  gateway returns **200**. This is the real data-plane proof.
+
+If any criterion is unmet, the deploy is still in progress — keep working or
+surface a clear blocker; do not report success.
+
+**Registration is not part of "done", and not your job.** Do **not** run
+`dpubnkctl bnk-forge launch` or otherwise register the cluster yourself as a
+completion step:
+- If you were launched **by bnk-forge** (agent deployment), the platform registers
+  the resulting cluster with forge itself — attempting it from here targets the
+  wrong endpoint and creates a duplicate, PoC-named project.
+- If you are running **standalone** and the operator wants forge integration, that
+  is a separate, explicit step the operator controls (`bnk_forge.enabled` +
+  `bnk-forge launch`), not a deploy-completion criterion.
+
 ## Smoke-testing the deployed Gateway
 
 BNK 2.2.0 has **no global IPAM pool** — a `Gateway` applied without
@@ -165,6 +196,40 @@ and the TEEM endpoint is derived by the F5 Cluster-Wide Controller (CWC)
 from the JWT's `jku` header — operators no longer pass it. The CWC's
 own API certs are pre-created via the `f5-cert-gen` helm chart (pulled
 from the release manifest) before FLO is installed.
+
+### FAR key + license JWT: verify, don't assume
+
+The BNK deploy phase needs two files in the PoC `keys/`:
+
+- `keys/f5-far-auth-key.tgz` — FAR registry credential (gzip tarball containing
+  `cne_pull_64.json`; used for `helm registry login repo.f5.com`). Needed by
+  `deploy prereqs` to build the FAR pull secret.
+- `keys/.jwt` — the license JWT (single line). Needed by `deploy flo` for the
+  License CR.
+
+**Before deploying, verify with `ls -la keys/` — do NOT assume they are missing.**
+How they arrive depends on how you were launched:
+
+- **bnk-forge agent deployments:** the platform stages both automatically and
+  re-seeds `keys/` before every `dpubnkctl` call. They are present by deploy
+  time even if an early `ls` (run before the first ctl call) didn't show them —
+  so re-check at deploy time rather than trusting an earlier observation.
+- **Standalone operator:** you place them in `keys/` yourself before deploying.
+
+Only stop to ask the operator for credentials if `ls -la keys/` **at deploy time**
+shows the files genuinely absent. Never block a deploy on a stale "keys absent"
+result from earlier in the run.
+
+### Deploy kubeconfig: use `artifacts/kubeconfig`
+
+`cluster up` writes a ready-to-use `artifacts/kubeconfig` pointing at the
+control-plane host's **mgmt IP** with TLS intact (the rshim inventory adds
+mgmt + tmfifo to the apiserver cert SAN). Use `artifacts/kubeconfig` directly
+for all kubectl/helm/deploy — do NOT re-fetch `/etc/kubernetes/admin.conf`
+(server 127.0.0.1, unusable off-host) and do NOT add `insecure-skip-tls-verify`
+(it conflicts with the CA data and is not forge-compatible). This kubeconfig is
+also what gets registered with bnk-forge, so other forge components can manage
+the cluster with it.
 
 ---
 

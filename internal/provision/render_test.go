@@ -72,6 +72,10 @@ func TestRender_LAG(t *testing.T) {
 		"add-port br-lag external40",            // VLAN goes onto br-lag w/ Role+Tag name
 		"add-port br-lag internal41",            // second VLAN
 		"tag=40",                                 // VLAN tag substituted
+		"ovs-vsctl set interface br-lag mtu_request=$MTU",     // OVS owns the bridge-local port MTU
+		"ovs-vsctl set interface external40 mtu_request=$MTU", // VLAN internal port via mtu_request, not ip link
+		"ovs-vsctl set interface internal41 mtu_request=$MTU",
+		"ip link set pf0hpf mtu $MTU",           // PF representor stays on ip link
 		"ip route replace default via 10.10.40.1", // default gateway present
 		"LAG_RESOURCE_ALLOCATION=1",              // bfb_post_install
 		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAATEST", // operator pubkey installed
@@ -85,6 +89,13 @@ func TestRender_LAG(t *testing.T) {
 	// Should NOT contain non-LAG bridge name.
 	if strings.Contains(out, "sf-external") {
 		t.Errorf("LAG render leaked non-LAG bridge name")
+	}
+	// OVS internal ports must NOT be set via `ip link set … mtu` — OVS
+	// overrides it, which is the 1500-cap bug this fix addresses.
+	for _, bad := range []string{"ip link set br-lag mtu", "ip link set external40 mtu", "ip link set internal41 mtu"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("LAG render still sets OVS-internal-port MTU via ip link: %q", bad)
+		}
 	}
 }
 
@@ -100,6 +111,11 @@ func TestRender_NonLAG_BridgePerUplink(t *testing.T) {
 		"add-port sf-external external40", // external/40 (uplink p0) goes to sf-external
 		"add-port sf-internal internal41", // internal/41 (uplink p1) goes to sf-internal
 		"LAG_RESOURCE_ALLOCATION=DEVICE_DEFAULT",
+		"ovs-vsctl set interface sf-external mtu_request=$MTU", // bridge-local ports via mtu_request
+		"ovs-vsctl set interface sf-internal mtu_request=$MTU",
+		"ovs-vsctl set interface external40 mtu_request=$MTU", // VLAN internal port via mtu_request
+		"ip link set pf0hpf mtu $MTU",                         // PF representors stay on ip link
+		"ip link set pf1hpf mtu $MTU",
 	}
 	for _, w := range wants {
 		if !strings.Contains(out, w) {
@@ -108,6 +124,12 @@ func TestRender_NonLAG_BridgePerUplink(t *testing.T) {
 	}
 	if strings.Contains(out, "br-lag") {
 		t.Errorf("non-LAG render leaked LAG bridge name")
+	}
+	// OVS internal ports must NOT be set via `ip link set … mtu`.
+	for _, bad := range []string{"ip link set sf-external mtu", "ip link set sf-internal mtu", "ip link set external40 mtu", "ip link set internal41 mtu"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("non-LAG render still sets OVS-internal-port MTU via ip link: %q", bad)
+		}
 	}
 }
 

@@ -67,6 +67,15 @@ type dpuJob struct {
 	dpu  *poc.DPU
 }
 
+// dpuNetSetup carries the resolved setup-dpu-networking config for the
+// rshim join path. enabled is false for the vlan transport (no-op).
+type dpuNetSetup struct {
+	enabled bool
+	mode    string   // host-nat | oob | none (poc.EffectiveDPUInternet)
+	masqSrc string   // tmfifo subnet to MASQUERADE
+	dns     []string // DPU resolv.conf nameservers
+}
+
 func runClusterJoinDPUs(ctx context.Context, out io.Writer, f *clusterJoinDPUsFlags) error {
 	repo, err := resolvePoCDir(f.pocDir)
 	if err != nil {
@@ -80,6 +89,14 @@ func runClusterJoinDPUs(ctx context.Context, out io.Writer, f *clusterJoinDPUsFl
 		return err
 	}
 	if err := enforceValidateForPhase(out, p, repo, poc.PhaseCluster, false); err != nil {
+		return err
+	}
+
+	// Under rshim, make sure every host/DPU has its tmfifo address (from
+	// the pool, or the single-host default) before we compute node-IPs
+	// and the apiserver address. Idempotent; persists poc.yaml if it
+	// filled anything in.
+	if err := ensureTmfifoAllocated(repo, p, out); err != nil {
 		return err
 	}
 
@@ -109,7 +126,26 @@ func runClusterJoinDPUs(ctx context.Context, out io.Writer, f *clusterJoinDPUsFl
 
 	fmt.Fprintf(out, "PoC:        %s\n", p.Metadata.Name)
 	fmt.Fprintf(out, "Cluster:    %v\n", plan.ControlPlane)
-	fmt.Fprintf(out, "Joining:    %d DPU(s) across %d host(s)\n\n", len(jobs), len(p.Hosts))
+	fmt.Fprintf(out, "Joining:    %d DPU(s) across %d host(s)\n", len(jobs), len(p.Hosts))
+
+	// Resolve the setup-dpu-networking config once. Under rshim the DPU
+	// gets internet via the host before the join-time apt install; the
+	// vlan transport leaves this disabled (DPUs are assumed online, e.g.
+	// via oob, exactly as before).
+	var netSetup dpuNetSetup
+	if p.Network.IsRshim() {
+		netSetup = dpuNetSetup{
+			enabled: true,
+			mode:    p.EffectiveDPUInternet(),
+			masqSrc: p.Network.TmfifoCIDR,
+			dns:     p.Provisioning.DPUDNS,
+		}
+		if netSetup.masqSrc == "" {
+			netSetup.masqSrc = "192.168.100.0/24"
+		}
+		fmt.Fprintf(out, "Transport:  rshim (tmfifo) — dpu_internet=%s\n", netSetup.mode)
+	}
+	fmt.Fprintln(out)
 
 	// 1. Get a join command from the first control plane.
 	fmt.Fprintln(out, "[1/3] Fetching kubeadm join command from first control plane ...")
@@ -126,12 +162,20 @@ func runClusterJoinDPUs(ctx context.Context, out io.Writer, f *clusterJoinDPUsFl
 	}
 	defer cpClient.Close()
 	// Resolve the apiserver address the DPUs should join against.
-	// Preference: poc.network.cluster_apiserver_address (the data-plane
-	// VIP/IP that all kubelets advertise to). Falls back to the control
-	// plane's SSH address — preserves the previous behavior when the
-	// PoC has no data-plane network.
-	apiserverAddr := p.Network.ClusterAPIServerAddress
-	if apiserverAddr == "" {
+	//   - rshim: the control-plane host's tmfifo IP — the DPU reaches the
+	//     apiserver directly over the tmfifo link (single-host). The cert
+	//     carries this IP via supplementary_addresses_in_ssl_keys (see
+	//     renderGroupVarsAll). Multi-host rshim needs a per-DPU apiserver
+	//     address routed through the owning host — deferred (step 5).
+	//   - vlan: poc.network.cluster_apiserver_address (the data-plane
+	//     VIP/IP), else the control plane's SSH address (legacy fallback).
+	var apiserverAddr string
+	if p.Network.IsRshim() {
+		apiserverAddr = bareIP(cpHost.TmfifoHostIP())
+		if apiserverAddr == "" {
+			return fmt.Errorf("control-plane host %s has no usable tmfifo_ip for rshim apiserver address", cpHost.Name)
+		}
+	} else if apiserverAddr = p.Network.ClusterAPIServerAddress; apiserverAddr == "" {
 		apiserverAddr = cpHost.SSH.Address
 	}
 	fmt.Fprintf(out, "      apiserver = %s:6443\n", apiserverAddr)
@@ -149,14 +193,13 @@ func runClusterJoinDPUs(ctx context.Context, out io.Writer, f *clusterJoinDPUsFl
 		failures []string
 		joined   []dpuJob // DPUs that ended this phase as cluster members
 	)
-	nodeIPRole := p.Network.NodeIPRole
 	for _, j := range jobs {
 		j := j
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			tag := fmt.Sprintf("[%s]", j.dpu.Hostname)
-			nodeIP, err := resolveDPUNodeIP(j.dpu, nodeIPRole)
+			nodeIP, err := resolveDPUNodeIP(j.dpu, p.Network)
 			if err != nil {
 				mu.Lock()
 				failures = append(failures, fmt.Sprintf("%s: %v", j.dpu.Hostname, err))
@@ -164,7 +207,7 @@ func runClusterJoinDPUs(ctx context.Context, out io.Writer, f *clusterJoinDPUsFl
 				fmt.Fprintf(out, "%s ERR: %v\n", tag, err)
 				return
 			}
-			outcome, err := joinOneDPU(ctx, repo, j, jc, nodeIP, p.Versions.K8s, f, prefixWriter{w: out, prefix: tag + " "})
+			outcome, err := joinOneDPU(ctx, repo, j, jc, nodeIP, p.Versions.K8s, netSetup, f, prefixWriter{w: out, prefix: tag + " "})
 			if err != nil {
 				mu.Lock()
 				failures = append(failures, fmt.Sprintf("%s: %v", j.dpu.Hostname, err))
@@ -191,10 +234,12 @@ func runClusterJoinDPUs(ctx context.Context, out io.Writer, f *clusterJoinDPUsFl
 	//    re-run against an already-labeled node is safe — and a
 	//    partial-success retry shouldn't leave the succeeded DPU
 	//    unlabeled just because a sibling failed.
+	var labelTaintErr error
 	if !f.skipLabelTaint && len(joined) > 0 {
 		fmt.Fprintf(out, "[3/3] Labeling + tainting %d DPU node(s) ...\n", len(joined))
 		if err := labelAndTaintDPUs(ctx, repo, joined, out); err != nil {
-			fmt.Fprintf(out, "      WARN: label/taint partial failure: %v\n", err)
+			labelTaintErr = err
+			fmt.Fprintf(out, "      ERR: label/taint failed: %v\n", err)
 		}
 	} else if f.skipLabelTaint {
 		fmt.Fprintln(out, "[3/3] (--skip-label-taint)")
@@ -209,13 +254,23 @@ func runClusterJoinDPUs(ctx context.Context, out io.Writer, f *clusterJoinDPUsFl
 		return fmt.Errorf("%d DPU join(s) failed:\n  - %s", len(failures), strings.Join(failures, "\n  - "))
 	}
 
+	// A label/taint failure is a phase failure, NOT a warning: an
+	// unlabeled/un-tainted DPU node can't run BNK (CNE nodeSelects
+	// app=f5-tmm and tolerates dpu=true:NoSchedule), so a "success" here
+	// only surfaces ~40 min later as CNE DaemonSets refusing to schedule.
+	// Journal the real outcome, then fail loud so automation/agent retries.
+	if labelTaintErr != nil {
+		appendJoinJournal(repo, p.Metadata.Name, jobs, labelTaintErr)
+		return fmt.Errorf("DPU node label/taint failed (nodes joined but not BNK-ready): %w", labelTaintErr)
+	}
+
 	// Update poc.yaml + journal.
 	p.Status.Cluster = "completed"
 	p.Status.LastPhaseAt = time.Now().UTC()
 	if err := savePoC(repo, p, out); err != nil {
 		return err
 	}
-	appendJoinJournal(repo, p.Metadata.Name, jobs)
+	appendJoinJournal(repo, p.Metadata.Name, jobs, nil)
 	fmt.Fprintln(out, "\nDONE.")
 	return nil
 }
@@ -247,11 +302,23 @@ func probeOOBIP(ctx context.Context, c *ssh.Client) string {
 	return ""
 }
 
-// resolveDPUNodeIP picks the kubelet --node-ip for a DPU. When
-// network.node_ip_role is set, returns the bare IP from the matching
-// dpu.vlans entry; when unset, returns "" so kubeadm/kubelet auto-detect
-// (legacy behavior — yields the oob_net0/mgmt IP).
-func resolveDPUNodeIP(d *poc.DPU, role string) (string, error) {
+// resolveDPUNodeIP picks the kubelet --node-ip for a DPU.
+//   - rshim: the DPU's tmfifo IP (bare). The DPU's default route is
+//     tmfifo, so its kubelet InternalIP lands on the tmfifo address and
+//     the whole control plane is reached over that link.
+//   - vlan + network.node_ip_role set: the bare IP from the matching
+//     dpu.vlans entry.
+//   - vlan + node_ip_role unset: "" so kubeadm/kubelet auto-detect
+//     (legacy behavior — yields the oob_net0/mgmt IP).
+func resolveDPUNodeIP(d *poc.DPU, netw poc.Network) (string, error) {
+	if netw.IsRshim() {
+		ip, _, err := net.ParseCIDR(d.TmfifoIP)
+		if err != nil {
+			return "", fmt.Errorf("dpu %s tmfifo_ip %q: %w", d.Hostname, d.TmfifoIP, err)
+		}
+		return ip.String(), nil
+	}
+	role := netw.NodeIPRole
 	if role == "" {
 		return "", nil
 	}
@@ -266,6 +333,39 @@ func resolveDPUNodeIP(d *poc.DPU, role string) (string, error) {
 	return ip.String(), nil
 }
 
+// ensureTmfifoAllocated runs the rshim tmfifo address allocation and
+// persists poc.yaml when it changes anything. No-op for the vlan
+// transport. Allocation is deterministic, so re-running on an
+// already-allocated PoC is a no-op (no spurious poc.yaml churn) and a
+// redeploy yields identical addresses.
+func ensureTmfifoAllocated(repo string, p *poc.PoC, out io.Writer) error {
+	changed, err := poc.AllocateTmfifo(p)
+	if err != nil {
+		return err
+	}
+	if changed {
+		if err := savePoC(repo, p, out); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// bareIP strips a CIDR suffix, returning the bare IPv4/IPv6 string, or ""
+// if raw is empty/unparseable. Accepts a bare IP too.
+func bareIP(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	if ip, _, err := net.ParseCIDR(raw); err == nil {
+		return ip.String()
+	}
+	if ip := net.ParseIP(raw); ip != nil {
+		return ip.String()
+	}
+	return ""
+}
+
 // joinOutcome distinguishes "did a real kubeadm join" from "DPU was
 // already a cluster member, fast-path". The outer caller still treats
 // both as success — this only changes the user-facing message and the
@@ -277,7 +377,7 @@ const (
 	joinOutcomeAlreadyJoined                    // /etc/kubernetes/kubelet.conf already present
 )
 
-func joinOneDPU(ctx context.Context, repo string, j dpuJob, jc *cluster.JoinCommand, nodeIP, k8sMinor string, f *clusterJoinDPUsFlags, w io.Writer) (joinOutcome, error) {
+func joinOneDPU(ctx context.Context, repo string, j dpuJob, jc *cluster.JoinCommand, nodeIP, k8sMinor string, netSetup dpuNetSetup, f *clusterJoinDPUsFlags, w io.Writer) (joinOutcome, error) {
 	// Pre-dial step: make sure the host's tmfifo_net0 has 192.168.100.1/30
 	// before we try to reach the DPU at 192.168.100.2. The rshim kernel
 	// module *should* assign the host address at module load, but any
@@ -297,8 +397,15 @@ func joinOneDPU(ctx context.Context, repo string, j dpuJob, jc *cluster.JoinComm
 	if err != nil {
 		return joinOutcomeJoined, fmt.Errorf("ssh host (for tmfifo prep): %w", err)
 	}
-	ensureHostTmfifoIP(ctx, hostC)
-	hostC.Close()
+	ensureHostTmfifoIPFor(ctx, hostC, j.host)
+	// The rshim path needs the host session again for NAT setup below;
+	// keep it open until the join finishes. The vlan path is done with
+	// the host after the tmfifo prep.
+	if netSetup.enabled {
+		defer hostC.Close()
+	} else {
+		hostC.Close()
+	}
 
 	cfg, err := dpuSSHConfig(repo, j.host, j.dpu)
 	if err != nil {
@@ -333,6 +440,15 @@ func joinOneDPU(ctx context.Context, repo string, j dpuJob, jc *cluster.JoinComm
 	if cluster.AlreadyJoined(ctx, c) {
 		fmt.Fprintln(w, "already a cluster member — skipping install + kubeadm join.")
 		return joinOutcomeAlreadyJoined, nil
+	}
+
+	// Under rshim, give the DPU internet through the host BEFORE the apt
+	// install below (kubelet/kubeadm/kubectl come from pkgs.k8s.io).
+	if netSetup.enabled {
+		gw := bareIP(j.host.TmfifoHostIP())
+		if err := setupDPUNetworking(ctx, hostC, c, netSetup.mode, gw, netSetup.masqSrc, netSetup.dns, w); err != nil {
+			return joinOutcomeJoined, err
+		}
 	}
 
 	if !f.skipInstall {
@@ -404,8 +520,16 @@ func redactToken(joinCmd string) string {
 	return joinCmd[:idx] + "--token <redacted>" + rest[end:]
 }
 
-func appendJoinJournal(repo, pocName string, jobs []dpuJob) {
-	header := fmt.Sprintf("join-dpus — %d DPU(s) joined cluster", len(jobs))
+// appendJoinJournal records the join outcome. labelTaintErr is nil when the
+// DPU nodes were successfully labeled/tainted (BNK-ready); non-nil when the
+// join succeeded but label/taint failed — in which case the journal must NOT
+// claim the nodes are labeled, and must point at the required retry.
+func appendJoinJournal(repo, pocName string, jobs []dpuJob, labelTaintErr error) {
+	outcome := "joined cluster"
+	if labelTaintErr != nil {
+		outcome = "joined cluster but label/taint FAILED"
+	}
+	header := fmt.Sprintf("join-dpus — %d DPU(s) %s", len(jobs), outcome)
 	f, err := openJournal(repo, "cluster", header)
 	if err != nil {
 		return
@@ -413,9 +537,19 @@ func appendJoinJournal(repo, pocName string, jobs []dpuJob) {
 	defer f.Close()
 	fmt.Fprintf(f, "- PoC:  %s\n", pocName)
 	for _, j := range jobs {
-		fmt.Fprintf(f, "- %s (host %s, dpu %s, tmfifo %s) — labeled app=f5-tmm, tainted dpu=true:NoSchedule\n",
-			j.dpu.Hostname, j.host.Name, j.dpu.PCI, j.dpu.TmfifoIP)
+		if labelTaintErr == nil {
+			fmt.Fprintf(f, "- %s (host %s, dpu %s, tmfifo %s) — labeled app=f5-tmm, tainted dpu=true:NoSchedule\n",
+				j.dpu.Hostname, j.host.Name, j.dpu.PCI, j.dpu.TmfifoIP)
+		} else {
+			fmt.Fprintf(f, "- %s (host %s, dpu %s, tmfifo %s) — joined but NOT labeled/tainted\n",
+				j.dpu.Hostname, j.host.Name, j.dpu.PCI, j.dpu.TmfifoIP)
+		}
 	}
-	fmt.Fprintln(f, "- Next: pre-sales SE confirms `kubectl get nodes -o wide` shows N+M nodes Ready")
+	if labelTaintErr != nil {
+		fmt.Fprintf(f, "- label/taint error: %v\n", labelTaintErr)
+		fmt.Fprintln(f, "- Node NOT BNK-ready — CNE needs the node labeled app=f5-tmm and tolerating dpu=true:NoSchedule. Re-run `dpubnkctl cluster join-dpus`.")
+	} else {
+		fmt.Fprintln(f, "- Next: pre-sales SE confirms `kubectl get nodes -o wide` shows N+M nodes Ready")
+	}
 	fmt.Fprintln(f)
 }

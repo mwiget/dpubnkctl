@@ -79,6 +79,23 @@ entry per phase the operator's goal will touch — typically a subset of
 `completed` as soon as each phase finishes — don't batch. See
 `AGENTS.md`'s "Progress tracking" section for the full rationale.
 
+Before `deploy prereqs`, `ls -la keys/` to confirm the FAR tgz + `.jwt`
+are present — they may have been re-seeded since an earlier check; see
+`AGENTS.md`'s "FAR key + license JWT: verify, don't assume".
+
+## Definition of done (deploy)
+
+Marking the last phase `completed` in your task list is **not** the same as the
+deployment being done. When the operator's goal includes `deploy`, the deploy is
+complete only when the functional success criteria in `AGENTS.md`'s "When is a
+deploy done?" section are **all** verified — nodes Ready, `CNEInstance` Ready,
+CNE/TMM Running, License CR Activated, and the Gateway smoke test returning 200.
+Report each criterion's state in the journal before you declare the goal met.
+
+Do **not** register the cluster with bnk-forge as a completion step — that is the
+platform's job (agent deployments) or a separate explicit operator action
+(standalone). See `AGENTS.md`.
+
 ## Handoff protocol
 
 After each significant action, append to today's journal:
