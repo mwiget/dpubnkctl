@@ -224,7 +224,13 @@ func runClusterUp(ctx context.Context, out io.Writer, f *clusterUpFlags) error {
 		// verify: true` (which leaves the operator's later kubectl + helm
 		// calls MITM-able), require an explicit `--insecure-kubeconfig`
 		// opt-in. Without it, refuse to fetch.
-		needInsecure := p.Network.ClusterAPIServerAddress == ""
+		//
+		// rshim is the exception: it adds each control-plane host's mgmt
+		// (SSH) + tmfifo IP to the apiserver cert SAN (see renderGroupVarsAll
+		// → supplementary_addresses_in_ssl_keys), so a secure localized
+		// kubeconfig against the host mgmt address validates without
+		// cluster_apiserver_address being set.
+		needInsecure := kubeconfigNeedsInsecure(p)
 		switch {
 		case needInsecure && !f.insecureKubeconfig:
 			fmt.Fprintln(out, "      SKIPPED kubeconfig fetch: network.cluster_apiserver_address is empty so the apiserver cert SAN won't cover the mgmt address, and --insecure-kubeconfig was not passed. Either set network.cluster_apiserver_address in poc.yaml (recommended) or re-run with --insecure-kubeconfig.")
@@ -288,6 +294,17 @@ func preCreateKubeDir(ctx context.Context, repo string, plan cluster.Plan) error
 		return fmt.Errorf("%d host(s) failed: %s", len(failures), strings.Join(failures, "; "))
 	}
 	return nil
+}
+
+// kubeconfigNeedsInsecure reports whether a fetched kubeconfig would need
+// insecure-skip-tls-verify to validate against the host mgmt address. It's
+// true only when the apiserver cert SAN won't cover that address:
+// cluster_apiserver_address unset AND not rshim. rshim adds each
+// control-plane host's mgmt + tmfifo IP to the SAN (renderGroupVarsAll →
+// supplementary_addresses_in_ssl_keys), so its kubeconfig validates with
+// TLS intact and no insecure fallback.
+func kubeconfigNeedsInsecure(p *poc.PoC) bool {
+	return p.Network.ClusterAPIServerAddress == "" && !p.Network.IsRshim()
 }
 
 func fetchKubeconfig(ctx context.Context, repo string, host *poc.Host, dst string, insecure bool) error {

@@ -160,11 +160,30 @@ func ValidateForPhase(p *PoC, repoDir string, minPhase Phase) ValidationResult {
 	if p.Network.PodMTU > p.Network.DPUMTU {
 		c.err(PhaseCluster, "network.pod_mtu (%d) > network.dpu_mtu (%d) — pod MTU must be ≤ DPU MTU minus overlay overhead", p.Network.PodMTU, p.Network.DPUMTU)
 	}
-	if p.Network.ClusterAPIServerAddress == "" {
+	// join_transport selects the DPU join path. rshim suppresses the
+	// data-plane-VLAN warnings below (it deliberately doesn't use them).
+	rshim := p.Network.IsRshim()
+	switch p.Network.JoinTransport {
+	case "", JoinTransportVLAN, JoinTransportRshim:
+		// ok
+	default:
+		c.err(PhaseCluster, "network.join_transport %q invalid (must be %q or %q)", p.Network.JoinTransport, JoinTransportVLAN, JoinTransportRshim)
+	}
+	if !rshim && p.Network.ClusterAPIServerAddress == "" {
 		c.warn(PhaseCluster, "network.cluster_apiserver_address is empty — externally-joined DPUs need a routable apiserver address; without this kubespray's localhost-nginx-proxy hack takes over and DPUs can't reach the apiserver (see AGENTS.md #4)")
 	}
-	if p.Network.NodeIPRole == "" {
+	if !rshim && p.Network.NodeIPRole == "" {
 		c.warn(PhaseCluster, "network.node_ip_role is empty — hosts will fall back to ssh.address (mgmt) for kubelet --node-ip, DPUs auto-detect; usually you want this set to the data-plane role (e.g. \"internal\")")
+	}
+	// rshim-specific network checks.
+	if rshim {
+		validateTmfifoPool(c, p)
+	}
+	switch p.Provisioning.DPUInternet {
+	case "", DPUInternetHostNAT, DPUInternetOOB, DPUInternetNone:
+		// ok
+	default:
+		c.err(PhaseCluster, "provisioning.dpu_internet %q invalid (must be %q, %q or %q)", p.Provisioning.DPUInternet, DPUInternetHostNAT, DPUInternetOOB, DPUInternetNone)
 	}
 
 	// --- hosts (presence + per-host shape) ---
@@ -216,8 +235,14 @@ func ValidateForPhase(p *PoC, repoDir string, minPhase Phase) ValidationResult {
 		// Per-DPU. bf.conf needs every field at provision.
 		for j, d := range h.DPUs {
 			dctx := fmt.Sprintf("%s.dpus[%d:%s]", hctx, j, d.PCI)
-			validateDPU(c, &p.Hosts[i].DPUs[j], dctx)
+			validateDPU(c, &p.Hosts[i].DPUs[j], dctx, p.Network)
 			_ = d
+		}
+		// Multi-DPU-per-host over rshim needs a distinct tmfifo /30 per
+		// DPU but there's only one tmfifo_net0 per host — not supported
+		// yet. Pattern 2 targets 1 DPU per host.
+		if rshim && len(h.DPUs) > 1 {
+			c.err(PhaseProvision, "%s has %d DPUs but join_transport=rshim supports one DPU per host (one tmfifo_net0 link)", hctx, len(h.DPUs))
 		}
 
 		// Data-plane VLAN sub-interfaces on the host. host network setup
@@ -254,7 +279,7 @@ func ValidateForPhase(p *PoC, repoDir string, minPhase Phase) ValidationResult {
 	// caught this the hard way — operator set a placeholder VIP that
 	// no listener answered on, kubeadm hung 4 minutes before failing.
 	// With >1 CP an external VIP is plausible, so skip the check there.
-	if cps == 1 && p.Network.ClusterAPIServerAddress != "" && p.Network.NodeIPRole != "" {
+	if !rshim && cps == 1 && p.Network.ClusterAPIServerAddress != "" && p.Network.NodeIPRole != "" {
 		role := p.Network.NodeIPRole
 		addr := p.Network.ClusterAPIServerAddress
 		var cpHost *Host
@@ -365,7 +390,7 @@ func ValidateForPhase(p *PoC, repoDir string, minPhase Phase) ValidationResult {
 
 // validateDPU runs per-DPU checks. Mirrors the field requirements in
 // internal/provision.buildInputs (bf.conf render) — all provision-phase.
-func validateDPU(c *checker, d *DPU, ctx string) {
+func validateDPU(c *checker, d *DPU, ctx string, netw Network) {
 	if d.PCI == "" {
 		c.err(PhaseProvision, "%s.pci is empty", ctx)
 	} else if !safePCIRe.MatchString(d.PCI) {
@@ -392,15 +417,25 @@ func validateDPU(c *checker, d *DPU, ctx string) {
 		// node-name requires; anything else would break the join.
 		c.err(PhaseProvision, "%s.hostname %q must match %s (RFC 1123 label, lowercase)", ctx, d.Hostname, safeNameRe.String())
 	}
-	if d.TmfifoIP == "" {
+	switch {
+	case d.TmfifoIP == "" && netw.IsRshim():
+		// Under rshim the tmfifo IP is allocated at provision time (from
+		// network.tmfifo_cidr, or the 192.168.100.2/30 default) and
+		// persisted back into poc.yaml — so an empty value here is fine;
+		// AllocateTmfifo fills it before bf.conf render.
+	case d.TmfifoIP == "":
 		c.err(PhaseProvision, "%s.tmfifo_ip is empty (tmfifo_net0 CIDR, e.g. 192.168.100.2/30)", ctx)
-	} else {
-		// rshim driver hard-codes the host side at 192.168.100.1/30, so
-		// the DPU's tmfifo_net0 must live in the same /30 and not collide
-		// with .1. The lake1 PoC hit this: operator picked .6/30, which
-		// is a *different* /30 (.4 net / .5 first / .6 second / .7 bcast)
-		// — host's rshim auto-took 192.168.100.1/30, ProxyJump SSH broke
-		// with "No route to host". Catch the entire failure shape.
+	case netw.IsRshim() && netw.TmfifoCIDR != "":
+		// Pool-allocated: the DPU tmfifo IP must be the .2 of a /30 that
+		// sits inside network.tmfifo_cidr.
+		validateTmfifoIPInPool(c, d.TmfifoIP, netw.TmfifoCIDR, ctx)
+	default:
+		// vlan transport, or rshim without a pool: the rshim driver
+		// hard-codes the host side at 192.168.100.1/30, so the DPU's
+		// tmfifo_net0 must live in the same /30 and not collide with .1.
+		// The lake1 PoC hit this: operator picked .6/30, a *different*
+		// /30 — host's rshim auto-took 192.168.100.1/30, ProxyJump SSH
+		// broke with "No route to host". Catch the entire failure shape.
 		validateTmfifoIP(c, d.TmfifoIP, ctx)
 	}
 	if len(d.VLANs) == 0 {
@@ -449,6 +484,73 @@ func validateTmfifoIP(c *checker, raw, ctx string) {
 	last := ip.To4()[3]
 	if last != 2 {
 		c.err(PhaseProvision, "%s.tmfifo_ip %q must be 192.168.100.2/30 — .0/.3 of the rshim /30 are network/broadcast, .1 is rshim", ctx, raw)
+	}
+}
+
+// validateTmfifoPool checks network.tmfifo_cidr (rshim multi-host pool)
+// and that it holds enough /30 blocks for the fleet's DPUs.
+func validateTmfifoPool(c *checker, p *PoC) {
+	if p.Network.TmfifoCIDR == "" {
+		// Poolless rshim = single-host default. Allowed only for one host
+		// with DPUs; AllocateTmfifo enforces the same rule at provision.
+		hostsWithDPUs := 0
+		for i := range p.Hosts {
+			if len(p.Hosts[i].DPUs) > 0 {
+				hostsWithDPUs++
+			}
+		}
+		if hostsWithDPUs > 1 {
+			c.err(PhaseProvision, "join_transport=rshim with %d hosts needs network.tmfifo_cidr (e.g. 192.168.0.0/24) — the rshim default 192.168.100.x /30 only addresses one host", hostsWithDPUs)
+		}
+		return
+	}
+	_, pool, err := net.ParseCIDR(p.Network.TmfifoCIDR)
+	if err != nil {
+		c.err(PhaseProvision, "network.tmfifo_cidr %q is not a valid CIDR (e.g. 192.168.0.0/24)", p.Network.TmfifoCIDR)
+		return
+	}
+	if ip4 := pool.IP.To4(); ip4 == nil {
+		c.err(PhaseProvision, "network.tmfifo_cidr %q must be IPv4", p.Network.TmfifoCIDR)
+		return
+	}
+	ones, _ := pool.Mask.Size()
+	if ones > 30 {
+		c.err(PhaseProvision, "network.tmfifo_cidr %q is smaller than a /30 — cannot carve a DPU link from it", p.Network.TmfifoCIDR)
+		return
+	}
+	capacity := 1 << uint(30-ones)
+	dpus := 0
+	for i := range p.Hosts {
+		dpus += len(p.Hosts[i].DPUs)
+	}
+	if dpus > capacity {
+		c.err(PhaseProvision, "network.tmfifo_cidr %q holds %d /30 blocks but the fleet has %d DPUs — widen the pool", p.Network.TmfifoCIDR, capacity, dpus)
+	}
+}
+
+// validateTmfifoIPInPool checks a pool-allocated DPU tmfifo IP: it must be
+// a /30, sit inside the pool, and be the .2 (second usable) of its /30 —
+// matching AllocateTmfifo's carving (host .1, DPU .2).
+func validateTmfifoIPInPool(c *checker, raw, poolCIDR, ctx string) {
+	ip, ipnet, err := net.ParseCIDR(raw)
+	if err != nil {
+		c.err(PhaseProvision, "%s.tmfifo_ip %q is not a valid CIDR", ctx, raw)
+		return
+	}
+	if ones, bits := ipnet.Mask.Size(); bits != 32 || ones != 30 {
+		c.err(PhaseProvision, "%s.tmfifo_ip %q must be a /30 (one rshim link per DPU)", ctx, raw)
+		return
+	}
+	_, pool, err := net.ParseCIDR(poolCIDR)
+	if err != nil {
+		return // pool error already reported by validateTmfifoPool
+	}
+	if !pool.Contains(ip) {
+		c.err(PhaseProvision, "%s.tmfifo_ip %q is outside network.tmfifo_cidr %q", ctx, raw, poolCIDR)
+		return
+	}
+	if last := ip.To4()[3]; last%4 != 2 {
+		c.err(PhaseProvision, "%s.tmfifo_ip %q must be the .2 of its /30 (host takes .1) — re-run provision to re-allocate", ctx, raw)
 	}
 }
 

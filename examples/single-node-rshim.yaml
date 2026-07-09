@@ -1,0 +1,111 @@
+# Description: Single-node rshim-join — DPU joins over tmfifo with internet via host NAT. Data VLAN reserved for TMM/CNE.
+#
+# Single-node PoC using the rshim/tmfifo join topology (Pattern 1). One
+# bare-metal host (control plane + worker) with one BlueField-3 DPU that
+# joins the cluster over the host↔DPU tmfifo link — NOT over the data
+# VLAN. The DPU reaches the apiserver at the host's tmfifo IP and gets
+# internet (for the join-time apt install) via host NAT/MASQUERADE.
+#
+# This mirrors the D-020 SSH blueprint and sidesteps the host↔DPU data-VLAN
+# chicken-and-egg (the e-switch steering only exists after BNK deploy/SF-CNI).
+# The data-plane VLANs below are still declared — deploy/SF-CNI wires them
+# for TMM/CNE traffic later; they just aren't used for the k8s control plane.
+#
+# Key differences from single-node.yaml:
+#   - network.join_transport: rshim         (selects the whole topology)
+#   - provisioning.dpu_internet: host-nat   (D-020 MASQUERADE path)
+#   - no cluster_apiserver_address / node_ip_role (rshim doesn't use them;
+#     the DPU node-ip is its tmfifo IP, apiserver is the host's tmfifo IP)
+#
+# See docs/specs/dpubnkctl-rshim-join-topology.md. Replace every
+# 192.0.2.* / 203.0.113.* / 198.51.100.* address with the customer's plan.
+
+apiVersion: dpubnkctl.f5.com/v1alpha1
+kind: PoC
+metadata:
+    name: single-node-rshim
+    customer: REPLACE-ME
+    bnk_version: 2.2.0
+versions:
+    doca: 2.9.2
+    bfb_image: bf-bundle-2.9.2-32_25.02_ubuntu-22.04_prod.bfb
+    flo_chart: v2.9.27-0.2.10
+    k8s: "1.32"
+    containerd: 1.7.23
+    runc: 1.2.1
+    pause_tag: "3.10"
+topology:
+    mode: single-node
+    lag: true
+    control_plane_count: 1
+    expected_hosts: 1
+    expected_dpus_per_host: 1
+network:
+    internal_cidr: 198.18.100.0/24
+    pod_mtu: 8900
+    dpu_mtu: 9000
+    vlans:
+        - name: external
+          id: 40
+          subnet: 203.0.113.0/24
+        - name: internal
+          id: 41
+          subnet: 198.51.100.0/24
+    # rshim join: DPU joins over tmfifo, apiserver on the host tmfifo IP.
+    join_transport: rshim
+    # tmfifo_cidr is only needed for multi-host rshim (Pattern 2); a single
+    # host uses the rshim driver default 192.168.100.1/.2 /30.
+provisioning:
+    dpu_password_hash_ref: keys/dpu_password.hash
+    dpu_dns:
+        - 8.8.8.8
+        - 1.1.1.1
+    dpu_ntp:
+        - pool.ntp.org
+    bfb_cache_dir: ~/.cache/dpubnkctl/bfb
+    # DPU internet for the join-time apt install: MASQUERADE through the
+    # host over tmfifo (default under join_transport=rshim; set here for
+    # clarity). Use "oob" if the DPU already has internet on oob_net0.
+    dpu_internet: host-nat
+hosts:
+    - name: host1
+      role: both
+      ssh:
+        address: 192.0.2.10
+        port: 22
+        user: ubuntu
+        key_ref: keys/host1
+      data_plane:
+        parent_iface: ens16f0np0
+        vlans:
+            - role: external
+              tag: 40
+              ip: 203.0.113.10/24
+            - role: internal
+              tag: 41
+              ip: 198.51.100.10/24
+      dpus:
+        - pci: "0000:03:00.0"
+          mode: dpu
+          lag: true
+          hostname: host1-bf3
+          tmfifo_ip: 192.168.100.2/30
+          vlans:
+            - role: external
+              tag: 40
+              ip: 203.0.113.5/24
+            - role: internal
+              tag: 41
+              ip: 198.51.100.5/24
+bnk:
+    far_key_ref: keys/f5-far-auth-key.tgz
+    jwt_ref: keys/.jwt
+    external_selfip: 203.0.113.100
+    internal_selfip: 198.51.100.100
+status:
+    discover: pending
+    provision: pending
+    cluster: pending
+    deploy: pending
+agent:
+    default: claude

@@ -28,6 +28,36 @@ const (
 	DefaultBFBHostCacheDir = "/var/cache/dpubnkctl/bfb"
 )
 
+// Join transports for Network.JoinTransport. "vlan" (the default when
+// empty) is the original behavior: DPUs join k8s over a data-plane VLAN
+// IP and reach the apiserver at network.cluster_apiserver_address.
+// "rshim" joins over the host↔DPU tmfifo link instead — the DPU's
+// kubelet --node-ip is its tmfifo IP and the apiserver is reached at the
+// host's tmfifo IP. The data VLAN is left for TMM/CNE traffic set up
+// later by deploy/SF-CNI. See docs/specs/dpubnkctl-rshim-join-topology.md.
+const (
+	JoinTransportVLAN  = "vlan"
+	JoinTransportRshim = "rshim"
+
+	// DefaultTmfifoHostIP / DefaultTmfifoDPUIP are the point-to-point /30
+	// the BlueField rshim driver uses by default (host .1, DPU .2). Used
+	// for single-host rshim when network.tmfifo_cidr is unset.
+	DefaultTmfifoHostIP = "192.168.100.1/30"
+	DefaultTmfifoDPUIP  = "192.168.100.2/30"
+)
+
+// DPU-internet modes for Provisioning.DPUInternet. "host-nat" ports the
+// D-020 host-MASQUERADE path so the DPU reaches the internet (for the apt
+// install during join) via the host over tmfifo. "oob" assumes the DPU
+// already has internet on its oob_net0 mgmt port. "none" disables the
+// setup-dpu-networking step. Empty resolves to host-nat under rshim and
+// none otherwise — see PoC.EffectiveDPUInternet.
+const (
+	DPUInternetHostNAT = "host-nat"
+	DPUInternetOOB     = "oob"
+	DPUInternetNone    = "none"
+)
+
 type PoC struct {
 	APIVersion   string       `yaml:"apiVersion"`
 	Kind         string       `yaml:"kind"`
@@ -41,6 +71,19 @@ type PoC struct {
 	Status       Status       `yaml:"status"`
 	Agent        Agent        `yaml:"agent"`
 	BNKForge     BNKForge     `yaml:"bnk_forge,omitempty"`
+}
+
+// EffectiveDPUInternet resolves the DPU-internet mode: the explicit
+// provisioning.dpu_internet if set, else host-nat under rshim and none
+// otherwise. This is what the setup-dpu-networking step keys off.
+func (p *PoC) EffectiveDPUInternet() string {
+	if p.Provisioning.DPUInternet != "" {
+		return p.Provisioning.DPUInternet
+	}
+	if p.Network.IsRshim() {
+		return DPUInternetHostNAT
+	}
+	return DPUInternetNone
 }
 
 type Metadata struct {
@@ -94,8 +137,28 @@ type Network struct {
 	// DPUs pick dpu.vlans[role==X]. When unset, hosts fall back to
 	// ssh.address and DPUs let kubelet auto-detect. Typically set to
 	// the same role used for ClusterAPIServerAddress (e.g. "internal").
+	// Ignored when JoinTransport == "rshim" (the DPU node-ip is its
+	// tmfifo IP; the host keeps its ssh.address node-ip).
 	NodeIPRole string `yaml:"node_ip_role,omitempty"`
+
+	// JoinTransport selects how DPUs join the cluster: "vlan" (default
+	// when empty — the original data-plane-VLAN join) or "rshim" (join
+	// over the host↔DPU tmfifo link, with internet via host NAT). See
+	// the JoinTransport* consts and docs/specs/dpubnkctl-rshim-join-topology.md.
+	JoinTransport string `yaml:"join_transport,omitempty"`
+
+	// TmfifoCIDR is the orchestrator-managed tmfifo address pool for
+	// rshim joins across multiple hosts (e.g. "192.168.0.0/24"). When
+	// set, dpubnkctl carves a unique /30 per DPU from this pool and
+	// records the allocation back into each host.tmfifo_ip and
+	// dpu.tmfifo_ip — replacing the per-host 192.168.100.x /30 that
+	// collides when more than one host is present. Unset ⇒ single-host
+	// rshim uses the rshim driver default 192.168.100.1/.2 /30.
+	TmfifoCIDR string `yaml:"tmfifo_cidr,omitempty"`
 }
+
+// IsRshim reports whether DPUs join over the rshim/tmfifo link.
+func (n Network) IsRshim() bool { return n.JoinTransport == JoinTransportRshim }
 
 // HostDataPlane describes the host's data-plane VLAN sub-interfaces.
 // dpubnkctl writes a netplan that adds one VLAN sub-interface per entry
@@ -175,6 +238,22 @@ type Host struct {
 	BMC       *BMC           `yaml:"bmc,omitempty"`
 	DataPlane *HostDataPlane `yaml:"data_plane,omitempty"`
 	DPUs      []DPU          `yaml:"dpus,omitempty"`
+
+	// TmfifoIP is the host-side tmfifo_net0 address (CIDR) used to reach
+	// this host's DPU(s) over rshim. For single-host rshim it is the
+	// rshim driver default 192.168.100.1/30; under network.tmfifo_cidr
+	// it is allocated as the .1 of the DPU's carved /30 and persisted
+	// here so redeploys are idempotent. Empty ⇒ 192.168.100.1/30.
+	TmfifoIP string `yaml:"tmfifo_ip,omitempty"`
+}
+
+// TmfifoHostIP returns the host-side tmfifo CIDR, defaulting to the rshim
+// driver's 192.168.100.1/30 when TmfifoIP is unset.
+func (h *Host) TmfifoHostIP() string {
+	if h != nil && h.TmfifoIP != "" {
+		return h.TmfifoIP
+	}
+	return DefaultTmfifoHostIP
 }
 
 type SSH struct {
@@ -309,6 +388,14 @@ type Provisioning struct {
 	// staged file whose sha256 already matches is reused without re-
 	// fetching, so the dir doubles as a persistent per-host BFB cache.
 	BFBHostCacheDir string `yaml:"bfb_host_cache_dir,omitempty"`
+
+	// DPUInternet selects how the DPU gets internet before the join-time
+	// apt install. "host-nat" (the D-020 path) MASQUERADEs DPU traffic
+	// through the host over tmfifo; "oob" assumes the DPU already has
+	// internet on oob_net0; "none" skips the setup-dpu-networking step.
+	// Empty resolves via PoC.EffectiveDPUInternet (host-nat under rshim,
+	// none otherwise). See the DPUInternet* consts.
+	DPUInternet string `yaml:"dpu_internet,omitempty"`
 }
 
 type BNK struct {

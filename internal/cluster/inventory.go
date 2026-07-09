@@ -422,7 +422,52 @@ supplementary_addresses_in_ssl_keys:
 			}
 		}
 	}
+	// rshim join: the host keeps its mgmt node-ip and advertise address
+	// (no loadbalancer override), but the DPU reaches the apiserver over
+	// tmfifo at the control-plane host's tmfifo IP. Add each control-plane
+	// host's tmfifo IP + mgmt IP to the apiserver cert SANs so both the
+	// DPU (tmfifo) and the operator's kubectl (mgmt) verify TLS.
+	if p.Network.IsRshim() {
+		var sans []string
+		seen := map[string]bool{}
+		add := func(ip string) {
+			if ip != "" && !seen[ip] {
+				seen[ip] = true
+				sans = append(sans, ip)
+			}
+		}
+		for i := range p.Hosts {
+			h := &p.Hosts[i]
+			if h.Role != "control-plane" && h.Role != "both" {
+				continue
+			}
+			add(h.SSH.Address)
+			add(stripCIDROrEmpty(h.TmfifoHostIP()))
+		}
+		if len(sans) > 0 {
+			b.WriteString(`
+# rshim join: apiserver cert SANs for the tmfifo path (DPU) + mgmt path
+# (operator kubectl). Host node-ip/advertise stays on the mgmt address.
+supplementary_addresses_in_ssl_keys:
+`)
+			for _, s := range sans {
+				fmt.Fprintf(&b, "  - %s\n", s)
+			}
+		}
+	}
 	return b.String()
+}
+
+// stripCIDROrEmpty returns the bare IP of a CIDR (or a bare IP), or "" if
+// unparseable. Local to the cluster package to avoid a cross-package dep.
+func stripCIDROrEmpty(raw string) string {
+	if ip, err := stripCIDR(raw); err == nil {
+		return ip
+	}
+	if ip := net.ParseIP(raw); ip != nil {
+		return ip.String()
+	}
+	return ""
 }
 
 func renderGroupVarsK8sCluster(p *poc.PoC) string {

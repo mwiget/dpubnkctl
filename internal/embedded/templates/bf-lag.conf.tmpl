@@ -177,13 +177,18 @@ done
 # to 1500 even though bond0 is 9000 — silently caps the bridge's
 # effective MTU, drops/fragments anything larger from the host PCIe
 # path (pf0hpf), and breaks TLS to the apiserver among other things.
-ip link set br-lag mtu $MTU || true
+#
+# br-lag (OVS bridge local port) and the VLAN ports below are
+# type=internal: OVS owns their MTU and overrides `ip link set mtu`.
+# Raise them with `ovs-vsctl mtu_request`. pf0hpf is a real PF-representor
+# netdev — `ip link set` is correct there.
+ovs-vsctl set interface br-lag mtu_request=$MTU || true
 ip link set pf0hpf mtu $MTU || true
 {{range $i, $vlan := .VLANs}}
 # vlan {{$i}}
 ovs-vsctl --may-exist add-port br-lag {{$vlan.Name}} -- set interface {{$vlan.Name}} type=internal
 ovs-vsctl set port {{$vlan.Name}} tag={{$vlan.Tag}}
-ip link set {{$vlan.Name}} mtu $MTU
+ovs-vsctl set interface {{$vlan.Name}} mtu_request=$MTU
 ip link set {{$vlan.Name}} up
 ip addr replace {{$vlan.IP}} dev {{$vlan.Name}}
 {{- if $vlan.DefaultGateway}}
