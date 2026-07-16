@@ -22,6 +22,7 @@ func newProvisionCmd() *cobra.Command {
 	}
 	cmd.AddCommand(newProvisionPlanCmd())
 	cmd.AddCommand(newProvisionDPUCmd())
+	cmd.AddCommand(newProvisionSetModeCmd())
 	return cmd
 }
 

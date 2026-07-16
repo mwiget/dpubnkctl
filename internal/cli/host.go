@@ -362,12 +362,19 @@ echo 1 | tee /sys/bus/pci/rescan >/dev/null'`
 // reboot`, waits for SSH to come back (up to 5 min), and confirms the
 // parent_iface is live before returning a fresh client. The caller
 // adopts the returned client; the old one is unusable after reboot.
-func autoReboot(ctx context.Context, c *ssh.Client, cfg ssh.Config, parentIface, tag string, out io.Writer) (*ssh.Client, error) {
-	fmt.Fprintf(out, "%s   still ghost after PCIe rescan; --yolo set, issuing 'sudo reboot' ...\n", tag)
+// rebootHostAndWait issues a warm `sudo -n reboot` on the host, closes the
+// passed-in client (sshd dies during shutdown), and polls for SSH to return
+// (up to 5 min). Returns a fresh connected client the caller adopts; the
+// old client is unusable after this call. Used by the ghost-PF recovery
+// path to clear stale netlink state a soft recovery couldn't.
+//
+// Note: a warm reboot does NOT apply a staged INTERNAL_CPU_MODEL change
+// (the BlueField keeps its running config across it) — that path uses
+// mlxfwreset instead (see provision.FWResetCmd).
+func rebootHostAndWait(ctx context.Context, c *ssh.Client, cfg ssh.Config, tag string, out io.Writer) (*ssh.Client, error) {
 	// `sudo reboot` returns SIGHUP/255 to the SSH client when systemd
 	// kills sshd — that's expected, not a failure. Don't surface the
-	// exit code to the user; the only thing that matters is that the
-	// host actually comes back.
+	// exit code; the only thing that matters is that the host comes back.
 	_ = c.Run(ctx, "sudo -n reboot")
 	c.Close()
 
@@ -376,19 +383,23 @@ func autoReboot(ctx context.Context, c *ssh.Client, cfg ssh.Config, parentIface,
 	// Give the box a moment to actually go down before polling — if we
 	// dial too fast we'll race the still-alive sshd and false-positive.
 	time.Sleep(20 * time.Second)
-	var newClient *ssh.Client
 	for time.Now().Before(deadline) {
 		dialCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		nc, err := ssh.Dial(dialCtx, cfg)
 		cancel()
 		if err == nil {
-			newClient = nc
-			break
+			return nc, nil
 		}
 		time.Sleep(5 * time.Second)
 	}
-	if newClient == nil {
-		return nil, fmt.Errorf("host did not return on SSH within 5 min after reboot — investigate manually (the box may be hung in BIOS/POST or VFIO reset)")
+	return nil, fmt.Errorf("host did not return on SSH within 5 min after reboot — investigate manually (the box may be hung in BIOS/POST or VFIO reset)")
+}
+
+func autoReboot(ctx context.Context, c *ssh.Client, cfg ssh.Config, parentIface, tag string, out io.Writer) (*ssh.Client, error) {
+	fmt.Fprintf(out, "%s   still ghost after PCIe rescan; --yolo set, issuing 'sudo reboot' ...\n", tag)
+	newClient, err := rebootHostAndWait(ctx, c, cfg, tag, out)
+	if err != nil {
+		return nil, err
 	}
 	fmt.Fprintf(out, "%s   SSH back; re-checking %s ...\n", tag, parentIface)
 
