@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/mwiget/dpubnkctl/internal/discover"
 	"github.com/mwiget/dpubnkctl/internal/poc"
 	"github.com/mwiget/dpubnkctl/internal/provision"
 	"github.com/mwiget/dpubnkctl/internal/ssh"
@@ -44,12 +45,13 @@ value.
 
 The reset briefly disrupts the DPU (and the host PF), so applying it is
 gated like every destructive command:
-  --yolo                   acknowledge the mlxfwreset
   --confirm-cluster NAME   must equal poc.yaml.metadata.name (typo guard)
+  --yolo                   acknowledge the mlxfwreset
 
 Use --stage-only to write mlxconfig without resetting (you apply it later
-with mlxfwreset or a cold power cycle); staging only writes Next Boot and is
-not gated.
+with mlxfwreset or a cold power cycle). --stage-only skips --yolo (nothing
+flips live) but still requires --confirm-cluster: staging writes Next Boot,
+which a later reset applies, so the typo guard still matters.
 
 Only INTERNAL_CPU_MODEL is touched — never the ownership sub-knobs. Both
 mlxconfig and mlxfwreset run host-side against the DPU's PCI address. Where
@@ -58,7 +60,7 @@ and a BMC cold power cycle is the alternative.
 
 Examples:
   dpubnkctl provision set-mode dpu-server-2 --mode nic --yolo --confirm-cluster my-poc
-  dpubnkctl provision set-mode dpu-server-2 --mode dpu --dpu 0000:03:00.0 --stage-only`,
+  dpubnkctl provision set-mode dpu-server-2 --mode dpu --dpu 0000:03:00.0 --stage-only --confirm-cluster my-poc`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runProvisionSetMode(cmd.Context(), cmd.OutOrStdout(), args[0], f)
@@ -68,7 +70,7 @@ Examples:
 	cmd.Flags().StringVar(&f.dpuPCI, "dpu", "", "DPU PCI address (default: every DPU on the host)")
 	cmd.Flags().StringVar(&f.mode, "mode", "", "Target mode: nic | dpu (required)")
 	cmd.Flags().BoolVar(&f.yolo, "yolo", false, "Acknowledge the mlxfwreset (firmware reset) needed to apply the mode change")
-	cmd.Flags().StringVar(&f.confirmCluster, "confirm-cluster", "", "Must equal poc.yaml.metadata.name (typo guard); required to apply (not with --stage-only)")
+	cmd.Flags().StringVar(&f.confirmCluster, "confirm-cluster", "", "Must equal poc.yaml.metadata.name (typo guard); required even with --stage-only")
 	cmd.Flags().BoolVar(&f.stageOnly, "stage-only", false, "Only stage the mlxconfig write; don't run mlxfwreset (you apply it later)")
 	cmd.Flags().DurationVar(&f.timeout, "timeout", 30*time.Second, "SSH dial/probe timeout")
 	return cmd
@@ -90,10 +92,17 @@ func runProvisionSetMode(ctx context.Context, out io.Writer, hostname string, f 
 	if err != nil {
 		return fmt.Errorf("not a PoC repo (%s): %w", repo, err)
 	}
-	// The mlxfwreset that applies the change is destructive, so require both
-	// gates whenever we're actually applying. --stage-only only writes Next
-	// Boot (nothing flips live) and is not gated.
-	if !f.stageOnly {
+	// --confirm-cluster is a free typo guard required on EVERY mode change:
+	// even --stage-only is not inert — it writes Next Boot, which a later
+	// mlxfwreset or cold power cycle then applies. --yolo additionally
+	// acknowledges the disruptive firmware reset and is required only when we
+	// apply now (i.e. not --stage-only). On the applying path both gates go
+	// through the canonical requireTwoGates helper.
+	if f.stageOnly {
+		if f.confirmCluster != p.Metadata.Name {
+			return fmt.Errorf("--confirm-cluster must equal poc.yaml.metadata.name (%q), got %q", p.Metadata.Name, f.confirmCluster)
+		}
+	} else {
 		if err := requireTwoGates(f.yolo, "--confirm-cluster", f.confirmCluster, p.Metadata.Name, "DPU mode change"); err != nil {
 			return err
 		}
@@ -220,23 +229,23 @@ func applyCPUModeToHost(ctx context.Context, out io.Writer, repo string, host *p
 
 	// Apply each staged change via a firmware reset. A warm reboot would
 	// leave Current unchanged, so mlxfwreset (default level 3) is what flips
-	// the live mode.
+	// the live mode. mlxfwreset restarts the ARM side and re-enumerates the
+	// PF, so the SSH session can blip (especially where host management rides
+	// the reset device) — re-dial a fresh client after EACH reset before the
+	// next one. Reusing the pre-reset client would make a 2nd DPU's reset run
+	// on a session the 1st reset already dropped.
 	for _, d := range staged {
 		fmt.Fprintf(out, "  %s %s: applying via mlxfwreset (firmware reset) ...\n", host.Name, d.PCI)
 		if err := fwResetWithRetry(ctx, out, client, host.Name, d.PCI); err != nil {
 			return err
 		}
-	}
-
-	// The reset restarts the ARM side and re-enumerates the PF; re-dial a
-	// fresh client (the session may blip on setups where host management
-	// rides the reset device) before reading back the live mode.
-	client.Close()
-	client = nil
-	if c := redialHost(ctx, cfg, opts.timeout, 90*time.Second); c != nil {
+		client.Close()
+		client = nil
+		c := redialHost(ctx, cfg, opts.timeout, 90*time.Second)
+		if c == nil {
+			return fmt.Errorf("%s: host unreachable after mlxfwreset — if it doesn't return, a cold power cycle / console may be needed", host.Name)
+		}
 		client = c
-	} else {
-		return fmt.Errorf("%s: host unreachable after mlxfwreset — if it doesn't return, a cold power cycle / console may be needed", host.Name)
 	}
 
 	var bad []string
@@ -259,23 +268,37 @@ func applyCPUModeToHost(ctx context.Context, out io.Writer, repo string, host *p
 	return nil
 }
 
-// fwResetWithRetry runs mlxfwreset for one DPU, retrying the transient
-// "Synchronization by driver is not supported in the current state" refusal
-// that mlxfwreset returns when the device is still settling from a prior
-// reset or a just-applied mode switch (seen on back-to-back switches). The
-// refusal happens before any reset executes, so the SSH client and device
-// are unchanged and safe to retry on. A persistent failure surfaces the
-// last message plus the cold-power-cycle hint.
-func fwResetWithRetry(ctx context.Context, out io.Writer, client *ssh.Client, hostName, pci string) error {
+// fwResetTransientRefusal is the ONLY mlxfwreset failure worth retrying: the
+// refusal mlxfwreset emits when the device is still settling from a prior
+// reset or a just-applied mode switch (seen on back-to-back switches). It
+// happens BEFORE any reset executes, so the runner and device are unchanged
+// and safe to retry on. Every other failure (bad PCI, missing binary, sudo
+// denied, or a reset that already ran but dropped the session) is permanent
+// or unsafe to repeat, so we fail fast rather than hammer the device.
+const fwResetTransientRefusal = "Synchronization by driver is not supported"
+
+// fwResetRetryGap is the wait between transient-refusal retries. A package
+// var (not const) so unit tests can shrink it.
+var fwResetRetryGap = 30 * time.Second
+
+// fwResetWithRetry runs mlxfwreset for one DPU, retrying only the transient
+// sync refusal (see fwResetTransientRefusal); any other non-zero result fails
+// immediately. A persistent transient failure surfaces the last message plus
+// the cold-power-cycle hint. Takes a discover.Runner (not *ssh.Client) so the
+// retry loop — the part most likely to regress — is unit-testable with a fake.
+func fwResetWithRetry(ctx context.Context, out io.Writer, runner discover.Runner, hostName, pci string) error {
 	const attempts = 4
-	const gap = 30 * time.Second
+	gap := fwResetRetryGap
 	var lastMsg string
 	for i := 1; i <= attempts; i++ {
-		r := client.Run(ctx, provision.FWResetCmd(pci))
+		r := runner.Run(ctx, provision.FWResetCmd(pci))
 		if r.OK() {
 			return nil
 		}
 		lastMsg = strings.TrimSpace(r.Stderr + r.Stdout)
+		if !strings.Contains(lastMsg, fwResetTransientRefusal) {
+			return fmt.Errorf("%s %s: mlxfwreset failed: %s", hostName, pci, lastMsg)
+		}
 		if i < attempts {
 			fmt.Fprintf(out, "  %s %s: mlxfwreset not ready yet (%s) — retrying in %s (%d/%d)\n",
 				hostName, pci, lastMsg, gap, i, attempts)
@@ -306,7 +329,11 @@ func readModeSettle(ctx context.Context, client *ssh.Client, pci string, within 
 		if time.Now().After(deadline) || ctx.Err() != nil {
 			return provision.ModeUnknown, last
 		}
-		time.Sleep(5 * time.Second)
+		select {
+		case <-time.After(5 * time.Second):
+		case <-ctx.Done():
+			return provision.ModeUnknown, last
+		}
 	}
 }
 
@@ -321,10 +348,11 @@ func redialHost(ctx context.Context, cfg ssh.Config, dialTimeout, within time.Du
 		if err == nil {
 			return c
 		}
-		if ctx.Err() != nil {
+		select {
+		case <-time.After(5 * time.Second):
+		case <-ctx.Done():
 			return nil
 		}
-		time.Sleep(5 * time.Second)
 	}
 	return nil
 }
@@ -332,9 +360,12 @@ func redialHost(ctx context.Context, cfg ssh.Config, dialTimeout, within time.Du
 // setAllDPUsMode applies mode to every DPU in the PoC, one host at a time
 // (each staged DPU is applied with its own mlxfwreset). Used by teardown's
 // --nic-mode. Errors are collected so one unreachable host doesn't abort the
-// rest.
+// rest. poc.yaml is the single source of truth for dpu.mode, so a host whose
+// switch is verified has its DPUs' Mode recorded and the change persisted
+// once at the end — matching what `provision set-mode` does interactively.
 func setAllDPUsMode(ctx context.Context, out io.Writer, repo string, p *poc.PoC, mode provision.CPUMode, opts setModeOptions) error {
 	var errs []string
+	changed := false
 	for i := range p.Hosts {
 		h := &p.Hosts[i]
 		if len(h.DPUs) == 0 {
@@ -346,6 +377,19 @@ func setAllDPUsMode(ctx context.Context, out io.Writer, repo string, p *poc.PoC,
 		}
 		if err := applyCPUModeToHost(ctx, out, repo, h, dpus, mode, opts); err != nil {
 			errs = append(errs, err.Error())
+			continue
+		}
+		// Host switched + verified (or already there) — record the new mode.
+		for _, d := range dpus {
+			if d.Mode != mode.String() {
+				d.Mode = mode.String()
+				changed = true
+			}
+		}
+	}
+	if changed {
+		if err := savePoC(repo, p, out); err != nil {
+			errs = append(errs, fmt.Sprintf("persist dpu.mode=%s: %v", mode, err))
 		}
 	}
 	if len(errs) > 0 {
