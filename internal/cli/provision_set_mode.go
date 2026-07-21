@@ -15,12 +15,13 @@ import (
 )
 
 type provisionSetModeFlags struct {
-	pocDir    string
-	dpuPCI    string
-	mode      string
-	yolo      bool
-	stageOnly bool
-	timeout   time.Duration
+	pocDir         string
+	dpuPCI         string
+	mode           string
+	yolo           bool
+	confirmCluster string
+	stageOnly      bool
+	timeout        time.Duration
 }
 
 func newProvisionSetModeCmd() *cobra.Command {
@@ -39,9 +40,16 @@ live value (Current). A plain host reboot is NOT enough — the BlueField
 keeps its running config across a warm reboot, so a firmware reset (default
 level 3: driver restart + PCI reset) is required to flip the live mode. By
 default this command runs mlxfwreset for you and verifies the new Current
-value. The reset briefly disrupts the DPU (and the host PF), so it is gated
-behind --yolo. Use --stage-only to write mlxconfig without resetting (you
-apply it later with mlxfwreset or a cold power cycle).
+value.
+
+The reset briefly disrupts the DPU (and the host PF), so applying it is
+gated like every destructive command:
+  --yolo                   acknowledge the mlxfwreset
+  --confirm-cluster NAME   must equal poc.yaml.metadata.name (typo guard)
+
+Use --stage-only to write mlxconfig without resetting (you apply it later
+with mlxfwreset or a cold power cycle); staging only writes Next Boot and is
+not gated.
 
 Only INTERNAL_CPU_MODEL is touched — never the ownership sub-knobs. Both
 mlxconfig and mlxfwreset run host-side against the DPU's PCI address. Where
@@ -49,7 +57,7 @@ host management rides the DPU being reset, mlxfwreset may drop connectivity
 and a BMC cold power cycle is the alternative.
 
 Examples:
-  dpubnkctl provision set-mode dpu-server-2 --mode nic --yolo
+  dpubnkctl provision set-mode dpu-server-2 --mode nic --yolo --confirm-cluster my-poc
   dpubnkctl provision set-mode dpu-server-2 --mode dpu --dpu 0000:03:00.0 --stage-only`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -60,6 +68,7 @@ Examples:
 	cmd.Flags().StringVar(&f.dpuPCI, "dpu", "", "DPU PCI address (default: every DPU on the host)")
 	cmd.Flags().StringVar(&f.mode, "mode", "", "Target mode: nic | dpu (required)")
 	cmd.Flags().BoolVar(&f.yolo, "yolo", false, "Acknowledge the mlxfwreset (firmware reset) needed to apply the mode change")
+	cmd.Flags().StringVar(&f.confirmCluster, "confirm-cluster", "", "Must equal poc.yaml.metadata.name (typo guard); required to apply (not with --stage-only)")
 	cmd.Flags().BoolVar(&f.stageOnly, "stage-only", false, "Only stage the mlxconfig write; don't run mlxfwreset (you apply it later)")
 	cmd.Flags().DurationVar(&f.timeout, "timeout", 30*time.Second, "SSH dial/probe timeout")
 	return cmd
@@ -80,6 +89,14 @@ func runProvisionSetMode(ctx context.Context, out io.Writer, hostname string, f 
 	p, err := poc.Load(repo)
 	if err != nil {
 		return fmt.Errorf("not a PoC repo (%s): %w", repo, err)
+	}
+	// The mlxfwreset that applies the change is destructive, so require both
+	// gates whenever we're actually applying. --stage-only only writes Next
+	// Boot (nothing flips live) and is not gated.
+	if !f.stageOnly {
+		if err := requireTwoGates(f.yolo, "--confirm-cluster", f.confirmCluster, p.Metadata.Name, "DPU mode change"); err != nil {
+			return err
+		}
 	}
 	host, err := findHost(p, hostname)
 	if err != nil {
@@ -313,8 +330,9 @@ func redialHost(ctx context.Context, cfg ssh.Config, dialTimeout, within time.Du
 }
 
 // setAllDPUsMode applies mode to every DPU in the PoC, one host at a time
-// (each host reboots once). Used by teardown's --nic-mode. Errors are
-// collected so one unreachable host doesn't abort the rest.
+// (each staged DPU is applied with its own mlxfwreset). Used by teardown's
+// --nic-mode. Errors are collected so one unreachable host doesn't abort the
+// rest.
 func setAllDPUsMode(ctx context.Context, out io.Writer, repo string, p *poc.PoC, mode provision.CPUMode, opts setModeOptions) error {
 	var errs []string
 	for i := range p.Hosts {

@@ -215,9 +215,10 @@ func runDestroyAll(ctx context.Context, out io.Writer, f *destroyAllFlags) error
 }
 
 // revertDPUsToNIC sets every DPU in the PoC back to NIC mode
-// (INTERNAL_CPU_MODEL=0) and reboots each host once to apply it. Shared by
-// `destroy --nic-mode` and `destroy dpus --nic-mode`; --yolo is implied
-// because both paths already passed the requireTwoGates check.
+// (INTERNAL_CPU_MODEL=0) and applies it with a firmware reset (mlxfwreset per
+// DPU — a warm reboot does not flip the live mode). Shared by `destroy
+// --nic-mode` and `destroy dpus --nic-mode`; --yolo is implied because both
+// paths already passed the requireTwoGates check.
 func revertDPUsToNIC(ctx context.Context, out io.Writer, repo string, p *poc.PoC) error {
 	fmt.Fprintln(out, "\n[nic-mode] Reverting DPUs to NIC mode (INTERNAL_CPU_MODEL=0) + mlxfwreset ...")
 	opts := setModeOptions{apply: true, yolo: true, timeout: 30 * time.Second}
@@ -452,7 +453,7 @@ Required gates:
 	cmd.Flags().BoolVar(&f.yolo, "yolo", false, "Acknowledge DPU OS writes")
 	cmd.Flags().StringVar(&f.confirmCluster, "confirm-cluster", "", "Must equal poc.yaml.metadata.name (typo guard)")
 	cmd.Flags().DurationVar(&f.timeout, "timeout", 5*time.Minute, "Per-DPU SSH+reset wall-clock")
-	cmd.Flags().BoolVar(&f.nicMode, "nic-mode", false, "After reset, set each DPU back to NIC mode (INTERNAL_CPU_MODEL=0) and reboot the host")
+	cmd.Flags().BoolVar(&f.nicMode, "nic-mode", false, "After reset, set each DPU back to NIC mode (INTERNAL_CPU_MODEL=0) and apply it with mlxfwreset")
 	return cmd
 }
 
