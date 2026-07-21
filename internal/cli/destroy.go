@@ -203,7 +203,6 @@ func runDestroyAll(ctx context.Context, out io.Writer, f *destroyAllFlags) error
 	// needs the hosts up). --yolo is already satisfied by requireTwoGates.
 	if f.nicMode {
 		if err := revertDPUsToNIC(ctx, out, repo, p); err != nil {
-			fmt.Fprintf(out, "\n[nic-mode] WARN: %v\n", err)
 			appendDestroyJournal(repo, p.Metadata.Name, "ALL", err.Error())
 			return fmt.Errorf("teardown completed but nic-mode revert failed: %w", err)
 		}

@@ -124,7 +124,13 @@ func FWResetCmd(dpuPCI string) string {
 // that applies it. Verification after `set` therefore only passes once the
 // mlxfwreset has made Current match the target.
 func ReadCPUMode(ctx context.Context, runner discover.Runner, dpuPCI string) (CPUMode, error) {
-	cmd := fmt.Sprintf("sudo -n mlxconfig -d %s -e q 2>/dev/null | grep INTERNAL_CPU_MODEL || true", dpuPCI)
+	// Run mlxconfig directly — do NOT pipe through `grep … || true`. That
+	// pattern forced exit 0 (making a real failure undetectable, so the
+	// !r.OK() branch below was dead) and discarded the mlxconfig error via
+	// grep. Without it, a missing binary / wrong PCI / sudo denial exits
+	// non-zero and surfaces the actual message; parseCurrentMode picks the
+	// INTERNAL_CPU_MODEL line out of the full query output.
+	cmd := fmt.Sprintf("sudo -n mlxconfig -d %s -e q", dpuPCI)
 	r := runner.Run(ctx, cmd)
 	if !r.OK() {
 		return ModeUnknown, fmt.Errorf("read INTERNAL_CPU_MODEL for %s: %s", dpuPCI, strings.TrimSpace(r.Stderr+r.Stdout))
