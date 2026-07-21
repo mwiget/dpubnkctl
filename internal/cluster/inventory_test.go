@@ -199,6 +199,32 @@ func TestRender_RshimSANs(t *testing.T) {
 	}
 }
 
+// Regression: a PoC migrated to rshim that still carries a non-empty
+// cluster_apiserver_address (a leftover from a VLAN-join config) must NOT
+// emit the loadbalancer override or a SECOND supplementary_addresses_in_ssl_keys
+// block — a duplicate mapping key would corrupt all.yml on kubespray load.
+func TestRender_RshimIgnoresApiserverAddress(t *testing.T) {
+	p := fixture("both")
+	p.Network.JoinTransport = poc.JoinTransportRshim
+	p.Hosts[0].TmfifoIP = "192.168.100.1/30"
+	p.Network.ClusterAPIServerAddress = "10.10.41.66" // stale VLAN-join leftover
+	plan := BuildPlan(p)
+	files, err := Render(p, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := files["group_vars/all/all.yml"]
+	if n := strings.Count(all, "supplementary_addresses_in_ssl_keys:"); n != 1 {
+		t.Errorf("expected exactly 1 supplementary_addresses_in_ssl_keys key, got %d\n%s", n, all)
+	}
+	if strings.Contains(all, "loadbalancer_apiserver_localhost") {
+		t.Errorf("rshim must not emit loadbalancer override even with cluster_apiserver_address set\n%s", all)
+	}
+	if strings.Contains(all, "apiserver_loadbalancer_domain_name") {
+		t.Errorf("rshim must not emit apiserver_loadbalancer_domain_name\n%s", all)
+	}
+}
+
 func TestRender_NoJumphost_NoSSHCommonArgs(t *testing.T) {
 	// Without a jumphost, hosts.yml must NOT emit ansible_ssh_common_args
 	// and renderInventorySSHConfig must produce an empty string.

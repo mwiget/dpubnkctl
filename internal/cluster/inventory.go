@@ -393,7 +393,13 @@ ansible_host_key_checking: false
 # Disable upgrade prompts that block ansible runs.
 upgrade_cluster_setup: false
 `)
-	if addr := p.Network.ClusterAPIServerAddress; addr != "" {
+	// Skip the loadbalancer override under rshim: there the DPU reaches the
+	// apiserver over tmfifo (handled by the IsRshim block below), the host
+	// keeps its mgmt node-ip, and emitting this block too would duplicate the
+	// supplementary_addresses_in_ssl_keys key in all.yml. cluster_apiserver_
+	// address is a VLAN-join concept and is ignored under rshim (validation
+	// warns).
+	if addr := p.Network.ClusterAPIServerAddress; addr != "" && !p.Network.IsRshim() {
 		// Point every kubelet/kube-proxy at a routable apiserver address
 		// instead of the per-worker localhost nginx-proxy. Externally-
 		// joined DPUs talk to this same address — without this they'd

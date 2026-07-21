@@ -357,11 +357,6 @@ echo 1 | tee /sys/bus/pci/rescan >/dev/null'`
 	return nil, fmt.Errorf("ethtool -i %s failed: %s", parentIface, combined)
 }
 
-// autoReboot is the --yolo last-resort path when modprobe + PCIe rescan
-// have failed to bring the host's mlx5_core PF back. Issues `sudo
-// reboot`, waits for SSH to come back (up to 5 min), and confirms the
-// parent_iface is live before returning a fresh client. The caller
-// adopts the returned client; the old one is unusable after reboot.
 // rebootHostAndWait issues a warm `sudo -n reboot` on the host, closes the
 // passed-in client (sshd dies during shutdown), and polls for SSH to return
 // (up to 5 min). Returns a fresh connected client the caller adopts; the
@@ -395,6 +390,10 @@ func rebootHostAndWait(ctx context.Context, c *ssh.Client, cfg ssh.Config, tag s
 	return nil, fmt.Errorf("host did not return on SSH within 5 min after reboot — investigate manually (the box may be hung in BIOS/POST or VFIO reset)")
 }
 
+// autoReboot is the --yolo last-resort path when modprobe + PCIe rescan have
+// failed to bring the host's mlx5_core PF back. It reboots via
+// rebootHostAndWait, then confirms parent_iface is live before returning the
+// fresh client the caller adopts.
 func autoReboot(ctx context.Context, c *ssh.Client, cfg ssh.Config, parentIface, tag string, out io.Writer) (*ssh.Client, error) {
 	fmt.Fprintf(out, "%s   still ghost after PCIe rescan; --yolo set, issuing 'sudo reboot' ...\n", tag)
 	newClient, err := rebootHostAndWait(ctx, c, cfg, tag, out)

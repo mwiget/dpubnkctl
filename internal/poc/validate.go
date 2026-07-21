@@ -178,6 +178,9 @@ func ValidateForPhase(p *PoC, repoDir string, minPhase Phase) ValidationResult {
 	// rshim-specific network checks.
 	if rshim {
 		validateTmfifoPool(c, p)
+		if p.Network.ClusterAPIServerAddress != "" {
+			c.warn(PhaseCluster, "network.cluster_apiserver_address is set but ignored under rshim join — the DPU reaches the apiserver over tmfifo and the host keeps its mgmt address; clear it to avoid confusion (a leftover from a VLAN-join config)")
+		}
 	}
 	switch p.Provisioning.DPUInternet {
 	case "", DPUInternetHostNAT, DPUInternetOOB, DPUInternetNone:
