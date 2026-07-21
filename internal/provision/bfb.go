@@ -41,10 +41,14 @@ func EnsureBFB(ctx context.Context, cacheDir, imageName, urlOverride, expectedSH
 		return "", err
 	}
 	if st, err := os.Stat(dst); err == nil && st.Size() > 0 {
-		if err := verifyBFBChecksum(dst, expectedSHA); err != nil {
-			return "", err
+		if verr := verifyBFBChecksum(dst, expectedSHA); verr == nil {
+			return dst, nil
 		}
-		return dst, nil
+		// Cached file is corrupt/stale/mismatched — remove it and fall
+		// through to re-download, matching the fresh-download self-heal
+		// below. Otherwise a bad cache entry would dead-end every run until
+		// the operator manually deleted it.
+		_ = os.Remove(dst)
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return "", err

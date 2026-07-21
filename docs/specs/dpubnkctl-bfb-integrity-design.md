@@ -40,10 +40,10 @@ Automate what the operator does by hand today (curl onto the host), so the BFB n
 2. **Behaviour when `bfb_fetch: host`:**
    - Compute the target host path = `<BFBHostCacheDir>/<BFBImage>`.
    - If it already exists + sha256 matches → reuse (same as `bfb_on_host`, no fetch).
-   - Else SSH-exec a fetch on the host: `curl -fSL --retry 5 -o <path>.part <BFBURL>/<BFBImage> && mv <path>.part <path>`
-     (or `wget`); stream progress to the operator if practical. Respect `BFBURL` override.
+   - Else SSH-exec a fetch on the host: `curl -fSL --retry 5 -o <path>.part <BFBURL>/<BFBImage> && mv <path>.part <path>`;
+     stream progress to the operator if practical. Respect `BFBURL` override.
    - sha256-verify on the host (Part 1 #3). Then proceed exactly as `bfb_on_host` (skip local download + push).
-   - Fail fast with a clear message if the host lacks curl/wget or has no route to `BFBBaseURL`.
+   - Fail fast with a clear message if the host lacks curl or has no route to `BFBBaseURL`. (Implementation is curl-only; no wget fallback.)
 3. **Interaction:** `bfb_fetch: host` and an explicit `bfb_on_host` are mutually exclusive
    (validate warns/errors); `bfb_fetch: push` = today's behaviour. `BFBURL`/`BFBCacheDir` still apply to `push`.
 

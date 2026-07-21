@@ -530,7 +530,9 @@ func verifyRemoteBFBChecksum(ctx context.Context, w io.Writer, client *ssh.Clien
 		return fmt.Errorf("host BFB sha256 failed for %s: %w", plan.hostPath, err)
 	}
 	if !provision.EqualDigest(got, plan.expectedSHA) {
-		return fmt.Errorf("bfb_on_host integrity check failed: got %s, expected %s", got, plan.expectedSHA)
+		// Mode-neutral wording: this helper serves both bfb_on_host and
+		// bfb_fetch:host, so don't name a specific poc.yaml field here.
+		return fmt.Errorf("host BFB integrity check failed for %s: got %s, expected %s", plan.hostPath, got, plan.expectedSHA)
 	}
 	fmt.Fprintf(w, "      host BFB sha256 OK (%s)\n", got[:12])
 	return nil

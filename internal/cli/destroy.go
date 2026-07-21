@@ -556,8 +556,10 @@ func destroyDPUs(ctx context.Context, repo string, p *poc.PoC, out io.Writer, pe
 }
 
 // teardownHostTmfifoNAT disables + removes the host NAT systemd unit and
-// deletes its MASQUERADE rule + ip_forward drop-in on every host with a
-// DPU. Best-effort and idempotent; logs but never returns an error.
+// deletes its MASQUERADE rule on every host with a DPU. (net.ipv4.ip_forward
+// was only set at runtime via `sysctl -w`, not a persistent drop-in, so it is
+// left as-is and resets on the next reboot.) Best-effort and idempotent; logs
+// but never returns an error.
 func teardownHostTmfifoNAT(ctx context.Context, repo string, p *poc.PoC, out io.Writer) {
 	masqSrc := p.Network.TmfifoCIDR
 	if masqSrc == "" {
