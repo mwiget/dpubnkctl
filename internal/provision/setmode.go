@@ -14,9 +14,10 @@ import (
 // IB_VPORT0 / OFFLOAD_ENGINE) are deliberately left untouched; driving them
 // individually is the old approach that needed a BMC cold cycle.
 //
-// INTERNAL_CPU_MODEL + a warm host reboot is sufficient to apply a change
-// in either direction (proven on BF3 hardware). rshim/tmfifo stay up in
-// either mode, so the host can still reach the card for management.
+// Changing INTERNAL_CPU_MODEL only STAGES the new personality (Next Boot);
+// applying it in either direction requires a firmware reset (mlxfwreset) —
+// a warm host reboot is NOT sufficient (see FWResetCmd). rshim/tmfifo stay
+// up in either mode, so the host can still reach the card for management.
 type CPUMode int
 
 const (
@@ -117,11 +118,11 @@ func FWResetCmd(dpuPCI string) string {
 //	INTERNAL_CPU_MODEL   EMBEDDED_CPU(1)   SEPARATED_HOST(0)   SEPARATED_HOST(0)
 //
 // The Current column (index +2 after the param name) is the running value;
-// Next Boot is the staged value that a reboot will apply. We MUST read
+// Next Boot is the staged value that an mlxfwreset will apply. We MUST read
 // Current — a plain substring match would hit the Default column, and the
-// Next Boot column would report a staged change as done before the reboot
+// Next Boot column would report a staged change as done before the mlxfwreset
 // that applies it. Verification after `set` therefore only passes once the
-// reboot has made Current match the target.
+// mlxfwreset has made Current match the target.
 func ReadCPUMode(ctx context.Context, runner discover.Runner, dpuPCI string) (CPUMode, error) {
 	cmd := fmt.Sprintf("sudo -n mlxconfig -d %s -e q 2>/dev/null | grep INTERNAL_CPU_MODEL || true", dpuPCI)
 	r := runner.Run(ctx, cmd)
