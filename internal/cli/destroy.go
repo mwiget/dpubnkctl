@@ -17,6 +17,7 @@ import (
 	"github.com/mwiget/dpubnkctl/internal/cluster"
 	"github.com/mwiget/dpubnkctl/internal/deploy"
 	"github.com/mwiget/dpubnkctl/internal/poc"
+	"github.com/mwiget/dpubnkctl/internal/provision"
 	"github.com/mwiget/dpubnkctl/internal/ssh"
 )
 
@@ -60,6 +61,7 @@ Required gates:
 	cmd.Flags().BoolVar(&f.skipDPUs, "skip-dpus", false, "Skip DPU kubeadm reset")
 	cmd.Flags().BoolVar(&f.skipCluster, "skip-cluster", false, "Skip kubespray reset.yml")
 	cmd.Flags().BoolVar(&f.skipBNKForge, "skip-bnk-forge", false, "Skip the optional bnk-forge unregister even if bnk_forge.enabled=true")
+	cmd.Flags().BoolVar(&f.nicMode, "nic-mode", false, "After teardown, set each DPU back to NIC mode (INTERNAL_CPU_MODEL=0) and apply it with mlxfwreset")
 
 	cmd.AddCommand(newDestroyBNKCmd(), newDestroyDPUsCmd())
 	return cmd
@@ -74,6 +76,7 @@ type destroyAllFlags struct {
 	skipDPUs       bool
 	skipCluster    bool
 	skipBNKForge   bool
+	nicMode        bool
 }
 
 func runDestroyAll(ctx context.Context, out io.Writer, f *destroyAllFlags) error {
@@ -195,9 +198,30 @@ func runDestroyAll(ctx context.Context, out io.Writer, f *destroyAllFlags) error
 		}
 	}
 
+	// NIC-mode revert is the LAST action — the mlxfwreset briefly disrupts
+	// each DPU/host PF, so it comes after the [3/3] cluster reset (kubespray
+	// needs the hosts up). --yolo is already satisfied by requireTwoGates.
+	if f.nicMode {
+		if err := revertDPUsToNIC(ctx, out, repo, p); err != nil {
+			appendDestroyJournal(repo, p.Metadata.Name, "ALL", err.Error())
+			return fmt.Errorf("teardown completed but nic-mode revert failed: %w", err)
+		}
+	}
+
 	appendDestroyJournal(repo, p.Metadata.Name, "ALL", "")
 	fmt.Fprintln(out, "\nDONE.  Re-run `dpubnkctl host network setup` + `cluster up` + `cluster join-dpus` + `deploy ...` to redeploy.")
 	return nil
+}
+
+// revertDPUsToNIC sets every DPU in the PoC back to NIC mode
+// (INTERNAL_CPU_MODEL=0) and applies it with a firmware reset (mlxfwreset per
+// DPU — a warm reboot does not flip the live mode). Shared by `destroy
+// --nic-mode` and `destroy dpus --nic-mode`; --yolo is implied because both
+// paths already passed the requireTwoGates check.
+func revertDPUsToNIC(ctx context.Context, out io.Writer, repo string, p *poc.PoC) error {
+	fmt.Fprintln(out, "\n[nic-mode] Reverting DPUs to NIC mode (INTERNAL_CPU_MODEL=0) + mlxfwreset ...")
+	opts := setModeOptions{apply: true, yolo: true, timeout: 30 * time.Second}
+	return setAllDPUsMode(ctx, out, repo, p, provision.ModeNIC, opts)
 }
 
 // ----------------------------------------------------------------------
@@ -395,6 +419,7 @@ type destroyDPUsFlags struct {
 	yolo           bool
 	confirmCluster string
 	timeout        time.Duration
+	nicMode        bool
 }
 
 func newDestroyDPUsCmd() *cobra.Command {
@@ -413,6 +438,9 @@ func newDestroyDPUsCmd() *cobra.Command {
 Then from the operator side, delete each DPU's Node object so the
 cluster forgets them (a fresh join will register cleanly).
 
+With --nic-mode, after the reset each DPU is set back to NIC mode
+(INTERNAL_CPU_MODEL=0) and applied with a firmware reset (mlxfwreset).
+
 Required gates:
   --yolo                   acknowledge DPU OS writes
   --confirm-cluster NAME   must equal poc.yaml.metadata.name`,
@@ -424,6 +452,7 @@ Required gates:
 	cmd.Flags().BoolVar(&f.yolo, "yolo", false, "Acknowledge DPU OS writes")
 	cmd.Flags().StringVar(&f.confirmCluster, "confirm-cluster", "", "Must equal poc.yaml.metadata.name (typo guard)")
 	cmd.Flags().DurationVar(&f.timeout, "timeout", 5*time.Minute, "Per-DPU SSH+reset wall-clock")
+	cmd.Flags().BoolVar(&f.nicMode, "nic-mode", false, "After reset, set each DPU back to NIC mode (INTERNAL_CPU_MODEL=0) and apply it with mlxfwreset")
 	return cmd
 }
 
@@ -444,6 +473,15 @@ func runDestroyDPUs(ctx context.Context, out io.Writer, f *destroyDPUsFlags) err
 	}
 	if err := destroyDPUs(ctx, repo, p, out, f.timeout); err != nil {
 		return err
+	}
+	// NIC-mode revert runs after the reset (the DPU had to be reachable in
+	// DPU mode over tmfifo to reset it; once in NIC mode it stops being a
+	// k8s node). --yolo is already satisfied by requireTwoGates above.
+	if f.nicMode {
+		if err := revertDPUsToNIC(ctx, out, repo, p); err != nil {
+			appendDestroyJournal(repo, p.Metadata.Name, "DPUS", err.Error())
+			return fmt.Errorf("dpu reset done but nic-mode revert failed: %w", err)
+		}
 	}
 	appendDestroyJournal(repo, p.Metadata.Name, "DPUS", "")
 	fmt.Fprintln(out, "\nDONE.")
