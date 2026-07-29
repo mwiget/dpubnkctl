@@ -61,7 +61,15 @@ traffic (apiserver, kubelet, Calico tunnels, east-west pod-to-pod)
 traverses once cluster up runs with the matching inventory.
 
 No bond on the host — bonding is handled inside the DPU's br-lag.
-The host attaches all VLAN sub-ifs to a single PF (data_plane.parent_iface).
+
+VLAN sub-ifs attach to data_plane.parent_iface by default. A LAG DPU has
+one bridge (br-lag) fed by pf0hpf, so one host PF carries everything.
+
+A NON-LAG DPU has two bridges — sf-external (p0/pf0hpf) and sf-internal
+(p1/pf1hpf) — and the eswitch delivers all host-PF0 traffic to pf0hpf
+regardless of VLAN tag. Each VLAN must therefore sit on the host PF
+matching its DPU uplink; set data_plane.vlans[].parent_iface to override
+the default per VLAN (e.g. internal on enp13s0f1np1). See AGENTS.md #33.
 
 Required gates:
   --yolo                   acknowledge that this rewrites netplan
@@ -147,7 +155,7 @@ func setupOneHost(ctx context.Context, out io.Writer, repo string, h *poc.Host, 
 		defMTU = 9000
 	}
 
-	netplan := renderHostNetplan(dp.ParentIface, dp.VLANs, defMTU)
+	netplan := renderHostNetplan(dp, defMTU)
 	fmt.Fprintf(out, "%s rendered netplan:\n%s\n", tag, indent(netplan, "  "))
 
 	if dryRun {
@@ -182,14 +190,24 @@ func setupOneHost(ctx context.Context, out io.Writer, repo string, h *poc.Host, 
 	// SSH config + a new client after the host comes back, so pass them
 	// in. Non-yolo runs keep the historical "reboot manually" error so
 	// an interactive operator isn't surprised by a sudden 5-min reboot.
-	if recovered, err := recoverGhostPF(ctx, c, cfg, dp.ParentIface, tag, yolo, out); err != nil {
-		return err
-	} else if recovered != nil {
-		// Reconnect happened; close the old client (defer above runs at
-		// function exit, but we now have a fresh client for everything
-		// below) and adopt the new one.
-		c.Close()
-		c = recovered
+	//
+	// Every distinct parent PF is checked, not just the block default: a
+	// non-LAG host carries VLANs on two PFs (one per DPU bridge) and PF1
+	// can be ghosted while PF0 is live. Recovering only PF0 would leave
+	// netplan to fail on the PF1 VLANs with the opaque RTNETLINK error
+	// this pre-flight exists to prevent.
+	for _, parent := range dp.ParentIfaces() {
+		recovered, err := recoverGhostPF(ctx, c, cfg, parent, tag, yolo, out)
+		if err != nil {
+			return err
+		}
+		if recovered != nil {
+			// Reconnect happened; close the old client (defer above runs at
+			// function exit, but we now have a fresh client for everything
+			// below) and adopt the new one.
+			c.Close()
+			c = recovered
+		}
 	}
 
 	const remotePath = "/etc/netplan/70-dpubnkctl-dataplane.yaml"
@@ -231,7 +249,7 @@ func setupOneHost(ctx context.Context, out io.Writer, repo string, h *poc.Host, 
 		}
 		gotMTU := strings.TrimSpace(mr.Stdout)
 		if gotMTU != fmt.Sprintf("%d", wantMTU) {
-			return fmt.Errorf("verify: %s MTU is %s, want %d — parent_iface %s likely smaller than %d (kernel clamps VLAN children); check for an /etc/netplan/*.yaml that sets a smaller MTU on the parent", port, gotMTU, wantMTU, dp.ParentIface, wantMTU)
+			return fmt.Errorf("verify: %s MTU is %s, want %d — parent_iface %s likely smaller than %d (kernel clamps VLAN children); check for an /etc/netplan/*.yaml that sets a smaller MTU on the parent", port, gotMTU, wantMTU, dp.ParentFor(v), wantMTU)
 		}
 	}
 	return nil
@@ -414,45 +432,62 @@ func autoReboot(ctx context.Context, c *ssh.Client, cfg ssh.Config, parentIface,
 	return nil, fmt.Errorf("parent iface %s still in ghost state after reboot — manual diagnosis required (lspci -d 15b3: on the host, check dmesg for mlx5 probe errors)", parentIface)
 }
 
-func renderHostNetplan(parent string, vlans []poc.HostDataPlaneVLAN, defaultMTU int) string {
+// renderHostNetplan produces netplan YAML with one VLAN sub-interface per
+// HostDataPlaneVLAN. Sub-if names use Role+Tag (e.g. "internal41") so they
+// line up 1:1 with the OVS port names on the DPU side.
+//
+// Each VLAN hangs off dp.ParentFor(v) — the block-level parent_iface by
+// default, or the VLAN's own override. Non-LAG DPUs need the override:
+// their two OVS bridges are fed by two separate host PFs, and a VLAN
+// pinned to the wrong PF is delivered to the wrong bridge (AGENTS.md
+// #30). Every distinct parent gets its own `ethernets:` stanza.
+func renderHostNetplan(dp *poc.HostDataPlane, defaultMTU int) string {
+	vlans := dp.VLANs
+	mtuOf := func(v poc.HostDataPlaneVLAN) int {
+		if v.MTU == 0 {
+			return defaultMTU
+		}
+		return v.MTU
+	}
+
 	var b strings.Builder
 	b.WriteString("# Managed by dpubnkctl — DO NOT EDIT.\n")
 	b.WriteString("# Data-plane VLAN sub-interfaces for k8s east-west + control-plane traffic.\n")
 	b.WriteString("network:\n")
 	b.WriteString("  version: 2\n")
 	b.WriteString("  renderer: networkd\n")
-	// Bump the parent PF's MTU to match the VLAN children. Without this,
-	// a host whose parent_iface comes up at MTU 1500 (cloud-init default
-	// on a MAAS-installed Ubuntu 24.04 host, observed on the ailab
+	// Bump each parent PF's MTU to match its largest VLAN child. Without
+	// this, a host whose parent_iface comes up at MTU 1500 (cloud-init
+	// default on a MAAS-installed Ubuntu 24.04 host, observed on the ailab
 	// single-node PoC) fails to create VLAN sub-interfaces with
 	// `enp3s0f0np0: Could not create stacked netdev: Invalid argument` —
 	// the kernel rejects a child MTU larger than the parent. Netplan
 	// deep-merges ethernets definitions across files (later filename
 	// wins per-property), so this overrides any earlier 50-cloud-init
 	// value for `mtu:` without disturbing `match:` / `set-name:`.
-	parentMTU := defaultMTU
-	for _, v := range vlans {
-		mtu := v.MTU
-		if mtu == 0 {
-			mtu = defaultMTU
-		}
-		if mtu > parentMTU {
-			parentMTU = mtu
-		}
-	}
+	//
+	// The max is taken per-parent, not fleet-wide: with two PFs carrying
+	// different VLANs there's no reason to raise PF1 to PF0's MTU.
 	b.WriteString("  ethernets:\n")
-	fmt.Fprintf(&b, "    %s:\n", parent)
-	fmt.Fprintf(&b, "      mtu: %d\n", parentMTU)
+	for _, parent := range dp.ParentIfaces() {
+		parentMTU := defaultMTU
+		for _, v := range vlans {
+			if dp.ParentFor(v) != parent {
+				continue
+			}
+			if m := mtuOf(v); m > parentMTU {
+				parentMTU = m
+			}
+		}
+		fmt.Fprintf(&b, "    %s:\n", parent)
+		fmt.Fprintf(&b, "      mtu: %d\n", parentMTU)
+	}
 	b.WriteString("  vlans:\n")
 	for _, v := range vlans {
-		mtu := v.MTU
-		if mtu == 0 {
-			mtu = defaultMTU
-		}
 		fmt.Fprintf(&b, "    %s:\n", v.PortName())
 		fmt.Fprintf(&b, "      id: %d\n", v.Tag)
-		fmt.Fprintf(&b, "      link: %s\n", parent)
-		fmt.Fprintf(&b, "      mtu: %d\n", mtu)
+		fmt.Fprintf(&b, "      link: %s\n", dp.ParentFor(v))
+		fmt.Fprintf(&b, "      mtu: %d\n", mtuOf(v))
 		fmt.Fprintf(&b, "      addresses:\n        - %s\n", v.IP)
 	}
 	return b.String()

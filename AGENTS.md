@@ -240,7 +240,84 @@ the new BFB. Two surprises worth knowing:
   cannot roll back the firmware without explicit
   `mlxfwmanager --downgrade`.
 
+### Non-LAG topology
+
+33. **Non-LAG needs one host PF per DPU bridge — VLAN tags do NOT steer between them.**
+    A non-LAG DPU runs two OVS bridges: `sf-external` (uplink `p0`, host-facing
+    port `pf0hpf`) and `sf-internal` (uplink `p1`, `pf1hpf`). It is tempting to
+    put both host VLAN sub-interfaces on one PF — `external40@enp13s0f0np0` and
+    `internal50@enp13s0f0np0` — and let the tag pick the bridge. It does not.
+    **The eswitch delivers everything arriving on host PF0 to `pf0hpf`
+    regardless of VLAN tag**, so VLAN 50 lands on `sf-external` and leaves via
+    `p0` (wrong uplink) or is dropped. `sf-internal` never sees host traffic at
+    all.
+
+    The cruel part is that every local check passes: the sub-interface exists,
+    carries its IP, and has the right MTU. `host network setup` reports success.
+    Only end-to-end traffic fails, which is an expensive way to find out.
+
+    Fix: give each uplink its own host PF via
+    `hosts[].data_plane.vlans[].parent_iface`, which overrides the block-level
+    `parent_iface` per VLAN:
+
+    ```yaml
+    data_plane:
+      parent_iface: enp13s0f0np0        # default → PF0 → pf0hpf → sf-external
+      vlans:
+        - { role: external, tag: 40, ip: 10.10.40.66/24 }
+        - { role: internal, tag: 50, ip: 10.10.50.66/24,
+            parent_iface: enp13s0f1np1 }   # PF1 → pf1hpf → sf-internal
+    ```
+
+    `validate` now errors when a non-LAG DPU spans both uplinks but the matching
+    host VLANs resolve to the same PF. LAG DPUs are exempt — one bridge
+    (`br-lag`), one host PF (`pf0hpf`) is correct there. Found on the Tokyo lab
+    (`tky-bnk-dpu-host-2`, DOCA 3.2.0 / BNK 2.3.1), 2026-07-29, issue #18. That
+    lab confirmed the working shape end-to-end (HTTP 200 through TMM) with
+    external on PF0 and internal on PF1.
+
 ### DPU provisioning + join
+
+34. **Not every BFB ships containerd — and the distro package ships it with CRI disabled.**
+    `bf.conf`'s cloud-init stops containerd as a "clean slate", so
+    `InstallKubeBinaries` has always restarted it before `kubeadm join`. That
+    assumed containerd was there at all. DOCA 3.2.0 / Ubuntu 24.04 was observed
+    **without** it (Tokyo lab, issue #18): the run failed late, after the whole
+    apt install, with a bare `containerd.sock not found` from kubeadm preflight
+    — which reads like a socket-path problem, not a missing package.
+
+    `InstallKubeBinaries` now installs containerd when `systemctl cat
+    containerd.service` finds no unit. When it installs it, it also generates
+    the config, because **Debian/Ubuntu's `containerd` package ships a
+    `config.toml` containing `disabled_plugins = ["cri"]`** — that yields a
+    *running* containerd whose socket serves nothing kubeadm can use, i.e. the
+    same error one layer deeper. A pre-existing (BSP-provided) config is never
+    clobbered; it is only checked for a disabled CRI plugin and rejected loudly.
+
+    The join also now polls for `/run/containerd/containerd.sock` for up to 30s
+    instead of trusting `systemctl enable --now` returning 0: systemd reports
+    the unit active as soon as the process starts, and kubeadm's preflight can
+    race the socket's appearance.
+
+35. **DPU hostnames must be unique across the whole PoC.**
+    `DPU.Hostname` becomes `kubeadm join --node-name`. Two DPUs sharing a name
+    means the second join **takes over the first one's Node object** instead of
+    registering its own — no error anywhere, the cluster is just silently one
+    node short, and the losing DPU keeps a kubelet fighting for the same
+    registration. It also collides in `artifacts/` (flash logs are keyed by
+    hostname). The `discover wizard` used to default every DPU on a host to
+    `<host>-bf3`, so any multi-DPU host hit this (Tokyo lab: two BF3s, both
+    `dpu-server-2-bf3`, issue #18). Single-DPU hosts still get `<host>-bf3`;
+    multi-DPU hosts now get `<host>-bf3-1`, `<host>-bf3-2`, and `validate`
+    errors on any duplicate.
+
+    Related, still open for multi-DPU hosts: `tmfifo_ip` is defaulted to
+    `192.168.100.2/30` for *every* DPU on a host, which collides the same way
+    (the host would need a distinct /30 per tmfifo link). `validate` on this
+    branch only accepts the rshim driver's own /30, so a second DPU can't be
+    addressed distinctly yet — PR #17's `network.tmfifo_cidr` pool is the
+    mechanism that fixes it, and it currently rejects multi-DPU-per-host under
+    `join_transport: rshim` outright.
 
 7a. **DPU first-boot may come up with no sshd host keys.** The BFB image ships `/var/lib/cloud/instances/nocloud/` pre-stamped from NVIDIA's image build, so cloud-init's `cc_ssh` module sees "Instance link already exists, not recreating it" and skips host-key generation. The fallback (Ubuntu's `ssh-keygen.service` or sshd's internal auto-regen) is racy — sometimes fires, sometimes doesn't, depending on first-boot ordering. When it doesn't, ssh.service restart-loops with `no hostkeys available -- exiting`. Symptom: dpubnkctl provision dpu's `[7/7] Waiting for second DPU boot` times out because sshd never starts. Fixed by `bfb_modify_os` running `chroot /mnt /usr/bin/ssh-keygen -A` so keys are baked into eMMC at flash time (commit `f9d3a59` or similar). Pre-fix DPUs: run `ssh-keygen -A` via rshim serial console (login as ubuntu, password at `keys/dpu_password.txt`).
 

@@ -263,10 +263,38 @@ func ValidateForPhase(p *PoC, repoDir string, minPhase Phase) ValidationResult {
 			for k, v := range h.DataPlane.VLANs {
 				validateHostVLAN(c, v, fmt.Sprintf("%s.data_plane.vlans[%d]", hctx, k))
 			}
+			validateNonLAGUplinkFanout(c, &p.Hosts[i], hctx)
 		} else if len(h.DPUs) > 0 {
 			c.warn(PhaseCluster, "%s has DPUs but no data_plane block — host won't have a VLAN sub-interface to talk to the fabric (`dpubnkctl host network setup` will skip it)", hctx)
 		}
 	}
+	// DPU hostnames must be unique across the whole PoC: DPU.Hostname is
+	// passed to `kubeadm join --node-name`, and two DPUs sharing a name
+	// means the second join silently takes over the first one's Node
+	// object — the cluster ends up one node short with no error anywhere,
+	// and whichever DPU lost the race keeps running a kubelet that fights
+	// for the same registration. It also collides in artifacts/ (per-DPU
+	// flash logs are keyed by hostname).
+	//
+	// Fleet-wide, not per-host: DPUs on different hosts are still distinct
+	// k8s nodes. Hit on the Tokyo lab, where both BF3s on one host were
+	// defaulted to <host>-bf3 (issue #18).
+	seenDPUHostname := map[string]string{} // hostname -> first owner's ctx
+	for i := range p.Hosts {
+		for j := range p.Hosts[i].DPUs {
+			name := p.Hosts[i].DPUs[j].Hostname
+			if name == "" {
+				continue // already reported by validateDPU
+			}
+			dctx := fmt.Sprintf("hosts[%d:%s].dpus[%d:%s]", i, p.Hosts[i].Name, j, p.Hosts[i].DPUs[j].PCI)
+			if first, dup := seenDPUHostname[name]; dup {
+				c.err(PhaseProvision, "%s.hostname %q is already used by %s — DPU hostnames become kubeadm --node-name values and must be unique across the PoC (two DPUs on one host need distinct names, e.g. %s-1 / %s-2)", dctx, name, first, name, name)
+				continue
+			}
+			seenDPUHostname[name] = dctx
+		}
+	}
+
 	if len(p.Hosts) > 0 && cps == 0 {
 		c.err(PhaseCluster, "no control-plane hosts (at least one host needs role: control-plane or both)")
 	}
@@ -593,6 +621,82 @@ func validateHostVLAN(c *checker, v HostDataPlaneVLAN, ctx string) {
 	}
 	if name := v.PortName(); len(name) > 15 {
 		c.err(PhaseCluster, "%s derived port name %q exceeds 15 chars (Linux IFNAMSIZ); shorten role", ctx, name)
+	}
+	// Same shell-safety argument as data_plane.parent_iface: the value
+	// reaches `ethtool -i %s` and `ip -br addr show dev %s` over SSH.
+	if v.ParentIface != "" && !safeIfaceRe.MatchString(v.ParentIface) {
+		c.err(PhaseCluster, "%s.parent_iface %q must match %s (Linux IFNAMSIZ + shell-safe charset)", ctx, v.ParentIface, safeIfaceRe.String())
+	}
+}
+
+// validateNonLAGUplinkFanout catches the non-LAG single-PF trap.
+//
+// A non-LAG DPU runs two OVS bridges — sf-external (uplink p0, fed by
+// pf0hpf) and sf-internal (uplink p1, fed by pf1hpf). The eswitch hands
+// everything arriving on host PF0 to pf0hpf no matter what VLAN tag it
+// carries, so VLANs stacked on one host PF all land on sf-external. The
+// p1 VLAN then leaves via p0 (wrong uplink, wrong switch port) or is
+// dropped — while every local check passes: the sub-interface exists,
+// carries its IP, and has the right MTU. Only end-to-end traffic fails,
+// which is an expensive way to find out.
+//
+// So: for each host, group its DPU VLAN roles by uplink. If a non-LAG
+// DPU uses both uplinks, the host VLANs matching those roles must resolve
+// to *different* parent PFs. Reported at cluster phase — that's when
+// `host network setup` renders the netplan.
+//
+// Reported once per host. LAG DPUs are exempt (one bridge, one host PF
+// is correct there). Found on the Tokyo lab, tky-bnk-dpu-host-2, 2026-07-29
+// (issue #18). See AGENTS.md #33.
+func validateNonLAGUplinkFanout(c *checker, h *Host, hctx string) {
+	if h.DataPlane == nil || len(h.DataPlane.VLANs) == 0 {
+		return
+	}
+	for j := range h.DPUs {
+		d := &h.DPUs[j]
+		if d.LAG || len(d.VLANs) == 0 {
+			continue
+		}
+		// role -> host PF, for the roles this DPU puts on each uplink.
+		parentByUplink := map[string]string{}
+		roleByUplink := map[string]string{}
+		conflict := false
+		for _, dv := range d.VLANs {
+			uplink := dv.Uplink
+			if uplink == "" {
+				uplink = "p0" // template default: anything not p1 rides sf-external
+			}
+			hv := h.VLANByRole(dv.Role)
+			if hv == nil {
+				continue // host doesn't carry this VLAN; nothing to fan out
+			}
+			parent := h.DataPlane.ParentFor(*hv)
+			if prev, ok := parentByUplink[uplink]; ok && prev != parent {
+				// Two host VLANs on the same DPU uplink but different host
+				// PFs — legal (both reach the same bridge), just unusual.
+				continue
+			}
+			parentByUplink[uplink] = parent
+			roleByUplink[uplink] = dv.Role
+		}
+		if len(parentByUplink) < 2 {
+			continue // only one uplink in play — a single host PF is fine
+		}
+		// Any two uplinks sharing a parent PF is the bug.
+		seen := map[string]string{} // parent -> uplink that claimed it
+		for uplink, parent := range parentByUplink {
+			if other, dup := seen[parent]; dup {
+				conflict = true
+				c.err(PhaseCluster,
+					"%s.dpus[%d:%s] is non-LAG and uses uplinks %s + %s (two OVS bridges: sf-external/pf0hpf and sf-internal/pf1hpf), but host VLANs %q and %q both hang off parent_iface %q — the DPU eswitch delivers ALL traffic from one host PF to that PF's bridge regardless of VLAN tag, so the %s VLAN never reaches its bridge (the sub-interface still comes up with its IP and MTU, so only end-to-end traffic fails). Give each uplink its own host PF via data_plane.vlans[].parent_iface (e.g. the %s VLAN on the host's PF1), or put both VLANs on one uplink",
+					hctx, j, d.PCI, other, uplink, roleByUplink[other], roleByUplink[uplink], parent, roleByUplink[uplink], roleByUplink[uplink])
+				break
+			}
+			seen[parent] = uplink
+		}
+		if conflict {
+			return // one report per host is enough
+		}
 	}
 }
 

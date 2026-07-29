@@ -3,6 +3,8 @@ package cli
 import (
 	"strings"
 	"testing"
+
+	"github.com/mwiget/dpubnkctl/internal/poc"
 )
 
 func TestSuggestRole(t *testing.T) {
@@ -81,5 +83,65 @@ func TestSuggestRole(t *testing.T) {
 				t.Errorf("rationale = %q, want substring %q", rationale, c.wantInRation)
 			}
 		})
+	}
+}
+
+// TestFillDPUWizardDefaults_MultiDPUHostnamesUnique — issue #18, Tokyo
+// lab: a host with two BF3s had both DPUs defaulted to <host>-bf3, so
+// the second kubeadm join would take over the first's Node object.
+func TestFillDPUWizardDefaults_MultiDPUHostnamesUnique(t *testing.T) {
+	p := &poc.PoC{Hosts: []poc.Host{{
+		Name: "dpu-server-2",
+		SSH:  poc.SSH{Address: "10.0.0.5"},
+		DPUs: []poc.DPU{{PCI: "0000:03:00.0"}, {PCI: "0000:83:00.0"}},
+	}}}
+	fillDPUWizardDefaults(p, "10.0.0.5", "dpu-server-2")
+
+	got := []string{p.Hosts[0].DPUs[0].Hostname, p.Hosts[0].DPUs[1].Hostname}
+	if got[0] == got[1] {
+		t.Fatalf("both DPUs got the same hostname %q", got[0])
+	}
+	for i, want := range []string{"dpu-server-2-bf3-1", "dpu-server-2-bf3-2"} {
+		if got[i] != want {
+			t.Errorf("DPU %d hostname = %q, want %q", i, got[i], want)
+		}
+	}
+}
+
+// TestFillDPUWizardDefaults_SingleDPUKeepsHistoricalName — the one-DPU
+// host must keep <host>-bf3. That name is in every existing PoC and
+// example; suffixing it would rename nodes under running clusters on
+// the next wizard run.
+func TestFillDPUWizardDefaults_SingleDPUKeepsHistoricalName(t *testing.T) {
+	p := &poc.PoC{Hosts: []poc.Host{{
+		Name: "worker1",
+		SSH:  poc.SSH{Address: "10.0.0.6"},
+		DPUs: []poc.DPU{{PCI: "0000:03:00.0"}},
+	}}}
+	fillDPUWizardDefaults(p, "10.0.0.6", "worker1")
+	if got := p.Hosts[0].DPUs[0].Hostname; got != "worker1-bf3" {
+		t.Errorf("single-DPU hostname = %q, want %q", got, "worker1-bf3")
+	}
+}
+
+// TestFillDPUWizardDefaults_DoesNotClobberOrCollide — an operator-set
+// name is preserved, and the generated name for its neighbour must not
+// collide with it.
+func TestFillDPUWizardDefaults_DoesNotClobberOrCollide(t *testing.T) {
+	p := &poc.PoC{Hosts: []poc.Host{{
+		Name: "host9",
+		SSH:  poc.SSH{Address: "10.0.0.7"},
+		DPUs: []poc.DPU{
+			{PCI: "0000:03:00.0", Hostname: "host9-bf3-1"}, // operator's choice
+			{PCI: "0000:83:00.0"},                          // to be filled
+		},
+	}}}
+	fillDPUWizardDefaults(p, "10.0.0.7", "host9")
+
+	if got := p.Hosts[0].DPUs[0].Hostname; got != "host9-bf3-1" {
+		t.Errorf("operator-set hostname was clobbered: %q", got)
+	}
+	if got := p.Hosts[0].DPUs[1].Hostname; got == "host9-bf3-1" {
+		t.Errorf("generated hostname collided with the operator's: %q", got)
 	}
 }

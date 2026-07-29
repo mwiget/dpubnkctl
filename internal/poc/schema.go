@@ -162,13 +162,24 @@ func (n Network) IsRshim() bool { return n.JoinTransport == JoinTransportRshim }
 
 // HostDataPlane describes the host's data-plane VLAN sub-interfaces.
 // dpubnkctl writes a netplan that adds one VLAN sub-interface per entry
-// onto the host's single data-plane PF (ParentIface). VLAN sub-if names
-// follow <Role><Tag> (e.g. "external40", "internal41") and align with
-// the OVS port names on the DPU side so the same VLAN is identifiable
-// end-to-end. No bond on the host — bonding is handled by the DPU when
-// the DPU runs in LAG mode.
+// onto a host data-plane PF. VLAN sub-if names follow <Role><Tag> (e.g.
+// "external40", "internal41") and align with the OVS port names on the
+// DPU side so the same VLAN is identifiable end-to-end. No bond on the
+// host — bonding is handled by the DPU when the DPU runs in LAG mode.
+//
+// ParentIface is the default PF for every VLAN. In LAG mode that single
+// PF is correct: the DPU has one bridge (br-lag) and pf0hpf is its only
+// host-facing port, so all host VLANs ride PF0.
+//
+// In NON-LAG mode the DPU has *two* bridges — sf-external (p0, pf0hpf)
+// and sf-internal (p1, pf1hpf) — and the eswitch delivers everything
+// arriving on host PF0 to pf0hpf regardless of VLAN tag. Stacking both
+// VLANs on one host PF therefore strands the sf-internal VLAN: it
+// reaches sf-external and leaves via p0, never p1. Each VLAN must hang
+// off the host PF that corresponds to its DPU uplink, which is what the
+// per-VLAN ParentIface override below is for. See AGENTS.md #33.
 type HostDataPlane struct {
-	ParentIface string              `yaml:"parent_iface"` // e.g. "ens16f0np0"
+	ParentIface string              `yaml:"parent_iface"` // default PF for VLANs that don't override it, e.g. "ens16f0np0"
 	MTU         int                 `yaml:"mtu,omitempty"` // default for sub-ifs; falls back to network.dpu_mtu
 	VLANs       []HostDataPlaneVLAN `yaml:"vlans"`         // one entry per VLAN this host needs an IP on
 }
@@ -184,6 +195,55 @@ type HostDataPlaneVLAN struct {
 	Tag  int    `yaml:"tag"`  // 802.1q VLAN id
 	IP   string `yaml:"ip"`   // CIDR, e.g. "10.10.41.66/24"
 	MTU  int    `yaml:"mtu,omitempty"`
+
+	// ParentIface overrides HostDataPlane.ParentIface for this VLAN
+	// only. Empty (the common case) inherits the block default.
+	//
+	// Set this on non-LAG DPUs, where the host needs one PF per DPU
+	// bridge: the VLAN whose DPU counterpart has `uplink: p1` must sit
+	// on the host's PF1 (e.g. enp13s0f1np1), because PF0 traffic lands
+	// on pf0hpf/sf-external no matter what tag it carries. Validate
+	// cross-checks this against the DPU's uplinks and errors when a
+	// non-LAG host multiplexes both uplinks onto one PF.
+	ParentIface string `yaml:"parent_iface,omitempty"`
+}
+
+// ParentFor returns the PF that VLAN v's sub-interface hangs off: the
+// per-VLAN override when set, otherwise the block-level default.
+func (dp *HostDataPlane) ParentFor(v HostDataPlaneVLAN) string {
+	if dp == nil {
+		return v.ParentIface
+	}
+	if v.ParentIface != "" {
+		return v.ParentIface
+	}
+	return dp.ParentIface
+}
+
+// ParentIfaces returns every distinct PF the host's VLANs hang off, in
+// first-seen order. Callers that must touch each parent once (netplan
+// `ethernets:` stanzas, the post-flash ghost-PF recovery) iterate this
+// rather than assuming a single PF.
+func (dp *HostDataPlane) ParentIfaces() []string {
+	if dp == nil {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, v := range dp.VLANs {
+		p := dp.ParentFor(v)
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	// A data_plane block with no VLANs still names a parent worth
+	// checking for ghost state.
+	if len(out) == 0 && dp.ParentIface != "" {
+		out = append(out, dp.ParentIface)
+	}
+	return out
 }
 
 // PortName returns the netplan VLAN sub-interface name (e.g. "internal41").
