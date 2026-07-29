@@ -440,7 +440,7 @@ func autoReboot(ctx context.Context, c *ssh.Client, cfg ssh.Config, parentIface,
 // default, or the VLAN's own override. Non-LAG DPUs need the override:
 // their two OVS bridges are fed by two separate host PFs, and a VLAN
 // pinned to the wrong PF is delivered to the wrong bridge (AGENTS.md
-// #30). Every distinct parent gets its own `ethernets:` stanza.
+// #33). Every distinct parent gets its own `ethernets:` stanza.
 func renderHostNetplan(dp *poc.HostDataPlane, defaultMTU int) string {
 	vlans := dp.VLANs
 	mtuOf := func(v poc.HostDataPlaneVLAN) int {

@@ -269,8 +269,21 @@ the new BFB. Two surprises worth knowing:
             parent_iface: enp13s0f1np1 }   # PF1 → pf1hpf → sf-internal
     ```
 
-    `validate` now errors when a non-LAG DPU spans both uplinks but the matching
-    host VLANs resolve to the same PF. LAG DPUs are exempt — one bridge
+    The underlying rule is a **bijection**: host PF ↔ `pfNhpf` ↔ bridge. PF0
+    reaches `sf-external` and nothing else; PF1 reaches `sf-internal` and
+    nothing else. So there are two ways to break it, and `validate` errors on
+    both:
+
+    - **One host PF serving two uplinks** — the VLAN whose uplink doesn't match
+      that PF's bridge is stranded. (The Tokyo failure.)
+    - **One uplink served by two host PFs** — since each PF reaches exactly one
+      bridge, one of those VLANs is on the wrong bridge. Do not wave this
+      through as "unusual but harmless": an early version of the check did
+      exactly that, and the exemption let a third VLAN pinned to the wrong PF
+      hide behind a correctly-mapped pair, silently passing the shape the check
+      exists to catch.
+
+    Check per VLAN, not per uplink. LAG DPUs are exempt — one bridge
     (`br-lag`), one host PF (`pf0hpf`) is correct there. Found on the Tokyo lab
     (`tky-bnk-dpu-host-2`, DOCA 3.2.0 / BNK 2.3.1), 2026-07-29, issue #18. That
     lab confirmed the working shape end-to-end (HTTP 200 through TMM) with

@@ -145,3 +145,44 @@ func TestFillDPUWizardDefaults_DoesNotClobberOrCollide(t *testing.T) {
 		t.Errorf("generated hostname collided with the operator's: %q", got)
 	}
 }
+
+// TestDefaultDPUHostname_StaysWithinRFC1123 — Host.Name may legally be
+// up to 63 chars, and appending "-bf3-2" used to push the generated DPU
+// hostname past the limit poc.validate enforces. The wizard would then
+// write a poc.yaml its own validator rejects, with the error pointing at
+// a field the operator never set.
+func TestDefaultDPUHostname_StaysWithinRFC1123(t *testing.T) {
+	for _, hostLen := range []int{10, 55, 58, 63} {
+		host := strings.Repeat("a", hostLen)
+		for _, total := range []int{1, 2} {
+			for idx := 0; idx < total; idx++ {
+				got := defaultDPUHostname(host, idx, total, map[string]bool{})
+				if len(got) > 63 {
+					t.Errorf("hostLen=%d total=%d idx=%d: generated %d-char name %q exceeds the 63-char RFC 1123 limit",
+						hostLen, total, idx, len(got), got)
+				}
+				if strings.HasSuffix(got, "-") {
+					t.Errorf("hostLen=%d: generated %q ends in '-', not a valid RFC 1123 label", hostLen, got)
+				}
+			}
+		}
+	}
+}
+
+// Long host names must still yield DISTINCT names per DPU after
+// truncation — clamping mustn't collapse two DPUs onto one name, which
+// is the very collision this whole change exists to prevent.
+func TestDefaultDPUHostname_LongNamesStayUnique(t *testing.T) {
+	host := strings.Repeat("a", 63)
+	taken := map[string]bool{}
+	seen := map[string]bool{}
+	for idx := 0; idx < 3; idx++ {
+		got := defaultDPUHostname(host, idx, 3, taken)
+		if seen[got] {
+			t.Fatalf("idx=%d produced duplicate name %q", idx, got)
+		}
+		seen[got] = true
+		taken[got] = true
+	}
+	t.Logf("distinct truncated names: %v", len(seen))
+}

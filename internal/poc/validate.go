@@ -629,73 +629,95 @@ func validateHostVLAN(c *checker, v HostDataPlaneVLAN, ctx string) {
 	}
 }
 
-// validateNonLAGUplinkFanout catches the non-LAG single-PF trap.
+// bridgeForUplink names the OVS bridge a non-LAG uplink feeds. Mirrors
+// the bf.conf template, which routes anything that isn't p1 to
+// sf-external. Used only for error text.
+func bridgeForUplink(uplink string) string {
+	if uplink == "p1" {
+		return "sf-internal"
+	}
+	return "sf-external"
+}
+
+// validateNonLAGUplinkFanout enforces the host-PF ↔ DPU-uplink bijection
+// on non-LAG DPUs.
 //
 // A non-LAG DPU runs two OVS bridges — sf-external (uplink p0, fed by
-// pf0hpf) and sf-internal (uplink p1, fed by pf1hpf). The eswitch hands
-// everything arriving on host PF0 to pf0hpf no matter what VLAN tag it
-// carries, so VLANs stacked on one host PF all land on sf-external. The
-// p1 VLAN then leaves via p0 (wrong uplink, wrong switch port) or is
-// dropped — while every local check passes: the sub-interface exists,
-// carries its IP, and has the right MTU. Only end-to-end traffic fails,
-// which is an expensive way to find out.
+// pf0hpf) and sf-internal (uplink p1, fed by pf1hpf). The host side of
+// that is a BIJECTION: host PF0 reaches sf-external and nothing else,
+// host PF1 reaches sf-internal and nothing else. The eswitch delivers
+// everything arriving on a host PF to that PF's representor **regardless
+// of VLAN tag** — tags do not steer between bridges.
 //
-// So: for each host, group its DPU VLAN roles by uplink. If a non-LAG
-// DPU uses both uplinks, the host VLANs matching those roles must resolve
-// to *different* parent PFs. Reported at cluster phase — that's when
-// `host network setup` renders the netplan.
+// So there are two ways to break it, and both are real bugs:
 //
-// Reported once per host. LAG DPUs are exempt (one bridge, one host PF
-// is correct there). Found on the Tokyo lab, tky-bnk-dpu-host-2, 2026-07-29
-// (issue #18). See AGENTS.md #33.
+//	A. One host PF serves two uplinks. The VLAN whose uplink doesn't
+//	   match that PF's bridge is stranded — it leaves via the wrong
+//	   uplink or is dropped. This is the reported Tokyo-lab failure.
+//	B. One uplink is served by two host PFs. Since each PF reaches
+//	   exactly one bridge, one of those VLANs is wired to the wrong
+//	   bridge. Same defect, seen from the other side.
+//
+// Both are invisible locally: the sub-interface comes up, carries its
+// IP, and has the right MTU, so `host network setup` reports success.
+// Only end-to-end traffic fails, which is an expensive way to find out.
+//
+// Checked per VLAN, not per uplink. An earlier version kept one
+// representative parent per uplink and skipped VLANs that disagreed with
+// it, which let a third VLAN pinned to the wrong PF hide behind a
+// correctly-mapped pair — the check silently passed the exact shape it
+// exists to catch. Iterating d.VLANs in declaration order also keeps the
+// reported pair stable run to run (ranging a map made the error text
+// flip between runs).
+//
+// LAG DPUs are exempt: one bridge, one host PF is correct there.
+// Reported once per host, at cluster phase — that's when
+// `host network setup` renders the netplan. Tokyo lab
+// tky-bnk-dpu-host-2, 2026-07-29 (issue #18). See AGENTS.md #33.
 func validateNonLAGUplinkFanout(c *checker, h *Host, hctx string) {
 	if h.DataPlane == nil || len(h.DataPlane.VLANs) == 0 {
 		return
 	}
+	type claim struct{ role, uplink, parent string }
+
 	for j := range h.DPUs {
 		d := &h.DPUs[j]
 		if d.LAG || len(d.VLANs) == 0 {
 			continue
 		}
-		// role -> host PF, for the roles this DPU puts on each uplink.
-		parentByUplink := map[string]string{}
-		roleByUplink := map[string]string{}
-		conflict := false
+		dctx := fmt.Sprintf("%s.dpus[%d:%s]", hctx, j, d.PCI)
+		byParent := map[string]claim{} // host PF   -> first VLAN that claimed it
+		byUplink := map[string]claim{} // DPU uplink -> first VLAN that claimed it
+
 		for _, dv := range d.VLANs {
 			uplink := dv.Uplink
 			if uplink == "" {
-				uplink = "p0" // template default: anything not p1 rides sf-external
+				uplink = "p0" // bf.conf template: anything not p1 rides sf-external
 			}
 			hv := h.VLANByRole(dv.Role)
 			if hv == nil {
-				continue // host doesn't carry this VLAN; nothing to fan out
+				continue // host doesn't carry this VLAN; nothing to map
 			}
-			parent := h.DataPlane.ParentFor(*hv)
-			if prev, ok := parentByUplink[uplink]; ok && prev != parent {
-				// Two host VLANs on the same DPU uplink but different host
-				// PFs — legal (both reach the same bridge), just unusual.
-				continue
-			}
-			parentByUplink[uplink] = parent
-			roleByUplink[uplink] = dv.Role
-		}
-		if len(parentByUplink) < 2 {
-			continue // only one uplink in play — a single host PF is fine
-		}
-		// Any two uplinks sharing a parent PF is the bug.
-		seen := map[string]string{} // parent -> uplink that claimed it
-		for uplink, parent := range parentByUplink {
-			if other, dup := seen[parent]; dup {
-				conflict = true
+			cur := claim{role: dv.Role, uplink: uplink, parent: h.DataPlane.ParentFor(*hv)}
+
+			// A: this PF already serves a different uplink.
+			if prev, ok := byParent[cur.parent]; ok && prev.uplink != cur.uplink {
 				c.err(PhaseCluster,
-					"%s.dpus[%d:%s] is non-LAG and uses uplinks %s + %s (two OVS bridges: sf-external/pf0hpf and sf-internal/pf1hpf), but host VLANs %q and %q both hang off parent_iface %q — the DPU eswitch delivers ALL traffic from one host PF to that PF's bridge regardless of VLAN tag, so the %s VLAN never reaches its bridge (the sub-interface still comes up with its IP and MTU, so only end-to-end traffic fails). Give each uplink its own host PF via data_plane.vlans[].parent_iface (e.g. the %s VLAN on the host's PF1), or put both VLANs on one uplink",
-					hctx, j, d.PCI, other, uplink, roleByUplink[other], roleByUplink[uplink], parent, roleByUplink[uplink], roleByUplink[uplink])
-				break
+					"%s is non-LAG: host VLANs %q (DPU uplink %s → %s) and %q (uplink %s → %s) both hang off parent_iface %q, but a host PF reaches exactly one OVS bridge (PF0→pf0hpf→sf-external, PF1→pf1hpf→sf-internal) — the eswitch delivers ALL traffic from a host PF to that PF's bridge regardless of VLAN tag, so the %q VLAN never reaches %s. The sub-interface still comes up with its IP and MTU, so only end-to-end traffic fails. Give each uplink its own host PF via data_plane.vlans[].parent_iface (put %q on the PF wired to %s), or move both VLANs onto one uplink",
+					dctx, prev.role, prev.uplink, bridgeForUplink(prev.uplink), cur.role, cur.uplink, bridgeForUplink(cur.uplink),
+					cur.parent, cur.role, bridgeForUplink(cur.uplink), cur.role, bridgeForUplink(cur.uplink))
+				return
 			}
-			seen[parent] = uplink
-		}
-		if conflict {
-			return // one report per host is enough
+			// B: this uplink is already served by a different PF.
+			if prev, ok := byUplink[cur.uplink]; ok && prev.parent != cur.parent {
+				c.err(PhaseCluster,
+					"%s is non-LAG: host VLANs %q and %q are both on DPU uplink %s (bridge %s) but hang off different parent_ifaces (%q and %q) — each host PF reaches exactly one bridge, so one of these VLANs is wired to the wrong one. Put both on the PF that feeds %s, or move one to the uplink matching its PF",
+					dctx, prev.role, cur.role, cur.uplink, bridgeForUplink(cur.uplink),
+					prev.parent, cur.parent, bridgeForUplink(cur.uplink))
+				return
+			}
+			byParent[cur.parent] = cur
+			byUplink[cur.uplink] = cur
 		}
 	}
 }
