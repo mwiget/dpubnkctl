@@ -6,6 +6,7 @@ package poc
 
 import (
 	"fmt"
+	"net"
 	"time"
 )
 
@@ -353,7 +354,25 @@ type DPU struct {
 	Mode     string    `yaml:"mode"` // dpu | nic
 	LAG      bool      `yaml:"lag"`
 	Hostname string    `yaml:"hostname,omitempty"`     // DPU OS hostname (set before flash)
-	TmfifoIP string    `yaml:"tmfifo_ip,omitempty"`    // tmfifo_net0 CIDR, e.g. 192.168.100.2/30
+	TmfifoIP string    `yaml:"tmfifo_ip,omitempty"`    // DPU-side tmfifo_net0 CIDR, e.g. 192.168.100.2/30
+
+	// TmfifoIface is the HOST-side rshim network interface for this
+	// DPU's tmfifo link — "tmfifo_net0" for the first BlueField in a
+	// host, "tmfifo_net1" for the second, and so on. Empty defaults to
+	// tmfifo_net0, which is correct for the overwhelmingly common
+	// single-DPU host.
+	//
+	// It has to be per-DPU because each BlueField presents its own rshim
+	// device and its own host interface. dpubnkctl previously hardcoded
+	// tmfifo_net0 everywhere, so on a two-DPU host the second card's
+	// link was never brought up or addressed (issue #20).
+	//
+	// dpubnkctl can't reliably infer the PCI→rshim-index mapping without
+	// probing the host, so it is declared here. To read it off a live
+	// host, match the DEV_NAME line against the DPU's PCI address:
+	//
+	//	for r in /dev/rshim*; do echo "$r: $(sudo cat $r/misc | grep DEV_NAME)"; done
+	TmfifoIface string `yaml:"tmfifo_iface,omitempty"`
 	// OOBIP is the DPU's oob_net0 (GigE OOB mgmt port) address as CIDR
 	// (e.g. "192.168.68.96/22"), DHCP-learned at first boot and captured
 	// after flash. Stored as full CIDR — matching tmfifo_ip's shape and
@@ -384,6 +403,50 @@ type DPUVLAN struct {
 // PortName returns the OVS port name (e.g. "external40").
 func (v DPUVLAN) PortName() string {
 	return fmt.Sprintf("%s%d", v.Role, v.Tag)
+}
+
+// DefaultTmfifoIface is the host-side rshim interface for the first (and
+// usually only) BlueField in a host.
+const DefaultTmfifoIface = "tmfifo_net0"
+
+// TmfifoNetIface returns the host-side rshim interface for this DPU's
+// link, defaulting to tmfifo_net0.
+func (d *DPU) TmfifoNetIface() string {
+	if d != nil && d.TmfifoIface != "" {
+		return d.TmfifoIface
+	}
+	return DefaultTmfifoIface
+}
+
+// TmfifoHostIP returns the HOST-side address of this DPU's point-to-point
+// tmfifo link, as a CIDR.
+//
+// Derived from the DPU's own /30 rather than stored: in a /30 the first
+// usable address is the host and the second is the DPU, so the host side
+// is always (network + 1). That derivation is what makes multi-DPU hosts
+// work — each link gets its own /30, and the host end of each follows
+// from the DPU end without a second field to keep in sync.
+//
+// Falls back to the rshim driver default when tmfifo_ip is unset or
+// unparseable; validate reports the malformed value separately.
+func (d *DPU) TmfifoHostIP() string {
+	if d == nil || d.TmfifoIP == "" {
+		return DefaultTmfifoHostIP
+	}
+	_, ipnet, err := net.ParseCIDR(d.TmfifoIP)
+	if err != nil {
+		return DefaultTmfifoHostIP
+	}
+	ones, bits := ipnet.Mask.Size()
+	if bits != 32 || ones != 30 {
+		return DefaultTmfifoHostIP
+	}
+	base := ipnet.IP.To4()
+	if base == nil {
+		return DefaultTmfifoHostIP
+	}
+	host := net.IPv4(base[0], base[1], base[2], base[3]+1)
+	return fmt.Sprintf("%s/30", host.String())
 }
 
 // Provisioning holds inputs needed to render bf.conf and execute the

@@ -300,14 +300,33 @@ func TestValidate_ClusterAPIServerNotEnforcedAtProvision(t *testing.T) {
 	}
 }
 
-func TestValidate_TmfifoIPWrongSubnet(t *testing.T) {
-	// 192.168.100.6/30 is .4 net / .5 first / .6 second / .7 bcast — a
-	// different /30 than the rshim default 192.168.100.0/30.
+// TestValidate_TmfifoIPOffDefaultBlockIsOK — 192.168.100.6/30 is .4 net
+// / .5 host / .6 DPU / .7 bcast, a different /30 than the rshim default.
+// This USED to be an error (the rule pinned every DPU to
+// 192.168.100.2/30), which is precisely what made multi-DPU hosts
+// impossible to express: the second card had nowhere legal to go. It is
+// now accepted, because the host side is derived from the DPU's /30 and
+// applied by ensureHostTmfifoForDPU, so both ends move together (#20).
+func TestValidate_TmfifoIPOffDefaultBlockIsOK(t *testing.T) {
 	p, repo := goodPoC(t)
 	p.Hosts[0].DPUs[0].TmfifoIP = "192.168.100.6/30"
 	r := ValidateForPhase(p, repo, PhaseProvision)
-	if !errorContains(r, "tmfifo_ip") {
-		t.Errorf("expected tmfifo_ip wrong-subnet error; got: %v", r.Errors)
+	if !r.Valid() {
+		t.Errorf("a DPU on its own /30 should validate clean; got: %v", r.Errors)
+	}
+}
+
+// TestValidate_TmfifoIPWrongHalfOfSlash30 — the constraint that remains:
+// the DPU must be the SECOND usable address of its /30, because the
+// first is the host end (DPU.TmfifoHostIP derives it). 192.168.100.5/30
+// is the host side of the .4 block, so a DPU there would collide with
+// its own gateway.
+func TestValidate_TmfifoIPWrongHalfOfSlash30(t *testing.T) {
+	p, repo := goodPoC(t)
+	p.Hosts[0].DPUs[0].TmfifoIP = "192.168.100.5/30"
+	r := ValidateForPhase(p, repo, PhaseProvision)
+	if !errorContains(r, "second usable address") {
+		t.Errorf("expected second-usable-address error; got: %v", r.Errors)
 	}
 }
 
@@ -320,12 +339,15 @@ func TestValidate_TmfifoIPNotSlash30(t *testing.T) {
 	}
 }
 
+// A DPU on 192.168.100.1/30 sits on the host end of the link — still an
+// error, now phrased in terms of the /30's host half rather than the
+// rshim default specifically.
 func TestValidate_TmfifoIPCollidesWithRshim(t *testing.T) {
 	p, repo := goodPoC(t)
 	p.Hosts[0].DPUs[0].TmfifoIP = "192.168.100.1/30"
 	r := ValidateForPhase(p, repo, PhaseProvision)
-	if !errorContains(r, "rshim") {
-		t.Errorf("expected rshim-collision error; got: %v", r.Errors)
+	if !errorContains(r, "host side of the link") {
+		t.Errorf("expected host-side-collision error; got: %v", r.Errors)
 	}
 }
 
@@ -582,6 +604,12 @@ func TestValidate_DuplicateDPUHostname(t *testing.T) {
 	p, repo := goodPoC(t)
 	second := p.Hosts[0].DPUs[0]
 	second.PCI = "0000:83:00.0"
+	// Give the second DPU valid tmfifo wiring so the ONLY defect left is
+	// the shared hostname — otherwise the tmfifo_iface error (which also
+	// reads "is already used by") could satisfy the assertion below and
+	// the test would pass without the hostname check existing at all.
+	second.TmfifoIP = "192.168.100.6/30"
+	second.TmfifoIface = "tmfifo_net1"
 	p.Hosts[0].DPUs = append(p.Hosts[0].DPUs, second)
 	r := Validate(p, repo)
 	if r.Valid() {
@@ -589,7 +617,7 @@ func TestValidate_DuplicateDPUHostname(t *testing.T) {
 	}
 	found := false
 	for _, e := range r.Errors {
-		if strings.Contains(e, "already used by") {
+		if strings.Contains(e, ".hostname") && strings.Contains(e, "already used by") {
 			found = true
 		}
 	}
@@ -600,16 +628,21 @@ func TestValidate_DuplicateDPUHostname(t *testing.T) {
 
 // TestValidate_DistinctDPUHostnamesOK — the same two-DPU host, named
 // correctly, must stay clean.
+// A correctly-wired two-DPU host: distinct hostnames, and — since #20 —
+// distinct tmfifo /30s and rshim interfaces too. This is the canonical
+// shape a multi-DPU host must have.
 func TestValidate_DistinctDPUHostnamesOK(t *testing.T) {
 	p, repo := goodPoC(t)
 	second := p.Hosts[0].DPUs[0]
 	second.PCI = "0000:83:00.0"
 	second.Hostname = "host1-bf3-2"
+	second.TmfifoIP = "192.168.100.6/30"
+	second.TmfifoIface = "tmfifo_net1"
 	p.Hosts[0].DPUs[0].Hostname = "host1-bf3-1"
 	p.Hosts[0].DPUs = append(p.Hosts[0].DPUs, second)
 	r := Validate(p, repo)
 	if !r.Valid() {
-		t.Errorf("distinct DPU hostnames should validate clean, got:\n  %s", strings.Join(r.Errors, "\n  "))
+		t.Errorf("a fully-distinct two-DPU host should validate clean, got:\n  %s", strings.Join(r.Errors, "\n  "))
 	}
 }
 
@@ -691,5 +724,101 @@ func TestValidate_NonLAGErrorTextIsDeterministic(t *testing.T) {
 		if got := render(); got != first {
 			t.Fatalf("error text varies between runs on identical input:\n  A: %s\n  B: %s", first, got)
 		}
+	}
+}
+
+// --- issue #20: multi-DPU tmfifo links ---
+
+// The reported defect: two DPUs on one host defaulted to the same
+// tmfifo_ip. dpuSSHConfig targets a DPU purely by that address, so the
+// second card is never flashed or joined while every step reports
+// success against the first. Validate must refuse the config.
+func TestValidate_DuplicateTmfifoIPOnSameHost(t *testing.T) {
+	p, repo := goodPoC(t)
+	second := p.Hosts[0].DPUs[0]
+	second.PCI = "0000:83:00.0"
+	second.Hostname = "host1-bf3-2"
+	second.TmfifoIface = "tmfifo_net1" // iface distinct; only the IP collides
+	p.Hosts[0].DPUs[0].Hostname = "host1-bf3-1"
+	p.Hosts[0].DPUs = append(p.Hosts[0].DPUs, second)
+	r := Validate(p, repo)
+	if r.Valid() {
+		t.Fatal("two DPUs sharing a tmfifo /30 should error")
+	}
+	if !errorContains(r, "overlaps the /30") {
+		t.Errorf("expected an overlapping-/30 error. got:\n  %s", strings.Join(r.Errors, "\n  "))
+	}
+}
+
+// Two DPUs on distinct /30s but both on tmfifo_net0: each BlueField has
+// its own rshim device, so this cannot be right either — and the host
+// end of the second link would never be brought up.
+func TestValidate_DuplicateTmfifoIfaceOnSameHost(t *testing.T) {
+	p, repo := goodPoC(t)
+	second := p.Hosts[0].DPUs[0]
+	second.PCI = "0000:83:00.0"
+	second.Hostname = "host1-bf3-2"
+	second.TmfifoIP = "192.168.100.6/30" // IP distinct; only the iface collides
+	p.Hosts[0].DPUs[0].Hostname = "host1-bf3-1"
+	p.Hosts[0].DPUs = append(p.Hosts[0].DPUs, second)
+	r := Validate(p, repo)
+	if r.Valid() {
+		t.Fatal("two DPUs sharing tmfifo_net0 should error")
+	}
+	if !errorContains(r, "tmfifo_iface") {
+		t.Errorf("expected a tmfifo_iface collision error. got:\n  %s", strings.Join(r.Errors, "\n  "))
+	}
+}
+
+// Reusing 192.168.100.2/30 on a DIFFERENT host is correct — each
+// host↔DPU link is a private point-to-point segment, and every
+// single-DPU PoC in the repo does exactly this. The collision check is
+// per-host and must not become fleet-wide.
+func TestValidate_SameTmfifoIPAcrossHostsIsFine(t *testing.T) {
+	p, repo := goodPoC(t)
+	h2 := p.Hosts[0]
+	h2.Name = "host2"
+	h2.Role = "worker"
+	h2.SSH.Address = "192.168.68.11"
+	h2.DPUs = []DPU{{
+		PCI: "0000:03:00.0", Mode: "dpu", LAG: true,
+		Hostname: "host2-bf3",
+		TmfifoIP: "192.168.100.2/30", // same as host1's DPU — legal
+		VLANs:    []DPUVLAN{{Role: "internal", Tag: 41, IP: "10.10.41.6/24"}},
+	}}
+	p.Hosts = append(p.Hosts, h2)
+	r := Validate(p, repo)
+	if !r.Valid() {
+		t.Errorf("the same tmfifo /30 on separate hosts is correct; got:\n  %s", strings.Join(r.Errors, "\n  "))
+	}
+}
+
+// TmfifoHostIP derives the host end from the DPU's own /30. This is what
+// lets each link move as a unit instead of stranding the host on the
+// rshim default.
+func TestDPU_TmfifoHostIPDerivation(t *testing.T) {
+	cases := []struct{ dpu, wantHost string }{
+		{"192.168.100.2/30", "192.168.100.1/30"},
+		{"192.168.100.6/30", "192.168.100.5/30"},
+		{"192.168.100.10/30", "192.168.100.9/30"},
+		{"10.0.0.2/30", "10.0.0.1/30"},
+		{"", "192.168.100.1/30"},                 // unset → rshim default
+		{"not-a-cidr", "192.168.100.1/30"},       // malformed → default; validate reports it
+		{"192.168.100.2/24", "192.168.100.1/30"}, // wrong mask → default
+	}
+	for _, tc := range cases {
+		d := &DPU{TmfifoIP: tc.dpu}
+		if got := d.TmfifoHostIP(); got != tc.wantHost {
+			t.Errorf("DPU tmfifo_ip %q: host side = %q, want %q", tc.dpu, got, tc.wantHost)
+		}
+	}
+}
+
+func TestDPU_TmfifoNetIfaceDefault(t *testing.T) {
+	if got := (&DPU{}).TmfifoNetIface(); got != "tmfifo_net0" {
+		t.Errorf("unset tmfifo_iface = %q, want tmfifo_net0", got)
+	}
+	if got := (&DPU{TmfifoIface: "tmfifo_net1"}).TmfifoNetIface(); got != "tmfifo_net1" {
+		t.Errorf("explicit tmfifo_iface = %q, want tmfifo_net1", got)
 	}
 }

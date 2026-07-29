@@ -593,7 +593,7 @@ func waitFirstBoot(ctx context.Context, w io.Writer, client *ssh.Client, j flash
 		return
 	}
 	fmt.Fprintf(w, "[5/7] Waiting for %s first boot (probing %s) ...\n", dpuName, strings.Join(addrs, ", "))
-	if err := waitForDPUSSHWithGrace(ctx, client, j.host, addrs, f.dpuWaitTimeout); err != nil {
+	if err := waitForDPUSSHWithGrace(ctx, client, j.dpu, addrs, f.dpuWaitTimeout); err != nil {
 		fmt.Fprintf(w, "      WARN: first boot wait timed out (%v) — continuing to SW_RESET anyway\n", err)
 		return
 	}
@@ -627,7 +627,7 @@ func swResetAndWaitSecondBoot(ctx context.Context, w io.Writer, client *ssh.Clie
 	fmt.Fprintf(w, "[7/7] Waiting for %s second boot (probing %s) ...\n", dpuName, strings.Join(addrs, ", "))
 	// Give the reset a moment to actually start before polling.
 	time.Sleep(8 * time.Second)
-	if err := waitForDPUSSHWithGrace(ctx, client, j.host, addrs, f.dpuWaitTimeout); err != nil {
+	if err := waitForDPUSSHWithGrace(ctx, client, j.dpu, addrs, f.dpuWaitTimeout); err != nil {
 		journaled(journalMu, repo, j.hostname, j.dpu, "POST_FLASH_UNREACHABLE", logPath, err.Error())
 		return fmt.Errorf("DPU %s never came back after SW_RESET (timeout + grace expired) — probed %s; check rshim console for kernel panic, BL2 hang, or PCIe reset failure", dpuName, strings.Join(addrs, ", "))
 	}
@@ -991,7 +991,7 @@ func dpuProbeAddrs(d *poc.DPU) []string {
 // the most common is "RTNETLINK answers: File exists" when the address
 // is already present, which is the success case.
 func ensureHostTmfifoIP(ctx context.Context, host *ssh.Client) {
-	ensureHostTmfifoIPCIDR(ctx, host, poc.DefaultTmfifoHostIP)
+	ensureHostTmfifoIPCIDR(ctx, host, poc.DefaultTmfifoHostIP, poc.DefaultTmfifoIface)
 }
 
 // ensureHostTmfifoIPFor is ensureHostTmfifoIP for a specific host, using
@@ -999,26 +999,49 @@ func ensureHostTmfifoIP(ctx context.Context, host *ssh.Client) {
 // (network.tmfifo_cidr) the host lives on a carved /30, not the rshim
 // default — using the wrong address means the host can't route to the
 // DPU's tmfifo IP.
+//
+// Host-scoped, so it only addresses tmfifo_net0. Prefer
+// ensureHostTmfifoForDPU on any path that knows which DPU it is about:
+// on a multi-DPU host the second card's link is tmfifo_net1 and this
+// would leave it down (issue #20).
 func ensureHostTmfifoIPFor(ctx context.Context, host *ssh.Client, h *poc.Host) {
-	ensureHostTmfifoIPCIDR(ctx, host, h.TmfifoHostIP())
+	ensureHostTmfifoIPCIDR(ctx, host, h.TmfifoHostIP(), poc.DefaultTmfifoIface)
 }
 
-// ensureHostTmfifoIPCIDR assigns the given CIDR to tmfifo_net0. When the
-// CIDR differs from the rshim driver default, it first deletes the
-// default 192.168.100.1/30 so the two don't coexist and shadow the pool
-// address — this is the root fix for the historic "dup tmfifo" scramble
-// when more than one host reused 192.168.100.x. All commands are
+// ensureHostTmfifoForDPU brings up the host end of ONE DPU's tmfifo link:
+// the interface that DPU is wired to (tmfifo_net0, tmfifo_net1, ...) and
+// the host-side address derived from that DPU's own /30.
+//
+// Per-DPU rather than per-host because each BlueField presents its own
+// rshim device. dpubnkctl used to address tmfifo_net0 unconditionally, so
+// on a two-DPU host the second card's link was never brought up and the
+// DPU was unreachable — while the first card answered every probe, making
+// it look like the whole host was fine (issue #20).
+func ensureHostTmfifoForDPU(ctx context.Context, host *ssh.Client, d *poc.DPU) {
+	ensureHostTmfifoIPCIDR(ctx, host, d.TmfifoHostIP(), d.TmfifoNetIface())
+}
+
+// ensureHostTmfifoIPCIDR assigns the given CIDR to the named rshim
+// interface. When the CIDR differs from the rshim driver default, it
+// first deletes the default 192.168.100.1/30 so the two don't coexist and
+// shadow the intended address — this is the root fix for the historic
+// "dup tmfifo" scramble when more than one host reused 192.168.100.x, and
+// it matters again per-interface on multi-DPU hosts, where the driver
+// hands every link the same default. All commands are
 // best-effort/idempotent ("File exists" on a repeat add is the success
 // case), so errors are swallowed.
-func ensureHostTmfifoIPCIDR(ctx context.Context, host *ssh.Client, cidr string) {
+func ensureHostTmfifoIPCIDR(ctx context.Context, host *ssh.Client, cidr, iface string) {
 	if cidr == "" {
 		cidr = poc.DefaultTmfifoHostIP
 	}
-	cmd := "sudo -n ip link set tmfifo_net0 up 2>/dev/null; "
-	if cidr != poc.DefaultTmfifoHostIP {
-		cmd += "sudo -n ip addr del " + poc.DefaultTmfifoHostIP + " dev tmfifo_net0 2>/dev/null; "
+	if iface == "" {
+		iface = poc.DefaultTmfifoIface
 	}
-	cmd += "sudo -n ip addr add " + cidr + " dev tmfifo_net0 2>/dev/null; true"
+	cmd := "sudo -n ip link set " + iface + " up 2>/dev/null; "
+	if cidr != poc.DefaultTmfifoHostIP {
+		cmd += "sudo -n ip addr del " + poc.DefaultTmfifoHostIP + " dev " + iface + " 2>/dev/null; "
+	}
+	cmd += "sudo -n ip addr add " + cidr + " dev " + iface + " 2>/dev/null; true"
 	_ = host.Run(ctx, cmd)
 }
 
@@ -1031,11 +1054,16 @@ func ensureHostTmfifoIPCIDR(ctx context.Context, host *ssh.Client, cidr string) 
 //
 // addrs is the list of candidate IPv4 addresses to probe (tmfifo, then
 // oob). Returns nil if ANY address responds.
-func waitForDPUSSHWithGrace(ctx context.Context, host *ssh.Client, h *poc.Host, addrs []string, primary time.Duration) error {
+//
+// Takes the DPU (not just the host) so the tmfifo link it prepares is
+// the one this DPU is actually on. Preparing tmfifo_net0 while probing
+// the second DPU's address made the post-flash wait time out on
+// multi-DPU hosts (issue #20).
+func waitForDPUSSHWithGrace(ctx context.Context, host *ssh.Client, d *poc.DPU, addrs []string, primary time.Duration) error {
 	if len(addrs) == 0 {
 		return fmt.Errorf("no DPU probe addresses configured (tmfifo_ip and oob_ip both empty)")
 	}
-	ensureHostTmfifoIPFor(ctx, host, h)
+	ensureHostTmfifoForDPU(ctx, host, d)
 	first, fcancel := context.WithTimeout(ctx, primary)
 	err := waitForDPUSSH(first, host, addrs)
 	fcancel()

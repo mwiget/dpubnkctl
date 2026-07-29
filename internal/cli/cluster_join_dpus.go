@@ -378,15 +378,19 @@ const (
 )
 
 func joinOneDPU(ctx context.Context, repo string, j dpuJob, jc *cluster.JoinCommand, nodeIP, k8sMinor string, netSetup dpuNetSetup, f *clusterJoinDPUsFlags, w io.Writer) (joinOutcome, error) {
-	// Pre-dial step: make sure the host's tmfifo_net0 has 192.168.100.1/30
-	// before we try to reach the DPU at 192.168.100.2. The rshim kernel
-	// module *should* assign the host address at module load, but any
-	// `systemctl restart rshim` (operator clearing an orphaned console
-	// reader, or any other lifecycle event) wipes it. Without the .1/30,
-	// the DPU dial times out with "context deadline exceeded" — observed
-	// twice on the ailab single-node PoC across `provision dpu` and
-	// `cluster join-dpus`. Idempotent — `ip addr add` returns "File exists"
-	// (which ensureHostTmfifoIP swallows) when the address is already set.
+	// Pre-dial step: make sure the host end of THIS DPU's tmfifo link is
+	// up and addressed before we try to reach the DPU across it. The
+	// rshim kernel module *should* assign the host address at module
+	// load, but any `systemctl restart rshim` (operator clearing an
+	// orphaned console reader, or any other lifecycle event) wipes it.
+	// Without it the DPU dial times out with "context deadline exceeded"
+	// — observed twice on the ailab single-node PoC across `provision
+	// dpu` and `cluster join-dpus`. Idempotent — `ip addr add` returns
+	// "File exists" (which the helper swallows) when already set.
+	//
+	// Per-DPU, not per-host: on a multi-DPU host the second card is on
+	// tmfifo_net1 with its own /30, and preparing only tmfifo_net0 left
+	// it unreachable (issue #20).
 	hostCfg, err := sshConfigForHost(repo, j.host, 30*time.Second)
 	if err != nil {
 		return joinOutcomeJoined, fmt.Errorf("host ssh config: %w", err)
@@ -397,7 +401,7 @@ func joinOneDPU(ctx context.Context, repo string, j dpuJob, jc *cluster.JoinComm
 	if err != nil {
 		return joinOutcomeJoined, fmt.Errorf("ssh host (for tmfifo prep): %w", err)
 	}
-	ensureHostTmfifoIPFor(ctx, hostC, j.host)
+	ensureHostTmfifoForDPU(ctx, hostC, j.dpu)
 	// The rshim path needs the host session again for NAT setup below;
 	// keep it open until the join finishes. The vlan path is done with
 	// the host after the tmfifo prep.

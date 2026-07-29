@@ -324,13 +324,48 @@ the new BFB. Two surprises worth knowing:
     multi-DPU hosts now get `<host>-bf3-1`, `<host>-bf3-2`, and `validate`
     errors on any duplicate.
 
-    Related, still open for multi-DPU hosts: `tmfifo_ip` is defaulted to
-    `192.168.100.2/30` for *every* DPU on a host, which collides the same way
-    (the host would need a distinct /30 per tmfifo link). `validate` on this
-    branch only accepts the rshim driver's own /30, so a second DPU can't be
-    addressed distinctly yet — PR #17's `network.tmfifo_cidr` pool is the
-    mechanism that fixes it, and it currently rejects multi-DPU-per-host under
-    `join_transport: rshim` outright.
+36. **Every DPU on a host needs its own tmfifo `/30` AND its own rshim interface.**
+    The same collision as #35, one layer down, and nastier because nothing
+    reported it. `dpuSSHConfig` addresses a DPU *purely* by its tmfifo IP, so
+    two DPUs sharing `192.168.100.2/30` are literally the same SSH target:
+    dpubnkctl flashes and joins one card twice while the second is never
+    touched — and every step reports success (issue #20).
+
+    Three things had to change together, which is why the fix looks bigger
+    than "pick a different default":
+
+    - **Addressing.** Each BlueField presents its own rshim link, and the
+      driver hands *every* link the same `192.168.100.1/.2`. The host cannot
+      hold two interfaces in one subnet, so each link needs its own /30:
+      `192.168.100.2/30`, `.6/30`, `.10/30`, …
+    - **The host end must move with the DPU end.** `DPU.TmfifoHostIP()`
+      derives it as `(network + 1)` of the DPU's own /30 rather than storing
+      it, so the two ends cannot drift apart. `validateTmfifoIP` therefore
+      pins the DPU to the *second usable address* of its /30 — that is the
+      whole constraint now; the old rule additionally forced the
+      `192.168.100.x` block, which is exactly what made a second DPU
+      impossible to express (an operator who hand-assigned `.6/30` got a
+      validation error for doing the right thing).
+    - **The interface.** `DPU.tmfifo_iface` (`tmfifo_net0`, `tmfifo_net1`, …).
+      dpubnkctl hardcoded `tmfifo_net0` in the post-flash boot wait and the
+      join pre-dial, so the second card's link was never brought up. Read the
+      PCI→rshim mapping off a live host with:
+
+      ```
+      for r in /dev/rshim*; do echo "$r: $(sudo cat $r/misc | grep DEV_NAME)"; done
+      ```
+
+    `validate` errors on a duplicate/overlapping `tmfifo_ip` or a duplicate
+    `tmfifo_iface` **within a host**. Deliberately not fleet-wide: each
+    host↔DPU link is a private point-to-point segment, so reusing
+    `192.168.100.2/30` on a *different* host is correct and is what every
+    single-DPU PoC does.
+
+    Still not supported: multi-DPU hosts under `join_transport: rshim`.
+    Addressing works there now, but the host-NAT MASQUERADE source and the DPU
+    default route in `setup_dpu_networking` are still derived per host rather
+    than per tmfifo link. `validate` rejects the combination rather than
+    half-working. Use the vlan join transport for multi-DPU hosts.
 
 7a. **DPU first-boot may come up with no sshd host keys.** The BFB image ships `/var/lib/cloud/instances/nocloud/` pre-stamped from NVIDIA's image build, so cloud-init's `cc_ssh` module sees "Instance link already exists, not recreating it" and skips host-key generation. The fallback (Ubuntu's `ssh-keygen.service` or sshd's internal auto-regen) is racy — sometimes fires, sometimes doesn't, depending on first-boot ordering. When it doesn't, ssh.service restart-loops with `no hostkeys available -- exiting`. Symptom: dpubnkctl provision dpu's `[7/7] Waiting for second DPU boot` times out because sshd never starts. Fixed by `bfb_modify_os` running `chroot /mnt /usr/bin/ssh-keygen -A` so keys are baked into eMMC at flash time (commit `f9d3a59` or similar). Pre-fix DPUs: run `ssh-keygen -A` via rshim serial console (login as ubuntu, password at `keys/dpu_password.txt`).
 

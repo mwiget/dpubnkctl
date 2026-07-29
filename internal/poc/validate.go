@@ -241,11 +241,19 @@ func ValidateForPhase(p *PoC, repoDir string, minPhase Phase) ValidationResult {
 			validateDPU(c, &p.Hosts[i].DPUs[j], dctx, p.Network)
 			_ = d
 		}
-		// Multi-DPU-per-host over rshim needs a distinct tmfifo /30 per
-		// DPU but there's only one tmfifo_net0 per host — not supported
-		// yet. Pattern 2 targets 1 DPU per host.
+		// Per-host tmfifo wiring: one /30 and one rshim interface per DPU.
+		validateHostTmfifoLinks(c, &p.Hosts[i], hctx)
+
+		// Multi-DPU-per-host over rshim is still unsupported, but no
+		// longer for the addressing reason: distinct /30s per DPU and
+		// per-DPU tmfifo_iface (issue #20) made the vlan-transport case
+		// work. What rshim additionally needs is the join-time plumbing
+		// per link — the host-NAT MASQUERADE source and the DPU default
+		// route in setup_dpu_networking are still derived per host, not
+		// per tmfifo link. Kept as an explicit error rather than a
+		// silent half-working path.
 		if rshim && len(h.DPUs) > 1 {
-			c.err(PhaseProvision, "%s has %d DPUs but join_transport=rshim supports one DPU per host (one tmfifo_net0 link)", hctx, len(h.DPUs))
+			c.err(PhaseProvision, "%s has %d DPUs but join_transport=rshim supports one DPU per host — the per-link host NAT and DPU default route aren't wired per tmfifo link yet. Use the vlan join transport for multi-DPU hosts (addressing itself is supported there: give each DPU its own tmfifo_ip /30 and tmfifo_iface)", hctx, len(h.DPUs))
 		}
 
 		// Data-plane VLAN sub-interfaces on the host. host network setup
@@ -464,10 +472,23 @@ func validateDPU(c *checker, d *DPU, ctx string, netw Network) {
 		// vlan transport, or rshim without a pool: the rshim driver
 		// hard-codes the host side at 192.168.100.1/30, so the DPU's
 		// tmfifo_net0 must live in the same /30 and not collide with .1.
-		// The lake1 PoC hit this: operator picked .6/30, a *different*
-		// /30 — host's rshim auto-took 192.168.100.1/30, ProxyJump SSH
-		// broke with "No route to host". Catch the entire failure shape.
+		// The lake1 PoC hit this: operator picked .6/30 while the host's
+		// rshim kept 192.168.100.1/30, so the two ends sat in different
+		// /30s and ProxyJump SSH broke with "No route to host".
+		//
+		// A .6/30 DPU is now legal — but only because the host side is
+		// derived from the DPU's /30 (DPU.TmfifoHostIP) and applied by
+		// ensureHostTmfifoForDPU, so the host follows the DPU onto .5/30
+		// instead of being left behind on the rshim default. That
+		// derivation is what makes multi-DPU hosts addressable at all
+		// (issue #20). validateTmfifoIP still pins the DPU to the second
+		// usable address so the two ends can never disagree.
 		validateTmfifoIP(c, d.TmfifoIP, ctx)
+	}
+	// tmfifo_iface reaches `ip link set %s up` and `ip addr add ... dev
+	// %s` over SSH — same shell-safety argument as data_plane.parent_iface.
+	if d.TmfifoIface != "" && !safeIfaceRe.MatchString(d.TmfifoIface) {
+		c.err(PhaseProvision, "%s.tmfifo_iface %q must match %s (Linux IFNAMSIZ + shell-safe charset)", ctx, d.TmfifoIface, safeIfaceRe.String())
 	}
 	if len(d.VLANs) == 0 {
 		c.warn(PhaseProvision, "%s has no vlans — DPU won't have any data-plane interfaces", ctx)
@@ -483,9 +504,23 @@ func validateDPU(c *checker, d *DPU, ctx string, netw Network) {
 // technically override via sysfs but no PoC has ever done that.
 var rshimHostIP = net.ParseIP("192.168.100.1")
 
-// validateTmfifoIP enforces the rshim /30 constraint. Anything that
-// would leave the host's rshim interface and the DPU's tmfifo_net0
-// in different subnets — or collide on .1 — is an error.
+// validateTmfifoIP enforces the point-to-point /30 shape of a tmfifo
+// link: the DPU must sit on the SECOND usable address of its own /30,
+// leaving the first for the host side (DPU.TmfifoHostIP derives it).
+//
+// It deliberately does NOT require the 192.168.100.x block. The rshim
+// driver defaults there, and a single-DPU host should keep using
+// 192.168.100.2/30 — but pinning every DPU to that block made multi-DPU
+// hosts impossible to express: both cards were forced onto the same
+// address, so dpubnkctl addressed one DPU twice, and an operator who
+// hand-assigned a distinct /30 to the second card got a validation
+// error for their trouble (issue #20). Any /30 is accepted; the caller
+// separately checks that DPUs on the same host don't overlap.
+//
+// A DPU that is off the rshim default block only works if the host side
+// is moved with it — which ensureHostTmfifoForDPU does, using the same
+// derivation. Hence "second usable address" rather than "any address":
+// the two ends must agree without a second field to keep in sync.
 func validateTmfifoIP(c *checker, raw, ctx string) {
 	ip, ipnet, err := net.ParseCIDR(raw)
 	if err != nil {
@@ -498,23 +533,68 @@ func validateTmfifoIP(c *checker, raw, ctx string) {
 		return
 	}
 	if ones != 30 {
-		c.err(PhaseProvision, "%s.tmfifo_ip %q must be a /30 (rshim driver uses /30); typical: 192.168.100.2/30", ctx, raw)
+		c.err(PhaseProvision, "%s.tmfifo_ip %q must be a /30 (the tmfifo link is point-to-point; rshim uses /30); typical: 192.168.100.2/30", ctx, raw)
 		return
 	}
-	if !ipnet.Contains(rshimHostIP) {
-		c.err(PhaseProvision, "%s.tmfifo_ip %q is on a different /30 than the host rshim default (192.168.100.1/30) — host cannot route to the DPU; use 192.168.100.2/30", ctx, raw)
-		return
+	// In a /30: .0 network, .1 host side, .2 DPU side, .3 broadcast.
+	base := ipnet.IP.To4()
+	want := net.IPv4(base[0], base[1], base[2], base[3]+2)
+	if !ip.Equal(want) {
+		c.err(PhaseProvision, "%s.tmfifo_ip %q must be the second usable address of its /30 (%s) — the first (%s.%d) is the host side of the link, and .0/.3 are network/broadcast",
+			ctx, raw, want.String(), fmt.Sprintf("%d.%d.%d", base[0], base[1], base[2]), base[3]+1)
 	}
-	if ip.Equal(rshimHostIP) {
-		c.err(PhaseProvision, "%s.tmfifo_ip %q collides with the host rshim address 192.168.100.1 — use 192.168.100.2/30", ctx, raw)
-		return
+}
+
+// validateHostTmfifoLinks checks the per-host tmfifo wiring: every DPU on
+// a host needs its own /30 and its own rshim interface.
+//
+// Each BlueField presents a separate rshim device, so a two-DPU host has
+// tmfifo_net0 and tmfifo_net1. Two DPUs sharing a subnet would leave the
+// host with two interfaces in one subnet (routing to the DPU address is
+// then undefined), and two DPUs sharing an address are indistinguishable
+// to dpubnkctl entirely: dpuSSHConfig targets a DPU purely by its tmfifo
+// IP, so the second DPU is silently never flashed and never joined while
+// every operation "succeeds" against the first (issue #20).
+//
+// Scoped per host, not fleet-wide: each host↔DPU tmfifo link is a private
+// point-to-point segment, so reusing 192.168.100.2/30 on a different host
+// is correct and is what every single-DPU PoC does.
+func validateHostTmfifoLinks(c *checker, h *Host, hctx string) {
+	if len(h.DPUs) < 2 {
+		return // a single DPU can't collide with itself
 	}
-	// /30 of 192.168.100.0: .0 (network), .1 (rshim), .2 (DPU usable),
-	// .3 (broadcast). Only .2 is a valid DPU address; .0 and .3 are
-	// unaddressable.
-	last := ip.To4()[3]
-	if last != 2 {
-		c.err(PhaseProvision, "%s.tmfifo_ip %q must be 192.168.100.2/30 — .0/.3 of the rshim /30 are network/broadcast, .1 is rshim", ctx, raw)
+	type seenLink struct {
+		ctx   string
+		ipnet *net.IPNet
+	}
+	var links []seenLink
+	seenIface := map[string]string{}
+
+	for j := range h.DPUs {
+		d := &h.DPUs[j]
+		dctx := fmt.Sprintf("%s.dpus[%d:%s]", hctx, j, d.PCI)
+
+		iface := d.TmfifoNetIface()
+		if first, dup := seenIface[iface]; dup {
+			c.err(PhaseProvision, "%s.tmfifo_iface %q is already used by %s — each BlueField has its own rshim device, so a multi-DPU host needs one interface per DPU (tmfifo_net0, tmfifo_net1, ...). Read the mapping off the host with: for r in /dev/rshim*; do echo \"$r: $(sudo cat $r/misc | grep DEV_NAME)\"; done", dctx, iface, first)
+		} else {
+			seenIface[iface] = dctx
+		}
+
+		if d.TmfifoIP == "" {
+			continue // reported elsewhere
+		}
+		_, ipnet, err := net.ParseCIDR(d.TmfifoIP)
+		if err != nil {
+			continue // malformed value already reported by validateTmfifoIP
+		}
+		for _, prev := range links {
+			if prev.ipnet.Contains(ipnet.IP) || ipnet.Contains(prev.ipnet.IP) {
+				c.err(PhaseProvision, "%s.tmfifo_ip %q overlaps the /30 already used by %s — two DPUs on one host each need their own tmfifo /30 (e.g. 192.168.100.2/30 and 192.168.100.6/30). dpubnkctl reaches a DPU by its tmfifo address alone, so sharing one means the second DPU is never flashed or joined while every step reports success against the first", dctx, d.TmfifoIP, prev.ctx)
+				break
+			}
+		}
+		links = append(links, seenLink{ctx: dctx, ipnet: ipnet})
 	}
 }
 
