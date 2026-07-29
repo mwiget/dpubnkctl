@@ -777,15 +777,40 @@ func takenDPUHostnames(p *poc.PoC) map[string]bool {
 //
 // taken guards against a generated name landing on one the operator
 // already chose; the suffix walks forward until it finds a free one.
+//
+// The result is trimmed to dpuHostnameMax so the wizard can never write
+// a poc.yaml that its own validator rejects: Host.Name may legally be up
+// to 63 chars, and appending "-bf3-2" would push past the RFC 1123 limit
+// safeNameRe enforces — surfacing as an error on a field the operator
+// never set.
 func defaultDPUHostname(hostName string, idx, total int, taken map[string]bool) string {
 	base := hostName + "-bf3"
-	if total <= 1 && !taken[base] {
-		return base
+	if total <= 1 {
+		if b := clampHostLabel(base, dpuHostnameMax); !taken[b] {
+			return b
+		}
 	}
 	for n := idx + 1; ; n++ {
-		candidate := fmt.Sprintf("%s-%d", base, n)
+		suffix := fmt.Sprintf("-%d", n)
+		candidate := clampHostLabel(base, dpuHostnameMax-len(suffix)) + suffix
 		if !taken[candidate] {
 			return candidate
 		}
 	}
+}
+
+// dpuHostnameMax is the RFC 1123 label ceiling that poc.validate's
+// safeNameRe enforces on DPU.Hostname.
+const dpuHostnameMax = 63
+
+// clampHostLabel truncates s to max chars without leaving a trailing
+// "-", which would make it an invalid RFC 1123 label.
+func clampHostLabel(s string, max int) string {
+	if max < 1 {
+		max = 1
+	}
+	if len(s) > max {
+		s = s[:max]
+	}
+	return strings.TrimRight(s, "-")
 }

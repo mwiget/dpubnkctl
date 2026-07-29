@@ -612,3 +612,84 @@ func TestValidate_DistinctDPUHostnamesOK(t *testing.T) {
 		t.Errorf("distinct DPU hostnames should validate clean, got:\n  %s", strings.Join(r.Errors, "\n  "))
 	}
 }
+
+// TestValidate_NonLAGThirdVLANOnWrongPF is the case that distinguishes a
+// working fan-out check from a broken one. An earlier version kept one
+// representative parent per uplink and skipped VLANs that disagreed, so
+// `storage` — on uplink p1 (sf-internal) but hanging off the host PF
+// that feeds sf-external — hid behind the correctly-mapped
+// external/internal pair and validate passed clean.
+func TestValidate_NonLAGThirdVLANOnWrongPF(t *testing.T) {
+	p, repo := goodPoC(t)
+	p.Hosts[0].DPUs[0].LAG = false
+	p.Hosts[0].DPUs[0].VLANs = []DPUVLAN{
+		{Role: "external", Tag: 40, IP: "10.10.40.5/24", Uplink: "p0"},
+		{Role: "internal", Tag: 41, IP: "10.10.41.5/24", Uplink: "p1"},
+		{Role: "storage", Tag: 60, IP: "10.10.60.5/24", Uplink: "p1"},
+	}
+	p.Hosts[0].DataPlane.VLANs = []HostDataPlaneVLAN{
+		{Role: "external", Tag: 40, IP: "10.10.40.66/24"},
+		{Role: "internal", Tag: 41, IP: "10.10.41.66/24", ParentIface: "ens16f1np1"},
+		// storage inherits the block default (PF0 → sf-external) while its
+		// DPU VLAN sits on p1 → sf-internal. Broken.
+		{Role: "storage", Tag: 60, IP: "10.10.60.66/24"},
+	}
+	r := Validate(p, repo)
+	if r.Valid() {
+		t.Fatalf("storage is on host PF0 but DPU uplink p1 — expected an error, got a clean validate")
+	}
+	if !errorContains(r, "storage") {
+		t.Errorf("error should name the offending VLAN. got:\n  %s", strings.Join(r.Errors, "\n  "))
+	}
+}
+
+// TestValidate_NonLAGOneUplinkTwoHostPFs is the bijection's other
+// direction: two VLANs on the SAME DPU uplink but different host PFs.
+// Each host PF reaches exactly one bridge, so one of them is wired to
+// the wrong one. A previous version treated this as "unusual but legal"
+// and skipped it.
+func TestValidate_NonLAGOneUplinkTwoHostPFs(t *testing.T) {
+	p, repo := goodPoC(t)
+	p.Hosts[0].DPUs[0].LAG = false
+	p.Hosts[0].DPUs[0].VLANs = []DPUVLAN{
+		{Role: "external", Tag: 40, IP: "10.10.40.5/24", Uplink: "p0"},
+		{Role: "storage", Tag: 60, IP: "10.10.60.5/24", Uplink: "p0"},
+	}
+	p.Hosts[0].DataPlane.VLANs = []HostDataPlaneVLAN{
+		{Role: "external", Tag: 40, IP: "10.10.40.66/24"},
+		{Role: "storage", Tag: 60, IP: "10.10.60.66/24", ParentIface: "ens16f1np1"},
+	}
+	r := Validate(p, repo)
+	if r.Valid() {
+		t.Fatalf("two host PFs feeding one uplink should error, got a clean validate")
+	}
+	if !errorContains(r, "wrong one") {
+		t.Errorf("expected the same-uplink/different-PF diagnosis. got:\n  %s", strings.Join(r.Errors, "\n  "))
+	}
+}
+
+// TestValidate_NonLAGErrorTextIsDeterministic — the fan-out error used
+// to be built by ranging a map, so the roles it named flipped order
+// between runs on identical input. Validator output lands in journals
+// and issue reports; it has to be stable.
+func TestValidate_NonLAGErrorTextIsDeterministic(t *testing.T) {
+	render := func() string {
+		p, repo := goodPoC(t)
+		p.Hosts[0].DPUs[0].LAG = false
+		p.Hosts[0].DPUs[0].VLANs = []DPUVLAN{
+			{Role: "external", Tag: 40, IP: "10.10.40.5/24", Uplink: "p0"},
+			{Role: "internal", Tag: 41, IP: "10.10.41.5/24", Uplink: "p1"},
+		}
+		p.Hosts[0].DataPlane.VLANs = []HostDataPlaneVLAN{
+			{Role: "external", Tag: 40, IP: "10.10.40.66/24"},
+			{Role: "internal", Tag: 41, IP: "10.10.41.66/24"},
+		}
+		return strings.Join(Validate(p, repo).Errors, "|")
+	}
+	first := render()
+	for i := 0; i < 100; i++ {
+		if got := render(); got != first {
+			t.Fatalf("error text varies between runs on identical input:\n  A: %s\n  B: %s", first, got)
+		}
+	}
+}
