@@ -129,11 +129,54 @@ func InstallKubeBinaries(ctx context.Context, dpu *ssh.Client, k8sMinor string) 
 			"case \"$v\" in %s.*) ;; *) echo \"ERROR: $pkg version $v not in %s\" >&2; exit 1 ;; esac; "+
 			"done", k8sMinor, versionPin),
 		"sudo -n apt-mark hold kubelet kubeadm kubectl",
-		// containerd ships with the BlueField BSP but our bf.conf
-		// cloud-init stops it as a "clean slate" for the operator.
-		// Start it back up before kubeadm join, which preflight-checks
-		// the CRI socket.
+		// containerd normally ships with the BlueField BSP, and our
+		// bf.conf cloud-init stops it as a "clean slate" for the
+		// operator — so the usual job here is just to start it back up
+		// before kubeadm join, which preflight-checks the CRI socket.
+		//
+		// But not every BFB has it: DOCA 3.2.0 / Ubuntu 24.04 was
+		// observed WITHOUT containerd (Tokyo lab tky-bnk-dpu-host-2,
+		// issue #18). The failure surfaced late and unhelpfully, as a
+		// bare "containerd.sock not found" from kubeadm preflight,
+		// after the whole apt install had already run. Install it here
+		// when the unit is absent so the join can proceed.
+		//
+		// When WE install it, we also generate the config: Debian and
+		// Ubuntu's containerd package ships a config.toml carrying
+		// `disabled_plugins = ["cri"]`, which yields a *running*
+		// containerd whose socket serves nothing kubeadm can use — the
+		// same error one layer deeper, and far harder to read. Only on
+		// the install path, so a BSP-provided config is never clobbered.
+		"if ! sudo -n systemctl cat containerd.service >/dev/null 2>&1; then " +
+			"echo 'containerd not present on this BFB — installing from apt'; " +
+			"sudo -n apt-get install -y containerd && " +
+			"sudo -n mkdir -p /etc/containerd && " +
+			"sudo -n sh -c 'containerd config default > /etc/containerd/config.toml' && " +
+			// kubeadm 1.30 defaults the kubelet to the systemd cgroup
+			// driver; containerd's generated default is false. A mismatch
+			// gives a node that joins and then goes NotReady under load.
+			"sudo -n sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml; " +
+			"fi",
 		"sudo -n systemctl enable --now containerd",
+		// Fail loud and early if the CRI plugin is switched off in an
+		// existing config — the socket would exist and answer nothing.
+		"if sudo -n grep -Eqs '^[^#]*disabled_plugins.*\"(io.containerd.grpc.v1.)?cri\"' /etc/containerd/config.toml; then " +
+			"echo 'ERROR: /etc/containerd/config.toml disables the CRI plugin — containerd will run but kubeadm join cannot use its socket. Remove \"cri\" from disabled_plugins and restart containerd.' >&2; exit 1; fi",
+		// Wait for the socket rather than assuming `enable --now`
+		// returning 0 means containerd is serving: systemd reports the
+		// unit active as soon as the process starts, but the CRI socket
+		// appears a moment later. kubeadm join's preflight races that
+		// gap and reports the missing socket as if containerd were
+		// absent entirely.
+		"for i in $(seq 1 30); do test -S /run/containerd/containerd.sock && break; sleep 1; done",
+		// `if ... fi`, deliberately not `test ... || { ... }`: every entry
+		// in this slice is joined with " && ", and `A && B || C` parses as
+		// `(A && B) || C` — so a trailing `||` would fire on ANY earlier
+		// failure in the chain (a failed apt-get, the version-pin check)
+		// and blame containerd for it. An `if` block is self-contained.
+		"if ! test -S /run/containerd/containerd.sock; then " +
+			"echo \"ERROR: containerd is not serving /run/containerd/containerd.sock after 30s — kubeadm join would fail its CRI preflight. Check 'systemctl status containerd' and 'journalctl -xeu containerd' on the DPU.\" >&2; " +
+			"sudo -n systemctl --no-pager status containerd 2>&1 | tail -20 >&2; exit 1; fi",
 		// Stop kubelet so it doesn't crash-loop with no certs. kubeadm
 		// join will start it at the end with the right config.
 		"sudo -n systemctl disable --now kubelet || true",

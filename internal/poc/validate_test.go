@@ -500,3 +500,115 @@ func TestValidate_BFBSHA256OverrideSilencesUnpinnedWarning(t *testing.T) {
 		t.Errorf("unpinned warning should not fire when a digest is set: %v", r.Warnings)
 	}
 }
+
+// --- issue #18: non-LAG uplink fan-out + DPU hostname uniqueness ---
+
+// TestValidate_NonLAGBothUplinksOneHostPF is the Tokyo-lab trap: a
+// non-LAG DPU splits its VLANs across p0 (sf-external) and p1
+// (sf-internal), but the host stacks both sub-interfaces on one PF. The
+// DPU eswitch hands everything from that PF to pf0hpf, so the p1 VLAN
+// never reaches sf-internal — while every local check still passes.
+func TestValidate_NonLAGBothUplinksOneHostPF(t *testing.T) {
+	p, repo := goodPoC(t)
+	p.Hosts[0].DPUs[0].LAG = false
+	p.Hosts[0].DPUs[0].VLANs = []DPUVLAN{
+		{Role: "external", Tag: 40, IP: "10.10.40.5/24", Uplink: "p0"},
+		{Role: "internal", Tag: 41, IP: "10.10.41.5/24", Uplink: "p1"},
+	}
+	// Host carries both, both on the single block-level parent_iface.
+	p.Hosts[0].DataPlane.VLANs = []HostDataPlaneVLAN{
+		{Role: "external", Tag: 40, IP: "10.10.40.66/24"},
+		{Role: "internal", Tag: 41, IP: "10.10.41.66/24"},
+	}
+	r := Validate(p, repo)
+	if r.Valid() {
+		t.Fatal("expected an error when a non-LAG DPU's two uplinks share one host PF")
+	}
+	found := false
+	for _, e := range r.Errors {
+		if strings.Contains(e, "eswitch") && strings.Contains(e, "parent_iface") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("non-LAG uplink fan-out error not surfaced. got:\n  %s", strings.Join(r.Errors, "\n  "))
+	}
+}
+
+// TestValidate_NonLAGBothUplinksSeparateHostPFs is the same topology
+// wired correctly — each uplink gets its own host PF via the per-VLAN
+// parent_iface override.
+func TestValidate_NonLAGBothUplinksSeparateHostPFs(t *testing.T) {
+	p, repo := goodPoC(t)
+	p.Hosts[0].DPUs[0].LAG = false
+	p.Hosts[0].DPUs[0].VLANs = []DPUVLAN{
+		{Role: "external", Tag: 40, IP: "10.10.40.5/24", Uplink: "p0"},
+		{Role: "internal", Tag: 41, IP: "10.10.41.5/24", Uplink: "p1"},
+	}
+	p.Hosts[0].DataPlane.VLANs = []HostDataPlaneVLAN{
+		{Role: "external", Tag: 40, IP: "10.10.40.66/24"},
+		{Role: "internal", Tag: 41, IP: "10.10.41.66/24", ParentIface: "ens16f1np1"},
+	}
+	r := Validate(p, repo)
+	if !r.Valid() {
+		t.Errorf("expected clean validate with one host PF per uplink, got:\n  %s", strings.Join(r.Errors, "\n  "))
+	}
+}
+
+// TestValidate_LAGSingleHostPFStillFine guards against the new rule
+// over-firing: a LAG DPU has exactly one bridge, so both VLANs sharing
+// one host PF is the correct configuration there.
+func TestValidate_LAGSingleHostPFStillFine(t *testing.T) {
+	p, repo := goodPoC(t)
+	p.Hosts[0].DPUs[0].LAG = true
+	p.Hosts[0].DPUs[0].VLANs = []DPUVLAN{
+		{Role: "external", Tag: 40, IP: "10.10.40.5/24"},
+		{Role: "internal", Tag: 41, IP: "10.10.41.5/24"},
+	}
+	p.Hosts[0].DataPlane.VLANs = []HostDataPlaneVLAN{
+		{Role: "external", Tag: 40, IP: "10.10.40.66/24"},
+		{Role: "internal", Tag: 41, IP: "10.10.41.66/24"},
+	}
+	r := Validate(p, repo)
+	if !r.Valid() {
+		t.Errorf("LAG DPUs legitimately share one host PF; got:\n  %s", strings.Join(r.Errors, "\n  "))
+	}
+}
+
+// TestValidate_DuplicateDPUHostname — two DPUs sharing a hostname means
+// the second kubeadm join takes over the first's Node object instead of
+// registering its own, silently leaving the cluster a node short.
+func TestValidate_DuplicateDPUHostname(t *testing.T) {
+	p, repo := goodPoC(t)
+	second := p.Hosts[0].DPUs[0]
+	second.PCI = "0000:83:00.0"
+	p.Hosts[0].DPUs = append(p.Hosts[0].DPUs, second)
+	r := Validate(p, repo)
+	if r.Valid() {
+		t.Fatal("expected an error for two DPUs sharing a hostname")
+	}
+	found := false
+	for _, e := range r.Errors {
+		if strings.Contains(e, "already used by") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("duplicate DPU hostname error not surfaced. got:\n  %s", strings.Join(r.Errors, "\n  "))
+	}
+}
+
+// TestValidate_DistinctDPUHostnamesOK — the same two-DPU host, named
+// correctly, must stay clean.
+func TestValidate_DistinctDPUHostnamesOK(t *testing.T) {
+	p, repo := goodPoC(t)
+	second := p.Hosts[0].DPUs[0]
+	second.PCI = "0000:83:00.0"
+	second.Hostname = "host1-bf3-2"
+	p.Hosts[0].DPUs[0].Hostname = "host1-bf3-1"
+	p.Hosts[0].DPUs = append(p.Hosts[0].DPUs, second)
+	r := Validate(p, repo)
+	if !r.Valid() {
+		t.Errorf("distinct DPU hostnames should validate clean, got:\n  %s", strings.Join(r.Errors, "\n  "))
+	}
+}

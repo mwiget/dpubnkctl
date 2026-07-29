@@ -717,27 +717,75 @@ func totalDPUs(p *poc.PoC) int {
 }
 
 // fillDPUWizardDefaults walks p.Hosts and, for the host whose SSH address
-// matches addr, fills any empty DPU.Hostname with `<host>-bf3` and any
-// empty DPU.TmfifoIP with 192.168.100.2/30 (the host↔DPU rshim link is
-// per-host private, so every DPU can reuse the same /30 — matching the
-// pattern already in examples/two-node-homelab.yaml and the homelab).
+// matches addr, fills any empty DPU.Hostname with a unique name derived
+// from the host name and any empty DPU.TmfifoIP with 192.168.100.2/30
+// (the host↔DPU rshim link is per-host private, so every DPU can reuse
+// the same /30 — matching the pattern already in
+// examples/two-node-homelab.yaml and the homelab).
 //
 // Empty-only: never clobbers anything the operator (or a prior wizard
-// run) has already set. For multi-DPU hosts the second+ DPU sticks with
-// the same value as well; multi-DPU is rare and the operator can adjust.
+// run) has already set.
 func fillDPUWizardDefaults(p *poc.PoC, addr, hostName string) {
 	for i := range p.Hosts {
 		if p.Hosts[i].SSH.Address != addr {
 			continue
 		}
-		for j := range p.Hosts[i].DPUs {
-			if p.Hosts[i].DPUs[j].Hostname == "" {
-				p.Hosts[i].DPUs[j].Hostname = hostName + "-bf3"
+		dpus := p.Hosts[i].DPUs
+		// Names already set anywhere in the PoC are off-limits — the
+		// generated default must not collide with an operator's choice
+		// (or with a DPU on another host).
+		taken := takenDPUHostnames(p)
+		for j := range dpus {
+			if dpus[j].Hostname == "" {
+				name := defaultDPUHostname(hostName, j, len(dpus), taken)
+				dpus[j].Hostname = name
+				taken[name] = true
 			}
-			if p.Hosts[i].DPUs[j].TmfifoIP == "" {
-				p.Hosts[i].DPUs[j].TmfifoIP = "192.168.100.2/30"
+			if dpus[j].TmfifoIP == "" {
+				dpus[j].TmfifoIP = "192.168.100.2/30"
 			}
 		}
 		return
+	}
+}
+
+// takenDPUHostnames collects every DPU hostname already set in the PoC.
+func takenDPUHostnames(p *poc.PoC) map[string]bool {
+	taken := map[string]bool{}
+	for i := range p.Hosts {
+		for j := range p.Hosts[i].DPUs {
+			if n := p.Hosts[i].DPUs[j].Hostname; n != "" {
+				taken[n] = true
+			}
+		}
+	}
+	return taken
+}
+
+// defaultDPUHostname derives the DPU OS hostname for the idx-th of total
+// DPUs on hostName.
+//
+// A single-DPU host keeps the historical `<host>-bf3` — that's the name
+// in every existing PoC, example, and doc, and changing it would rename
+// nodes under running clusters on the next wizard run.
+//
+// Multi-DPU hosts get `<host>-bf3-<n>`, 1-based. They previously all got
+// the same `<host>-bf3`, which collides on kubeadm's --node-name: the
+// second DPU's join takes over the first's Node object rather than
+// creating its own (issue #18, Tokyo lab — two BF3s, one host, both
+// named dpu-server-2-bf3).
+//
+// taken guards against a generated name landing on one the operator
+// already chose; the suffix walks forward until it finds a free one.
+func defaultDPUHostname(hostName string, idx, total int, taken map[string]bool) string {
+	base := hostName + "-bf3"
+	if total <= 1 && !taken[base] {
+		return base
+	}
+	for n := idx + 1; ; n++ {
+		candidate := fmt.Sprintf("%s-%d", base, n)
+		if !taken[candidate] {
+			return candidate
+		}
 	}
 }
