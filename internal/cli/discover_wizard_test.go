@@ -186,3 +186,83 @@ func TestDefaultDPUHostname_LongNamesStayUnique(t *testing.T) {
 	}
 	t.Logf("distinct truncated names: %v", len(seen))
 }
+
+// TestFillDPUWizardDefaults_MultiDPUTmfifoDistinct — issue #20. Every DPU
+// on a host used to get 192.168.100.2/30 on tmfifo_net0, so dpubnkctl
+// addressed one card repeatedly and silently skipped the rest.
+func TestFillDPUWizardDefaults_MultiDPUTmfifoDistinct(t *testing.T) {
+	p := &poc.PoC{Hosts: []poc.Host{{
+		Name: "dpu-server-2",
+		SSH:  poc.SSH{Address: "10.0.0.5"},
+		DPUs: []poc.DPU{{PCI: "0000:03:00.0"}, {PCI: "0000:83:00.0"}},
+	}}}
+	fillDPUWizardDefaults(p, "10.0.0.5", "dpu-server-2")
+	d := p.Hosts[0].DPUs
+
+	if d[0].TmfifoIP == d[1].TmfifoIP {
+		t.Fatalf("both DPUs got tmfifo_ip %q", d[0].TmfifoIP)
+	}
+	if d[0].TmfifoNetIface() == d[1].TmfifoNetIface() {
+		t.Fatalf("both DPUs got iface %q", d[0].TmfifoNetIface())
+	}
+	// First DPU keeps the rshim driver's own defaults so single-DPU PoCs
+	// and existing poc.yaml files are unaffected.
+	if d[0].TmfifoIP != "192.168.100.2/30" {
+		t.Errorf("DPU0 tmfifo_ip = %q, want 192.168.100.2/30", d[0].TmfifoIP)
+	}
+	if d[0].TmfifoIface != "" {
+		t.Errorf("DPU0 tmfifo_iface should stay implicit (tmfifo_net0), got %q", d[0].TmfifoIface)
+	}
+	if d[1].TmfifoIP != "192.168.100.6/30" {
+		t.Errorf("DPU1 tmfifo_ip = %q, want 192.168.100.6/30 (next /30)", d[1].TmfifoIP)
+	}
+	if d[1].TmfifoIface != "tmfifo_net1" {
+		t.Errorf("DPU1 tmfifo_iface = %q, want tmfifo_net1", d[1].TmfifoIface)
+	}
+	// The host end of each link must land in the matching /30.
+	if got := d[1].TmfifoHostIP(); got != "192.168.100.5/30" {
+		t.Errorf("DPU1 host-side = %q, want 192.168.100.5/30", got)
+	}
+}
+
+// Single-DPU hosts must be byte-for-byte unchanged — this is every
+// existing PoC in the wild.
+func TestFillDPUWizardDefaults_SingleDPUTmfifoUnchanged(t *testing.T) {
+	p := &poc.PoC{Hosts: []poc.Host{{
+		Name: "worker1",
+		SSH:  poc.SSH{Address: "10.0.0.6"},
+		DPUs: []poc.DPU{{PCI: "0000:03:00.0"}},
+	}}}
+	fillDPUWizardDefaults(p, "10.0.0.6", "worker1")
+	if got := p.Hosts[0].DPUs[0].TmfifoIP; got != "192.168.100.2/30" {
+		t.Errorf("tmfifo_ip = %q, want 192.168.100.2/30", got)
+	}
+	if got := p.Hosts[0].DPUs[0].TmfifoIface; got != "" {
+		t.Errorf("tmfifo_iface should stay implicit, got %q", got)
+	}
+}
+
+// Operator-pinned tmfifo values must survive, and generated ones must
+// dodge them rather than colliding.
+func TestFillDPUWizardDefaults_TmfifoDoesNotClobberOrCollide(t *testing.T) {
+	p := &poc.PoC{Hosts: []poc.Host{{
+		Name: "host9",
+		SSH:  poc.SSH{Address: "10.0.0.7"},
+		DPUs: []poc.DPU{
+			{PCI: "0000:03:00.0", TmfifoIP: "192.168.100.6/30", TmfifoIface: "tmfifo_net1"},
+			{PCI: "0000:83:00.0"},
+		},
+	}}}
+	fillDPUWizardDefaults(p, "10.0.0.7", "host9")
+	d := p.Hosts[0].DPUs
+
+	if d[0].TmfifoIP != "192.168.100.6/30" || d[0].TmfifoIface != "tmfifo_net1" {
+		t.Errorf("operator-set tmfifo was clobbered: ip=%q iface=%q", d[0].TmfifoIP, d[0].TmfifoIface)
+	}
+	if d[1].TmfifoIP == d[0].TmfifoIP {
+		t.Errorf("generated tmfifo_ip collided with the operator's: %q", d[1].TmfifoIP)
+	}
+	if d[1].TmfifoNetIface() == d[0].TmfifoNetIface() {
+		t.Errorf("generated iface collided with the operator's: %q", d[1].TmfifoNetIface())
+	}
+}

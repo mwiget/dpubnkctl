@@ -717,11 +717,17 @@ func totalDPUs(p *poc.PoC) int {
 }
 
 // fillDPUWizardDefaults walks p.Hosts and, for the host whose SSH address
-// matches addr, fills any empty DPU.Hostname with a unique name derived
-// from the host name and any empty DPU.TmfifoIP with 192.168.100.2/30
-// (the host↔DPU rshim link is per-host private, so every DPU can reuse
-// the same /30 — matching the pattern already in
-// examples/two-node-homelab.yaml and the homelab).
+// matches addr, fills each DPU's empty Hostname, TmfifoIP and TmfifoIface
+// with values that are unique WITHIN that host.
+//
+// The tmfifo link is per-host private, so the first DPU keeps the rshim
+// driver's own 192.168.100.2/30 on tmfifo_net0 — reusing it across
+// different hosts is correct and is what every single-DPU PoC does.
+// Additional DPUs on the SAME host each get the next /30 (192.168.100.6,
+// .10, ...) on the next rshim interface, because each BlueField presents
+// its own link and the host cannot hold two interfaces in one subnet.
+// They previously all got 192.168.100.2/30, which made dpubnkctl address
+// one DPU repeatedly and silently skip the rest (issue #20).
 //
 // Empty-only: never clobbers anything the operator (or a prior wizard
 // run) has already set.
@@ -735,6 +741,10 @@ func fillDPUWizardDefaults(p *poc.PoC, addr, hostName string) {
 		// generated default must not collide with an operator's choice
 		// (or with a DPU on another host).
 		taken := takenDPUHostnames(p)
+		// tmfifo values only have to be unique within this host, but must
+		// dodge whatever the operator already pinned on its other DPUs.
+		takenIP, takenIface := takenTmfifo(&p.Hosts[i])
+
 		for j := range dpus {
 			if dpus[j].Hostname == "" {
 				name := defaultDPUHostname(hostName, j, len(dpus), taken)
@@ -742,10 +752,66 @@ func fillDPUWizardDefaults(p *poc.PoC, addr, hostName string) {
 				taken[name] = true
 			}
 			if dpus[j].TmfifoIP == "" {
-				dpus[j].TmfifoIP = "192.168.100.2/30"
+				ip := nextFreeTmfifoIP(takenIP)
+				dpus[j].TmfifoIP = ip
+				takenIP[ip] = true
+			}
+			// Leave the first DPU's iface implicit — tmfifo_net0 is the
+			// default and every existing single-DPU poc.yaml omits it.
+			if dpus[j].TmfifoIface == "" && j > 0 {
+				iface := nextFreeTmfifoIface(takenIface)
+				dpus[j].TmfifoIface = iface
+				takenIface[iface] = true
 			}
 		}
 		return
+	}
+}
+
+// takenTmfifo collects the tmfifo addresses and rshim interfaces already
+// pinned on a host's DPUs, so generated defaults can dodge them. The
+// first DPU's implicit tmfifo_net0 counts as taken.
+func takenTmfifo(h *poc.Host) (ips, ifaces map[string]bool) {
+	ips, ifaces = map[string]bool{}, map[string]bool{}
+	for j := range h.DPUs {
+		if ip := h.DPUs[j].TmfifoIP; ip != "" {
+			ips[ip] = true
+		}
+		if ifc := h.DPUs[j].TmfifoIface; ifc != "" {
+			ifaces[ifc] = true
+		} else if j == 0 {
+			ifaces[poc.DefaultTmfifoIface] = true
+		}
+	}
+	return ips, ifaces
+}
+
+// nextFreeTmfifoIP returns the first unused DPU-side address from the
+// 192.168.100.0/24 rshim block, walking consecutive /30s: .2, .6, .10,
+// ... (each /30 spends .0 on the network, .1 on the host side, .3 on
+// broadcast). Stops at the end of the /24 — far more DPUs than any host
+// physically holds, so exhausting it means the input is wrong, and the
+// last address is returned so validate reports the collision rather than
+// this silently inventing an out-of-range value.
+func nextFreeTmfifoIP(taken map[string]bool) string {
+	var last string
+	for host := 2; host < 254; host += 4 {
+		cand := fmt.Sprintf("192.168.100.%d/30", host)
+		if !taken[cand] {
+			return cand
+		}
+		last = cand
+	}
+	return last
+}
+
+// nextFreeTmfifoIface returns the first unused tmfifo_net<N>.
+func nextFreeTmfifoIface(taken map[string]bool) string {
+	for n := 0; ; n++ {
+		cand := fmt.Sprintf("tmfifo_net%d", n)
+		if !taken[cand] {
+			return cand
+		}
 	}
 }
 
