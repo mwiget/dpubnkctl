@@ -2,7 +2,7 @@ apiVersion: k8s.f5.com/v1
 kind: CNEInstance
 metadata:
   name: {{.InstanceName}}
-  namespace: default
+  namespace: f5-bnk
 spec:
   product:
     gatewayAPI: true
@@ -14,7 +14,7 @@ spec:
     enabled: {{.DPUEnabled}}
   telemetry:
     loggingSubsystem:
-      enabled: false
+      enabled: true
     metricSubsystem:
       enabled: true
   certificate:
@@ -24,7 +24,7 @@ spec:
     uri: repo.f5.com
     imagePullSecrets:
     - name: far-secret
-    imagePullPolicy: Always
+    imagePullPolicy: {{.ImagePullPolicy}}
   networkAttachments:
 {{- range .NetworkAttachments}}
   - {{.}}
@@ -34,18 +34,12 @@ spec:
   dynamicRouting:
     enabled: true
   coreCollection:
-    enabled: false
+    enabled: true
   firewallACL:
     enabled: true
   advanced:
-    demoMode:
-      enabled: false
-    maintenanceMode:
-      enabled: false
     envDiscovery:
       enabled: false
-      stopOnFail: true
-      runAfterSuccess: true
     cneController:
       env:
       - name: "TMM_DEFAULT_MTU"
@@ -58,3 +52,7 @@ spec:
         value: "{{.DPUMtu}}"
       - name: "ZEBOS_STATE"
         value: legacy
+    pseudoCNI:
+      env:
+      - name: "EXCLUDE_CIDR"
+        value: "{{.PodCIDR}}"

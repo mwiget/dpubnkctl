@@ -21,6 +21,8 @@ type CNEInputs struct {
 	DeploymentSize     string
 	NetworkAttachments []string
 	DPUMtu             int
+	ImagePullPolicy    string
+	PodCIDR            string
 }
 
 // VLANInputs is one F5SPKVlan entry. Aggregated from all DPUs by tag —
@@ -44,26 +46,26 @@ type GatewayClassInputs struct {
 // "Small" otherwise. NetworkAttachments hard-coded to sf-external/
 // sf-internal (operator can override later via poc.yaml.bnk).
 func RenderCNEInstance(p *poc.PoC) (string, error) {
-	dpuCount := 0
-	for _, h := range p.Hosts {
-		dpuCount += len(h.DPUs)
-	}
-	deployment := "Small"
-	if dpuCount >= 2 {
-		deployment = "Large"
-	}
 	mtu := p.Network.DPUMTU
 	if mtu == 0 {
 		mtu = version.DefaultDPUMTU
 	}
+	pullPolicy := "Always"
+	if p.Airgap != nil && p.Airgap.Mode != "" {
+		pullPolicy = "IfNotPresent"
+	}
+	storageClass := "nfs"
+	podCIDR := "10.233.64.0/18"
 	in := CNEInputs{
 		InstanceName:       "bnk-instance",
 		ManifestVersion:    version.CNEManifestVersion,
-		StorageClass:       "local-path",
-		DPUEnabled:         dpuCount > 0,
-		DeploymentSize:     deployment,
+		StorageClass:       storageClass,
+		DPUEnabled:         dpuCount(p) > 0,
+		DeploymentSize:     "Large",
 		NetworkAttachments: []string{"sf-external", "sf-internal"},
 		DPUMtu:             mtu,
+		ImagePullPolicy:    pullPolicy,
+		PodCIDR:            podCIDR,
 	}
 	return renderTemplate("templates/cne-instance.yaml.tmpl", in)
 }
@@ -172,6 +174,42 @@ func dpuCount(p *poc.PoC) int {
 		n += len(h.DPUs)
 	}
 	return n
+}
+
+// CalicoInputs feeds calico-custom-resources.yaml.tmpl.
+type CalicoInputs struct {
+	PodCIDR string
+}
+
+// RenderCalicoCustomResources produces the calico Installation +
+// APIServer CRs with the cluster's pod CIDR.
+func RenderCalicoCustomResources(p *poc.PoC) (string, error) {
+	in := CalicoInputs{
+		PodCIDR: "10.233.64.0/18",
+	}
+	return renderTemplate("templates/network/calico-custom-resources.yaml.tmpl", in)
+}
+
+// NFSInputs feeds nfs-storageclass.yaml.tmpl.
+type NFSInputs struct {
+	NFSServer string
+	NFSPath   string
+}
+
+// RenderNFSStorageClass produces the NFS StorageClass YAML.
+func RenderNFSStorageClass(p *poc.PoC) (string, error) {
+	server := p.Network.NFSServer
+	path := p.Network.NFSPath
+	if server == "" {
+		server = "192.168.100.1"
+	}
+	if path == "" {
+		path = "/srv/nfs/f5-bnk"
+	}
+	return renderTemplate("templates/nfs-storageclass.yaml.tmpl", NFSInputs{
+		NFSServer: server,
+		NFSPath:   path,
+	})
 }
 
 var _ = strings.Builder{} // keep strings import for future use

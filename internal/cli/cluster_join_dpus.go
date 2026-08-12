@@ -27,6 +27,7 @@ type clusterJoinDPUsFlags struct {
 	timeout        time.Duration
 	skipInstall    bool
 	skipLabelTaint bool
+	airgap         string
 }
 
 func newClusterJoinDPUsCmd() *cobra.Command {
@@ -59,6 +60,7 @@ Required gates:
 	cmd.Flags().DurationVar(&f.timeout, "timeout", 30*time.Minute, "Per-DPU join timeout")
 	cmd.Flags().BoolVar(&f.skipInstall, "skip-install", false, "Assume kubelet/kubeadm/kubectl already on DPU; just join")
 	cmd.Flags().BoolVar(&f.skipLabelTaint, "skip-label-taint", false, "Don't label/taint DPU nodes after join")
+	cmd.Flags().StringVar(&f.airgap, "airgap", "", "Airgap mode (propagated from e2e)")
 	return cmd
 }
 
@@ -336,14 +338,72 @@ func joinOneDPU(ctx context.Context, repo string, j dpuJob, jc *cluster.JoinComm
 	}
 
 	if !f.skipInstall {
-		fmt.Fprintln(w, "installing kubelet/kubeadm/kubectl ...")
-		instCtx, icancel := context.WithTimeout(ctx, 10*time.Minute)
-		err := cluster.InstallKubeBinaries(instCtx, c, k8sMinor)
-		icancel()
-		if err != nil {
-			return joinOutcomeJoined, err
+		if f.airgap != "" {
+			pocData, _ := poc.Load(repo)
+			jumphostIP := ""
+			if pocData != nil && pocData.Airgap != nil {
+				jumphostIP = pocData.Airgap.JumphostIP
+			}
+
+			debDir := filepath.Join(repo, "artifacts", "airgap", "dpu-debs")
+			imgDir := filepath.Join(repo, "artifacts", "airgap", "images-dpu")
+
+			// Push files via PF (data-plane link, ~8x faster than tmfifo)
+			dpuPFIP := dpuInternalIP(j.dpu)
+			if dpuPFIP == "" {
+				return joinOutcomeJoined, fmt.Errorf("no internal VLAN IP found for DPU %s — cannot push files via PF", j.dpu.Hostname)
+			}
+			hostCfg2, cfgErr := sshConfigForHost(repo, j.host, 30*time.Second)
+			if cfgErr != nil {
+				return joinOutcomeJoined, fmt.Errorf("host ssh config for PF push: %w", cfgErr)
+			}
+			dialCtx2, cancel2 := context.WithTimeout(ctx, 30*time.Second)
+			hostC2, hostErr := ssh.Dial(dialCtx2, hostCfg2)
+			cancel2()
+			if hostErr != nil {
+				return joinOutcomeJoined, fmt.Errorf("ssh host for PF push: %w", hostErr)
+			}
+			defer hostC2.Close()
+
+			fmt.Fprintf(w, "pushing files via PF (%s) ...\n", dpuPFIP)
+			hostKeyPath := j.host.SSH.KeyRef
+			if !filepath.IsAbs(hostKeyPath) {
+				hostKeyPath = filepath.Join(repo, hostKeyPath)
+			}
+			if err := pushViaPF(ctx, w, hostC2, c, debDir, "/tmp/airgap-debs", dpuPFIP, hostKeyPath); err != nil {
+				return joinOutcomeJoined, fmt.Errorf("PF push debs failed (data-plane not working): %w", err)
+			}
+			if err := pushViaPF(ctx, w, hostC2, c, imgDir, "/tmp/airgap-images", dpuPFIP, hostKeyPath); err != nil {
+				return joinOutcomeJoined, fmt.Errorf("PF push images failed (data-plane not working): %w", err)
+			}
+
+			fmt.Fprintln(w, "installing kubelet/kubeadm/kubectl offline ...")
+			instCtx, icancel := context.WithTimeout(ctx, 10*time.Minute)
+			apiServerIP := ""
+			if pocData != nil {
+				apiServerIP = strings.SplitN(pocData.Network.ClusterAPIServerAddress, ":", 2)[0]
+			}
+			err := cluster.InstallKubeBinariesOffline(instCtx, c, k8sMinor, jumphostIP, apiServerIP)
+			icancel()
+			if err != nil {
+				return joinOutcomeJoined, err
+			}
+
+			fmt.Fprintln(w, "importing container images ...")
+			if err := cluster.ImportContainerImages(ctx, c, "/tmp/airgap-images", jumphostIP+":5000"); err != nil {
+				return joinOutcomeJoined, err
+			}
+			fmt.Fprintln(w, "airgap install ok")
+		} else {
+			fmt.Fprintln(w, "installing kubelet/kubeadm/kubectl ...")
+			instCtx, icancel := context.WithTimeout(ctx, 10*time.Minute)
+			err := cluster.InstallKubeBinaries(instCtx, c, k8sMinor)
+			icancel()
+			if err != nil {
+				return joinOutcomeJoined, err
+			}
+			fmt.Fprintln(w, "install ok")
 		}
-		fmt.Fprintln(w, "install ok")
 	}
 
 	if nodeIP != "" {
@@ -352,7 +412,7 @@ func joinOneDPU(ctx context.Context, repo string, j dpuJob, jc *cluster.JoinComm
 		fmt.Fprintln(w, "running kubeadm join ...")
 	}
 	if _, err := cluster.JoinDPU(ctx, c, jc, j.dpu.Hostname, nodeIP); err != nil {
-		return joinOutcomeJoined, err
+		return joinOutcomeJoined, fmt.Errorf("kubeadm join failed on %s: %w\n\nTo retry, run on the DPU:\n  sudo kubeadm reset -f\n  sudo rm -rf /etc/kubernetes /var/lib/kubelet\nThen re-run this phase.", j.dpu.Hostname, err)
 	}
 	// Restart containerd so its CRI re-scans /etc/cni/net.d. kubeadm
 	// join only waited for the kubelet TLS bootstrap; it didn't trigger
@@ -402,6 +462,110 @@ func redactToken(joinCmd string) string {
 		return joinCmd[:idx] + "--token <redacted>"
 	}
 	return joinCmd[:idx] + "--token <redacted>" + rest[end:]
+}
+
+func pushDirToRemote(ctx context.Context, c *ssh.Client, localDir, remoteDir string) error {
+	c.Run(ctx, "mkdir -p "+remoteDir)
+	entries, err := os.ReadDir(localDir)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", localDir, err)
+	}
+
+	if remoteMatchesLocal(ctx, c, entries, remoteDir) {
+		return nil
+	}
+
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		local := filepath.Join(localDir, e.Name())
+		remote := remoteDir + "/" + e.Name()
+		if err := c.PushFile(ctx, local, remote, nil); err != nil {
+			return fmt.Errorf("push %s: %w", e.Name(), err)
+		}
+	}
+	return nil
+}
+
+func remoteMatchesLocal(ctx context.Context, c *ssh.Client, localEntries []os.DirEntry, remoteDir string) bool {
+	r := c.Run(ctx, fmt.Sprintf("ls -1 %s 2>/dev/null | wc -l", remoteDir))
+	if !r.OK() {
+		return false
+	}
+	remoteCount := strings.TrimSpace(r.Stdout)
+	var localCount int
+	for _, e := range localEntries {
+		if !e.IsDir() {
+			localCount++
+		}
+	}
+	if fmt.Sprintf("%d", localCount) != remoteCount {
+		return false
+	}
+	return localCount > 0
+}
+
+func dpuInternalIP(dpu *poc.DPU) string {
+	for _, v := range dpu.VLANs {
+		if v.Role == "internal" {
+			return strings.SplitN(v.IP, "/", 2)[0]
+		}
+	}
+	return ""
+}
+
+func pushViaPF(ctx context.Context, w io.Writer, hostC *ssh.Client, dpuC *ssh.Client, localDir, remoteDir, dpuPFIP, hostKeyPath string) error {
+	entries, err := os.ReadDir(localDir)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", localDir, err)
+	}
+
+	dpuC.Run(ctx, "mkdir -p "+remoteDir)
+
+	if remoteMatchesLocal(ctx, dpuC, entries, remoteDir) {
+		fmt.Fprintf(w, "  %s already on DPU — skipping\n", filepath.Base(localDir))
+		return nil
+	}
+
+	hostTmpDir := "/tmp/airgap-stage-" + filepath.Base(localDir)
+	hostC.Run(ctx, "mkdir -p "+hostTmpDir)
+
+	// Push the SSH key to the host so it can SCP to the DPU
+	hostTmpKey := "/tmp/airgap-dpu-key"
+	if err := hostC.PushFile(ctx, hostKeyPath, hostTmpKey, nil); err != nil {
+		return fmt.Errorf("push SSH key to host: %w", err)
+	}
+	hostC.Run(ctx, "chmod 600 "+hostTmpKey)
+
+	var fileCount int
+	fmt.Fprintf(w, "  jumphost → host: %s ...\n", filepath.Base(localDir))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		local := filepath.Join(localDir, e.Name())
+		remote := hostTmpDir + "/" + e.Name()
+		if err := hostC.PushFile(ctx, local, remote, nil); err != nil {
+			return fmt.Errorf("push to host %s: %w", e.Name(), err)
+		}
+		fileCount++
+	}
+	fmt.Fprintf(w, "  jumphost → host: %d files done\n", fileCount)
+
+	fmt.Fprintf(w, "  host → DPU via PF: %s ...\n", filepath.Base(localDir))
+	scpCmd := fmt.Sprintf("scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s %s/* ubuntu@%s:%s/",
+		hostTmpKey, hostTmpDir, dpuPFIP, remoteDir)
+	r := hostC.Run(ctx, scpCmd)
+
+	// Cleanup: remove key and staging dir from host
+	hostC.Run(ctx, "rm -f "+hostTmpKey)
+	hostC.Run(ctx, "rm -rf "+hostTmpDir)
+
+	if !r.OK() {
+		return fmt.Errorf("scp to DPU: exit=%d stderr=%s", r.ExitCode, r.Stderr)
+	}
+	return nil
 }
 
 func appendJoinJournal(repo, pocName string, jobs []dpuJob) {

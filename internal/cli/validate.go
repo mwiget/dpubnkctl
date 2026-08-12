@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 
 	"github.com/spf13/cobra"
 
+	"github.com/mwiget/dpubnkctl/internal/airgap"
 	"github.com/mwiget/dpubnkctl/internal/poc"
 )
 
@@ -13,6 +15,7 @@ func newValidateCmd() *cobra.Command {
 	var (
 		pocDir string
 		strict bool
+		airgapFlag string
 	)
 	cmd := &cobra.Command{
 		Use:   "validate",
@@ -35,15 +38,16 @@ Warnings are values that should be confirmed but don't block:
 
 Exit code 0 on no errors. --strict treats warnings as failures.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runValidate(cmd.OutOrStdout(), pocDir, strict)
+			return runValidate(cmd.Context(), cmd.OutOrStdout(), pocDir, strict, airgapFlag)
 		},
 	}
 	cmd.Flags().StringVar(&pocDir, "poc", "", "PoC repo path (default: current directory)")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Treat warnings as failures (non-zero exit)")
+	cmd.Flags().StringVar(&airgapFlag, "airgap", "", "Airgap mode (propagated from e2e)")
 	return cmd
 }
 
-func runValidate(out io.Writer, pocDir string, strict bool) error {
+func runValidate(ctx context.Context, out io.Writer, pocDir string, strict bool, airgapMode string) error {
 	repo, err := resolvePoCDir(pocDir)
 	if err != nil {
 		return err
@@ -59,6 +63,14 @@ func runValidate(out io.Writer, pocDir string, strict bool) error {
 	}
 	if strict && len(r.Warnings) > 0 {
 		return fmt.Errorf("validate: %d warning(s) with --strict", len(r.Warnings))
+	}
+	if airgapMode != "" && p.Airgap != nil {
+		cfg := airgap.NewConfig(repo, p)
+		if cfg != nil {
+			if err := airgap.ValidateInfra(ctx, out, cfg); err != nil {
+				return fmt.Errorf("airgap validation: %w", err)
+			}
+		}
 	}
 	return nil
 }

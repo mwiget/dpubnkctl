@@ -47,6 +47,7 @@ spec:
       containers:
       - name: install-cni-plugins
         image: ghcr.io/jitesoft/alpine
+        imagePullPolicy: IfNotPresent
         command: ["/bin/sh", "/scripts/install_cni.sh"]
         resources:
           requests:

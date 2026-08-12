@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/mwiget/dpubnkctl/internal/airgap"
 	"github.com/mwiget/dpubnkctl/internal/bnkforge"
 	"github.com/mwiget/dpubnkctl/internal/cluster"
 	"github.com/mwiget/dpubnkctl/internal/deploy"
@@ -126,6 +127,14 @@ func runDestroyAll(ctx context.Context, out io.Writer, f *destroyAllFlags) error
 		fmt.Fprintln(out, "      cluster reset.")
 	} else {
 		fmt.Fprintln(out, "[3/3] (--skip-cluster)")
+	}
+
+	// Airgap teardown: stop registry + file server containers if they exist.
+	if p.Airgap != nil && p.Airgap.Mode != "" {
+		fmt.Fprintln(out, "\n[airgap] tearing down local registry + file server ...")
+		_ = airgap.StopRegistry(ctx, out)
+		_ = airgap.StopFileServer(ctx, out)
+		fmt.Fprintln(out, "      airgap infrastructure removed.")
 	}
 
 	// Inverse of cluster-up's auto-launch hook: if bnk_forge.enabled,
@@ -330,21 +339,44 @@ func destroyBNK(ctx context.Context, repo string, p *poc.PoC, out io.Writer, tim
 	fmt.Fprintln(out, "      → delete cert-manager namespace")
 	_ = r.Kubectl(ctx, "delete", "namespace", "cert-manager", "--ignore-not-found", "--wait=false")
 
-	// 6. Default-namespace stragglers — the per-tenant workload that
-	//    deploy-cne creates (TMM + dssm + cne-controller etc.) and the
-	//    F5SPKVlan/NAD configs we apply manually.
-	fmt.Fprintln(out, "      → delete F5SPKVlans + NADs + far-secret in default")
+	// 6. f5-bnk namespace — BNK workloads (TMM, dssm, cne-controller etc.),
+	//    F5SPKVlans, NADs, and far-secret all live here now.
+	fmt.Fprintln(out, "      → delete F5SPKVlans + NADs + far-secret in f5-bnk")
+	_ = r.Kubectl(ctx, "-n", "f5-bnk", "delete", "f5-spk-vlans.k8s.f5net.com", "--all", "--ignore-not-found", "--wait=false")
+	_ = r.Kubectl(ctx, "-n", "f5-bnk", "delete", "net-attach-def", "sf-external", "sf-internal", "--ignore-not-found", "--wait=false")
+	_ = r.Kubectl(ctx, "-n", "f5-bnk", "delete", "secret", "far-secret", "--ignore-not-found", "--wait=false")
+	for _, ws := range []string{"deploy", "statefulset", "daemonset"} {
+		_ = r.Kubectl(ctx, "-n", "f5-bnk", "delete", ws,
+			"-l", "app.kubernetes.io/managed-by=f5-lifecycle-operator",
+			"--ignore-not-found", "--wait=false")
+	}
+	fmt.Fprintln(out, "      → delete f5-bnk namespace")
+	_ = r.Kubectl(ctx, "delete", "namespace", "f5-bnk", "--ignore-not-found", "--wait=false")
+
+	// Backwards compat: also clean up default namespace for clusters
+	// deployed with older dpubnkctl versions.
+	fmt.Fprintln(out, "      → clean up default namespace (backwards compat)")
 	_ = r.Kubectl(ctx, "-n", "default", "delete", "f5-spk-vlans.k8s.f5net.com", "--all", "--ignore-not-found", "--wait=false")
 	_ = r.Kubectl(ctx, "-n", "default", "delete", "net-attach-def", "sf-external", "sf-internal", "--ignore-not-found", "--wait=false")
 	_ = r.Kubectl(ctx, "-n", "default", "delete", "secret", "far-secret", "--ignore-not-found", "--wait=false")
-	// The CNEInstance-created workload deployments/statefulsets/dameonsets
-	// in default usually delete with the CNEInstance, but sweep up any
-	// that are still around.
 	for _, ws := range []string{"deploy", "statefulset", "daemonset"} {
 		_ = r.Kubectl(ctx, "-n", "default", "delete", ws,
 			"-l", "app.kubernetes.io/managed-by=f5-lifecycle-operator",
 			"--ignore-not-found", "--wait=false")
 	}
+
+	// 7. Tigera-operator / calico namespaces.
+	fmt.Fprintln(out, "      → delete tigera-operator + calico namespaces")
+	for _, ns := range []string{"tigera-operator", "calico-system", "calico-apiserver"} {
+		_ = r.Kubectl(ctx, "delete", "namespace", ns, "--ignore-not-found", "--wait=false")
+	}
+
+	// 8. NFS CSI cleanup.
+	fmt.Fprintln(out, "      → helm uninstall NFS CSI driver")
+	_ = r.Helm(ctx, "uninstall", "csi-driver-nfs", "--namespace", "kube-system", "--ignore-not-found")
+	fmt.Fprintln(out, "      → delete NFS StorageClass")
+	_ = r.Kubectl(ctx, "delete", "sc", "nfs", "--ignore-not-found")
+
 	return nil
 }
 

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mwiget/dpubnkctl/internal/ssh"
+	"github.com/mwiget/dpubnkctl/internal/version"
 )
 
 // JoinCommand is the result of `kubeadm token create --print-join-command`
@@ -136,7 +137,7 @@ func InstallKubeBinaries(ctx context.Context, dpu *ssh.Client, k8sMinor string) 
 		"sudo -n systemctl enable --now containerd",
 		// Stop kubelet so it doesn't crash-loop with no certs. kubeadm
 		// join will start it at the end with the right config.
-		"sudo -n systemctl disable --now kubelet || true",
+		"(sudo -n systemctl disable --now kubelet || true)",
 		// Path bridge: kubespray puts the cluster CA at /etc/kubernetes/ssl/
 		// but apt's kubeadm writes to /etc/kubernetes/pki/. The kubelet
 		// config we'll receive from the cluster's kubeadm-config CM
@@ -161,6 +162,99 @@ func RestartContainerd(ctx context.Context, c *ssh.Client) error {
 	r := c.Run(ctx, "sudo -n systemctl restart containerd")
 	if !r.OK() {
 		return fmt.Errorf("restart containerd: exit=%d %s", r.ExitCode, strings.TrimSpace(r.Stderr+r.Stdout))
+	}
+	return nil
+}
+
+// InstallKubeBinariesOffline replaces the internet-dependent
+// InstallKubeBinaries for airgap mode. Instead of curling GPG keys
+// and running apt-get install from pkgs.k8s.io, it uses pre-staged
+// .deb files that were SFTP-pushed to /tmp/airgap-debs/ by the caller.
+// jumphostIP is used to configure containerd registry mirrors and TLS trust.
+func InstallKubeBinariesOffline(ctx context.Context, dpu *ssh.Client, k8sMinor, jumphostIP, apiServerIP string) error {
+	k8sMinor = normalizeK8sMinor(k8sMinor)
+	versionPin := k8sMinor + ".*"
+	registryHost := jumphostIP + ":5000"
+
+	script := strings.Join([]string{
+		"set -eo pipefail",
+		// Remove pre-shipped K8s packages and stale sources
+		"sudo -n apt-mark unhold kubelet kubeadm kubectl || true",
+		"sudo -n rm -f /etc/apt/sources.list.d/kubernetes.sources /etc/apt/sources.list.d/kubernetes.list",
+		// Remove BFB-shipped K8s packages (may be newer than what we need)
+		"sudo -n dpkg --purge kubeadm kubelet kubectl cri-tools 2>/dev/null || true",
+		// Install containerd.io only if no containerd is already present (BFB ships its own)
+		"if ! dpkg -l containerd 2>/dev/null | grep -q ^ii; then sudo -n dpkg -i /tmp/airgap-debs/containerd.io_*.deb || true; fi",
+		"sudo -n mkdir -p /etc/containerd",
+		// Remove NVIDIA drop-in that overrides our config with config-mlnx.toml
+		"sudo -n rm -f /usr/lib/systemd/system/containerd.service.d/90-containerd-mlnx-config.conf",
+		"sudo -n systemctl daemon-reload",
+		"sudo -n containerd config default | sudo -n tee /etc/containerd/config.toml >/dev/null",
+		"sudo -n sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml",
+		// Set sandbox image to one we import (containerd default may be pause:3.8 which we don't ship)
+		fmt.Sprintf(`sudo -n sed -i 's|sandbox_image = "registry.k8s.io/pause:.*"|sandbox_image = "registry.k8s.io/pause:%s"|' /etc/containerd/config.toml`, version.PauseImageTag),
+		// Configure containerd to trust the local registry
+		fmt.Sprintf("sudo -n mkdir -p /etc/containerd/certs.d/%s", registryHost),
+		fmt.Sprintf("printf 'server = \"https://%s\"\\n\\n[host.\"https://%s\"]\\n  capabilities = [\"pull\", \"resolve\"]\\n  skip_verify = true\\n' | sudo -n tee /etc/containerd/certs.d/%s/hosts.toml >/dev/null", registryHost, registryHost, registryHost),
+		`sudo -n sed -i 's|config_path = ""|config_path = "/etc/containerd/certs.d"|' /etc/containerd/config.toml`,
+		// Try to add registry CA to system trust — may fail if DPU can't reach the registry directly
+		fmt.Sprintf("(openssl s_client -connect %s -showcerts </dev/null 2>/dev/null | openssl x509 > /tmp/airgap-registry.crt && sudo -n cp /tmp/airgap-registry.crt /usr/local/share/ca-certificates/airgap-registry.crt && sudo -n update-ca-certificates) 2>/dev/null || true", registryHost),
+		"sudo -n systemctl restart containerd",
+		// Install K8s debs
+		"sudo -n dpkg -i /tmp/airgap-debs/kubernetes-cni_*.deb /tmp/airgap-debs/cri-tools_*.deb /tmp/airgap-debs/kubelet_*.deb /tmp/airgap-debs/kubeadm_*.deb /tmp/airgap-debs/kubectl_*.deb",
+		fmt.Sprintf("for pkg in kubelet kubeadm kubectl; do "+
+			"v=$(dpkg-query -W -f='${Version}' \"$pkg\" 2>/dev/null); "+
+			"case \"$v\" in %s.*) ;; *) echo \"ERROR: $pkg version $v not in %s\" >&2; exit 1 ;; esac; "+
+			"done", k8sMinor, versionPin),
+		"sudo -n apt-mark hold kubelet kubeadm kubectl",
+		"sudo -n systemctl enable --now containerd",
+		"(sudo -n systemctl disable --now kubelet || true)",
+		"sudo -n mkdir -p /etc/kubernetes/pki",
+		"sudo -n ln -sfn pki /etc/kubernetes/ssl",
+		// Default route via tmfifo — required for calico proxy ARP to work.
+		// Without it, pods on the DPU can't resolve the link-local gateway
+		// (169.254.1.1) because proxy_arp only responds when the host can
+		// route to the requested IP.
+		"(sudo -n ip route add default via 192.168.100.1 dev tmfifo_net0 metric 1025 2>/dev/null || true)",
+	}, " && ")
+
+	r := dpu.Run(ctx, script)
+	if !r.OK() {
+		return fmt.Errorf("install kube binaries offline on DPU: exit=%d\nstdout: %s\nstderr: %s",
+			r.ExitCode, truncate(r.Stdout, 500), truncate(r.Stderr, 500))
+	}
+	return nil
+}
+
+// ImportContainerImages runs `ctr -n k8s.io images import` for each
+// tarball on the remote node, then re-tags every imported image with
+// the registry prefix so kubelet (which sees kubespray-rewritten refs
+// like <jumphost>:5000/calico/node:v3.29.5) finds them locally.
+func ImportContainerImages(ctx context.Context, c *ssh.Client, remoteTarDir, registryHost string) error {
+	script := fmt.Sprintf(
+		"for f in %s/*.tar; do echo \"importing $f ...\"; sudo -n ctr -n k8s.io images import \"$f\"; done",
+		remoteTarDir)
+	r := c.Run(ctx, script)
+	if !r.OK() {
+		return fmt.Errorf("ctr images import: exit=%d\nstdout: %s\nstderr: %s",
+			r.ExitCode, truncate(r.Stdout, 500), truncate(r.Stderr, 500))
+	}
+
+	if registryHost == "" {
+		return nil
+	}
+
+	retagScript := fmt.Sprintf(`for img in $(sudo ctr -n k8s.io images ls -q | grep -v '^sha256:' | grep -v '%s'); do
+  short=$(echo "$img" | sed -E 's|^[^/]+/||')
+  target="%s/$short"
+  echo "tagging $img -> $target"
+  sudo ctr -n k8s.io images tag "$img" "$target" 2>/dev/null || true
+done`, registryHost, registryHost)
+
+	r2 := c.Run(ctx, retagScript)
+	if !r2.OK() {
+		return fmt.Errorf("retag images: exit=%d\nstdout: %s\nstderr: %s",
+			r2.ExitCode, truncate(r2.Stdout, 500), truncate(r2.Stderr, 500))
 	}
 	return nil
 }

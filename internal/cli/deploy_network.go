@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -13,11 +14,13 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/mwiget/dpubnkctl/internal/airgap"
 	"github.com/mwiget/dpubnkctl/internal/cluster"
 	"github.com/mwiget/dpubnkctl/internal/deploy"
 	"github.com/mwiget/dpubnkctl/internal/embedded"
 	"github.com/mwiget/dpubnkctl/internal/poc"
 	"github.com/mwiget/dpubnkctl/internal/ssh"
+	"github.com/mwiget/dpubnkctl/internal/version"
 )
 
 type deployNetworkFlags struct {
@@ -26,6 +29,7 @@ type deployNetworkFlags struct {
 	confirmDeploy string
 	skipPull      bool
 	waitTimeout   time.Duration
+	airgap        string
 }
 
 func newDeployNetworkCmd() *cobra.Command {
@@ -63,22 +67,20 @@ Required gates:
 	cmd.Flags().StringVar(&f.confirmDeploy, "confirm-deploy", "", "Must equal poc.yaml.metadata.name (typo guard)")
 	cmd.Flags().BoolVar(&f.skipPull, "skip-pull", false, "Skip docker pull of alpine/k8s image")
 	cmd.Flags().DurationVar(&f.waitTimeout, "wait-timeout", 5*time.Minute, "Per-rollout wait")
+	cmd.Flags().StringVar(&f.airgap, "airgap", "", "Airgap mode (propagated from e2e)")
 	return cmd
 }
 
-// applyOrder is the f5-bnk-tested sequence — multus first (provides
-// NAD CRD), then plugins, then SR-IOV, then NADs last. local-path
-// provisioner appended so BNK control-plane PVCs (DSSM, observer,
-// downloader, CWC, ...) bind on a fresh cluster — kubespray doesn't
-// install any storage class by default.
+// applyOrder is the proven offline-guide sequence: multus thick first
+// (provides the NAD CRD + installs CNI binaries), then SR-IOV device
+// plugin + config, then NADs. cni-plugins.yaml and sriov-cni-daemonset.yaml
+// are NOT used — the thick multus daemon and the sf CNI binary handle
+// everything the offline guide needs.
 var applyOrder = []string{
 	"multus.yaml",
-	"cni-plugins.yaml",
 	"sriovdp-config.yaml",
-	"sriov-cni-daemonset.yaml",
 	"sriovdp-daemonset.yaml",
 	"nad-sf.yaml",
-	"local-path-provisioner.yaml",
 }
 
 func runDeployNetwork(ctx context.Context, out io.Writer, f *deployNetworkFlags) error {
@@ -107,7 +109,7 @@ func runDeployNetwork(ctx context.Context, out io.Writer, f *deployNetworkFlags)
 	fmt.Fprintf(out, "Cluster:    %s\n\n", kubeconfig)
 
 	if !f.skipPull {
-		fmt.Fprintln(out, "[1/3] Tools preflight ...")
+		fmt.Fprintln(out, "[1/5] Tools preflight ...")
 		if err := r.CheckTools(ctx); err != nil {
 			return err
 		}
@@ -120,23 +122,66 @@ func runDeployNetwork(ctx context.Context, out io.Writer, f *deployNetworkFlags)
 		return err
 	}
 
-	fmt.Fprintf(out, "[2/3] Applying %d manifests in order ...\n", len(applyOrder))
+	// ── Step 2: Calico via tigera-operator ──────────────────────────
+	// Deploy calico BEFORE multus so the CNI delegate chain is ready
+	// when multus starts — eliminates the first-start race where multus
+	// records loopback-only delegates in 00-multus.conf.
+	fmt.Fprintln(out, "[2/5] Deploying Calico via tigera-operator ...")
+
+	fmt.Fprintln(out, "      → tigera-operator.yaml")
+	if err := applyTigeraOperator(ctx, r, repo, p, stagedDir); err != nil {
+		return fmt.Errorf("apply tigera-operator: %w", err)
+	}
+
+	// Wait for the tigera-operator deployment to be ready.
+	fmt.Fprintln(out, "      waiting for tigera-operator ...")
+	if err := r.Kubectl(ctx, "rollout", "status", "-n", "tigera-operator",
+		"deploy/tigera-operator", "--timeout=3m"); err != nil {
+		fmt.Fprintf(out, "      WARN: tigera-operator not ready: %v\n", err)
+	}
+
+	// Deploy calico custom-resources (Installation + APIServer CRs).
+	calicoRes, err := deploy.RenderCalicoCustomResources(p)
+	if err != nil {
+		return fmt.Errorf("render calico-custom-resources: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(stagedDir, "calico-custom-resources.yaml"), []byte(calicoRes), 0o644); err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "      → calico-custom-resources.yaml")
+	if err := r.Apply(ctx, calicoRes); err != nil {
+		return fmt.Errorf("apply calico-custom-resources: %w", err)
+	}
+
+	// Wait for calico-node DaemonSet to roll out.
+	fmt.Fprintln(out, "      waiting for calico-node ...")
+	if err := r.Kubectl(ctx, "rollout", "status", "-n", "calico-system",
+		"ds/calico-node", "--timeout=5m"); err != nil {
+		fmt.Fprintf(out, "      WARN: calico-node not fully Ready: %v\n", err)
+	}
+	fmt.Fprintln(out, "      calico ready.")
+
+	// coredns and dns-autoscaler are created by kubespray before calico
+	// exists. They get stuck because there's no CNI. Delete them now
+	// so Kubernetes recreates them with working calico networking.
+	fmt.Fprintln(out, "      Restarting coredns + dns-autoscaler ...")
+	_ = r.Kubectl(ctx, "-n", "kube-system", "delete", "pod", "-l", "k8s-app=kube-dns", "--ignore-not-found", "--wait=false")
+	_ = r.Kubectl(ctx, "-n", "kube-system", "delete", "pod", "-l", "k8s-app=dns-autoscaler", "--ignore-not-found", "--wait=false")
+
+	// ── Step 3: Multus + SR-IOV manifests ───────────────────────────
+	fmt.Fprintf(out, "[3/5] Applying %d manifests in order ...\n", len(applyOrder))
 	for _, name := range applyOrder {
 		raw, err := embedded.Templates.ReadFile("templates/network/" + name)
 		if err != nil {
 			return fmt.Errorf("read embedded %s: %w", name, err)
 		}
+		if f.airgap != "" {
+			raw = bytes.ReplaceAll(raw, []byte("imagePullPolicy: Always"), []byte("imagePullPolicy: IfNotPresent"))
+		}
 		if err := os.WriteFile(filepath.Join(stagedDir, name), raw, 0o644); err != nil {
 			return err
 		}
 		fmt.Fprintf(out, "      → %s\n", name)
-		// Pre-create every namespace referenced in this manifest.
-		// `default` always exists, but custom-targeted NADs may reference
-		// f5-operators / cert-manager / etc. before those namespaces
-		// land. kubectl apply against a missing namespace fails with
-		// `Error from server (NotFound): namespaces "X" not found`.
-		// (AGENTS.md #14.) Idempotent — applying an existing Namespace
-		// manifest is a no-op.
 		for _, ns := range extractNamespaces(raw) {
 			if ns == "" || ns == "default" || ns == "kube-system" {
 				continue
@@ -148,10 +193,6 @@ func runDeployNetwork(ctx context.Context, out io.Writer, f *deployNetworkFlags)
 		if err := r.Apply(ctx, string(raw)); err != nil {
 			return fmt.Errorf("apply %s: %w", name, err)
 		}
-		// After multus.yaml lands, the NAD CRD is created — wait for it
-		// to become Established before we apply any NADs (otherwise
-		// kubectl's API discovery cache hasn't refreshed and reports
-		// "no matches for kind NetworkAttachmentDefinition").
 		if name == "multus.yaml" {
 			if err := r.Wait(ctx, "", "Established",
 				"crd/network-attachment-definitions.k8s.cni.cncf.io", 2*time.Minute); err != nil {
@@ -161,182 +202,127 @@ func runDeployNetwork(ctx context.Context, out io.Writer, f *deployNetworkFlags)
 	}
 	fmt.Fprintln(out, "      all applied.")
 
-	// 3. Wait for the daemonsets to roll out.
-	fmt.Fprintln(out, "[3/3] Waiting for Multus + SR-IOV daemonsets to be Ready ...")
-	rollouts := []struct {
-		ns       string
-		dsName   string
-		friendly string
-	}{
-		{"kube-system", "kube-multus-ds", "Multus"},
-		{"kube-system", "kube-sriov-cni-ds", "SR-IOV CNI"},
-		{"kube-system", "kube-sriov-device-plugin", "SR-IOV device plugin"},
+	// Restart multus to force a CNI config rescan. The thick multus
+	// daemon caches /etc/cni/net.d/ at startup; if it started before
+	// calico's install-cni init container dropped the calico conflist
+	// on the DPU, multus uses 99-loopback.conf as the cluster network
+	// delegate and all pods on that node fail with "missing network name".
+	// Restarting after calico is confirmed 1/1 guarantees the rescan
+	// picks up the calico config.
+	fmt.Fprintln(out, "\n      Restarting multus to pick up calico CNI config ...")
+	if err := r.Kubectl(ctx, "rollout", "restart", "-n", "kube-system", "ds/kube-multus-ds"); err != nil {
+		fmt.Fprintf(out, "      WARN: multus restart failed: %v\n", err)
 	}
-	for _, ro := range rollouts {
-		fmt.Fprintf(out, "      waiting on daemonset/%s ...\n", ro.dsName)
-		// Poll for "all desired pods scheduled". `kubectl rollout status ds`
-		// is the right idiom but our Wait wraps `kubectl wait` — use
-		// status by --for=condition=Available isn't supported on DaemonSet,
-		// so fall back to pod readiness via label selector.
-		if err := r.Wait(ctx, ro.ns, "Ready",
-			"pod", f.waitTimeout,
-			"-l", "name="+ro.dsName); err != nil {
-			fmt.Fprintf(out, "      WARN: %s pods not Ready within %s — `kubectl -n %s get ds %s` (%v)\n",
-				ro.friendly, f.waitTimeout, ro.ns, ro.dsName, err)
-		} else {
-			fmt.Fprintf(out, "      %s pods Ready.\n", ro.friendly)
+	if err := r.Kubectl(ctx, "rollout", "status", "-n", "kube-system", "ds/kube-multus-ds", "--timeout=3m"); err != nil {
+		fmt.Fprintf(out, "      WARN: multus rollout not converged: %v\n", err)
+	}
+
+	// Delete Pending pods (coredns, dns-autoscaler) that were created
+	// before calico was ready — they stay stuck and don't recover.
+	fmt.Fprintln(out, "\n      Cleaning up Pending pods ...")
+	stuck, _ := r.KubectlCapture(ctx, "get", "pods", "-A",
+		"--field-selector=status.phase=Pending",
+		"-o", "jsonpath={range .items[*]}{.metadata.namespace}{\" \"}{.metadata.name}{\"\\n\"}{end}")
+	for _, line := range strings.Split(strings.TrimSpace(stuck), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			continue
+		}
+		fmt.Fprintf(out, "      deleting %s/%s ...\n", f[0], f[1])
+		_ = r.Kubectl(ctx, "-n", f[0], "delete", "pod", f[1], "--ignore-not-found", "--wait=false")
+	}
+
+	// ── Step 4: NFS CSI driver + StorageClass ────────────────────────
+	fmt.Fprintln(out, "[4/5] Installing NFS CSI driver + StorageClass ...")
+	if err := installNFSCSIDriver(ctx, r, repo, p, out); err != nil {
+		return fmt.Errorf("NFS CSI driver: %w", err)
+	}
+	nfsSC, err := deploy.RenderNFSStorageClass(p)
+	if err != nil {
+		return fmt.Errorf("render nfs-storageclass: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(stagedDir, "nfs-storageclass.yaml"), []byte(nfsSC), 0o644); err != nil {
+		return err
+	}
+	if err := r.Apply(ctx, nfsSC); err != nil {
+		return fmt.Errorf("apply nfs-storageclass: %w", err)
+	}
+	fmt.Fprintln(out, "      NFS StorageClass created.")
+
+	// ── Step 5: Wait for DaemonSets ─────────────────────────────────
+	fmt.Fprintln(out, "[5/5] Waiting for DaemonSets to be Ready ...")
+	for _, ds := range networkDaemonSets {
+		fmt.Fprintf(out, "      %s/%s ...\n", ds.namespace, ds.name)
+		if err := r.Kubectl(ctx, "rollout", "status",
+			"-n", ds.namespace,
+			"ds/"+ds.name, "--timeout=3m"); err != nil {
+			fmt.Fprintf(out, "      WARN: %s/%s not fully Ready: %v\n", ds.namespace, ds.name, err)
 		}
 	}
 
-	// Make local-path the default storage class so PVCs without an
-	// explicit storageClassName still bind. CNEInstance template uses
-	// `storageClassName: local-path` explicitly so this is belt-
-	// and-suspenders, but the cluster also benefits from a default.
-	if err := r.Kubectl(ctx, "annotate", "sc", "local-path",
-		"storageclass.kubernetes.io/is-default-class=true", "--overwrite"); err != nil {
-		fmt.Fprintf(out, "      WARN: could not mark local-path default: %v\n", err)
-	}
-
-	// Restart containerd on every node (hosts + DPUs) so its CRI
-	// re-scans /etc/cni/net.d. install-cni-plugins drops new binaries
-	// (multus, calico, sriov) and rewrites configs after containerd
-	// already settled — without restart, kubelet keeps logging
-	// "cni plugin not initialized" until reboot. AGENTS.md #5.
+	// Restart containerd on every node so CRI re-scans /etc/cni/net.d.
 	fmt.Fprintln(out, "\nRestarting containerd on every node (CRI re-scan) ...")
 	if err := restartContainerdEverywhere(ctx, repo, p, out); err != nil {
 		fmt.Fprintf(out, "      WARN: containerd restart had errors (some nodes may stay NotReady): %v\n", err)
 	}
-
-	// The containerd restart kills every pod's connection to its CRI
-	// shim; the kubelet rebuilds them on the next sync, which briefly
-	// flips affected DaemonSets to ImagePullBackOff / NotReady before
-	// recovering. If `deploy network` returns while that's still
-	// flapping, the operator (or the next phase) reads the noise as
-	// "deploy network failed". Wait for the DaemonSets we explicitly
-	// rely on to come back to full Ready before declaring done.
-	// `kubectl rollout status ds/...` blocks until
-	// numberReady == desiredNumberScheduled.
 	fmt.Fprintln(out, "\nWaiting for DaemonSets to converge after containerd restart ...")
 	for _, ds := range networkDaemonSets {
 		fmt.Fprintf(out, "      %s/%s ...\n", ds.namespace, ds.name)
 		if err := r.Kubectl(ctx, "rollout", "status",
 			"-n", ds.namespace,
 			"ds/"+ds.name, "--timeout=3m"); err != nil {
-			// Don't fail the phase: a DS that isn't installed yet
-			// (timing on the last apply) or a transient straggler after
-			// the bounce each surface here. Warn so the operator can
-			// triage if they want, but let the deploy chain proceed.
 			fmt.Fprintf(out, "      WARN: %s/%s not fully Ready: %v\n", ds.namespace, ds.name, err)
 		}
 	}
 
-	// Detect-and-fix the multus first-start CNI race. On a healthy
-	// cluster this is a 1-second probe and a no-op.
-	//
-	// Background: a multus pod that boots before calico's install-cni
-	// initContainer drops /etc/cni/net.d/10-calico.conflist records
-	// loopback-only delegates in /etc/cni/net.d/00-multus.conf and
-	// never updates. Every subsequent pod on that node hangs
-	// ContainerCreating with `multus ... missing network name`.
-	//
-	// Signal: after the standard DS-converge step above, any pod in
-	// kube-system stuck in Pending phase is downstream of the race
-	// (sriov-cni-ds or sriov-device-plugin pods on the broken node).
-	// Healthy cluster → no Pending pods → no rotation needed.
-	//
-	// Recovery: rotate multus + both sriov DSes (so the wedged sriov
-	// pods get a fresh sandbox-creation attempt against the now-
-	// correct multus delegate; kubelet CRI backoff doesn't auto-
-	// recover them), then re-check. (AGENTS.md #26.)
-	fmt.Fprintln(out, "\nProbing for multus first-start CNI race ...")
-	stuck, _ := r.KubectlCapture(ctx, "-n", "kube-system", "get", "pods",
-		"--field-selector=status.phase=Pending",
-		"-o", "jsonpath={range .items[*]}{.metadata.name}{\"\\n\"}{end}")
-	stuck = strings.TrimSpace(stuck)
-	if stuck == "" {
-		fmt.Fprintln(out, "      no Pending pods in kube-system — CNI healthy.")
-	} else {
-		fmt.Fprintf(out, "      detected Pending pods (race triggered):\n%s\n", indent(stuck, "        "))
-		fmt.Fprintln(out, "      Rotating multus + sriov daemonsets to recover ...")
-		// DS names match the embedded manifests in
-		// internal/embedded/templates/network/. They are arch-agnostic
-		// (multus.yaml + sriov-*-daemonset.yaml use nodeAffinity, not
-		// arch-suffixed names) — DPU nodes are arm64, host nodes amd64,
-		// both run the same DS. Previous code carried `-amd64`-suffixed
-		// names from an earlier kubespray naming convention; on a mixed-
-		// arch cluster the rotation silently no-op'd against names that
-		// never existed and the broken multus stayed broken until the
-		// CNEInstance-Available wait timed out 15 min later. (Caught on
-		// the wizard-deploy May 16 measurement run.)
-		cniDS := []string{
-			"kube-multus-ds",
-			"kube-sriov-cni-ds",
-			"kube-sriov-device-plugin",
-		}
-		for _, ds := range cniDS {
-			if err := r.Kubectl(ctx, "rollout", "restart",
-				"-n", "kube-system", "ds/"+ds); err != nil {
-				fmt.Fprintf(out, "      WARN: could not restart %s: %v\n", ds, err)
-			}
-		}
-		for _, ds := range cniDS {
-			if err := r.Kubectl(ctx, "rollout", "status",
-				"-n", "kube-system", "ds/"+ds, "--timeout=5m"); err != nil {
-				fmt.Fprintf(out, "      WARN: %s rotation did not converge: %v\n", ds, err)
-			}
-		}
-		// Sweep any pod still wedged in Pending after the rotation
-		// (its broken sandbox is older than the rotation; kubelet
-		// won't retry until the backoff clock expires).
-		stuck2, _ := r.KubectlCapture(ctx, "get", "pods", "-A",
-			"--field-selector=status.phase=Pending",
-			"-o", "jsonpath={range .items[*]}{.metadata.namespace}{\" \"}{.metadata.name}{\"\\n\"}{end}")
-		for _, line := range strings.Split(strings.TrimSpace(stuck2), "\n") {
-			f := strings.Fields(line)
-			if len(f) != 2 {
-				continue
-			}
-			_ = r.Kubectl(ctx, "-n", f[0], "delete", "pod", f[1],
-				"--ignore-not-found", "--wait=false")
-		}
-		fmt.Fprintln(out, "      CNI rotation complete.")
-	}
-
-	// Verify the recovery actually worked. Without this, a rotation
-	// against a wrong DS name (or a deeper multus issue) silently
-	// no-op'd and downstream BNK install proceeded against a broken
-	// cluster — TMM lands only on the nodes where multus is healthy,
-	// CNEInstance Available wait at deploy-cne times out 15 min later
-	// with an opaque "0 out of N pods" message. Probe again for Pending
-	// pods after a brief settle; if any remain, fail loudly with a
-	// pointer at the offending pods.
-	fmt.Fprintln(out, "\nVerifying multus is healthy on every node ...")
-	time.Sleep(10 * time.Second)
-	residual, _ := r.KubectlCapture(ctx, "get", "pods", "-A",
-		"--field-selector=status.phase=Pending",
-		"-o", "jsonpath={range .items[*]}{.metadata.namespace}{\"/\"}{.metadata.name}{\" on \"}{.spec.nodeName}{\"\\n\"}{end}")
-	residual = strings.TrimSpace(residual)
-	if residual != "" {
-		return fmt.Errorf("multus race not recovered — pods still Pending after rotation:\n%s\n\nInspect with `kubectl describe pod -n <ns> <pod>`; the multus error is typically `missing network name` from a stale /etc/cni/net.d/00-multus.conf on the affected node. Manually rotate with `kubectl rollout restart -n kube-system ds/kube-multus-ds`.", indent(residual, "  "))
-	}
-	fmt.Fprintln(out, "      every pod scheduled; multus delegate chain intact.")
-
 	appendDeployJournal(repo, p.Metadata.Name, "", "NETWORK INSTALLED", "")
-	fmt.Fprintln(out, "\nDONE.  FLO should now reconcile the CNEInstance — re-check `kubectl get cneinstance -A` + `kubectl get pods -A`.")
+	fmt.Fprintln(out, "\nDONE.  Calico + Multus + SR-IOV + NFS deployed. Ready for `deploy flo`.")
 	return nil
 }
 
-// networkDaemonSets lists the DaemonSets `deploy network` apply
-// that should be Ready before the phase returns. Same set we wait
-// on earlier in this command (multus + sriov) plus local-path,
-// which also bounces during the containerd restart and is the
-// default storage class for the rest of the deploy.
+// installNFSCSIDriver installs the NFS CSI driver via helm. In airgap
+// mode it uses the pre-downloaded chart tarball; online, it pulls from
+// the upstream chart repo.
+func installNFSCSIDriver(ctx context.Context, r *deploy.Runner, repo string, p *poc.PoC, out io.Writer) error {
+	nfsValues := fmt.Sprintf(`controller:
+  replicas: 1
+`)
+	if p.Airgap != nil && p.Airgap.Mode != "" {
+		chartPattern := filepath.Join(repo, airgap.StagingDir, airgap.ChartsSubDir, version.NFSCSIChartName+"-*.tgz")
+		matches, _ := filepath.Glob(chartPattern)
+		if len(matches) == 0 {
+			return fmt.Errorf("NFS CSI chart not found at %s — run `dpubnkctl airgap setup` first", chartPattern)
+		}
+		fmt.Fprintf(out, "      helm install (local) %s ...\n", filepath.Base(matches[0]))
+		return r.HelmUpgradeLocal(ctx, "csi-driver-nfs", matches[0], "kube-system", nfsValues)
+	}
+	fmt.Fprintln(out, "      helm install (online) csi-driver-nfs ...")
+	return r.HelmUpgrade(ctx, "csi-driver-nfs", version.NFSCSIChartName,
+		version.NFSCSIChartRepo, "kube-system", version.NFSCSIDriverVersion, nfsValues)
+}
+
+// applyTigeraOperator deploys the tigera-operator manifest. In airgap
+// mode it reads the pre-downloaded file; online, kubectl fetches from
+// GitHub directly (Docker container has --network=host).
+func applyTigeraOperator(ctx context.Context, r *deploy.Runner, repo string, p *poc.PoC, stagedDir string) error {
+	if p.Airgap != nil && p.Airgap.Mode != "" {
+		path := filepath.Join(repo, airgap.StagingDir, "manifests", "tigera-operator.yaml")
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read airgap tigera-operator from %s: %w", path, err)
+		}
+		_ = os.WriteFile(filepath.Join(stagedDir, "tigera-operator.yaml"), raw, 0o644)
+		return r.ApplyServerSide(ctx, string(raw))
+	}
+	return r.Kubectl(ctx, "apply", "--server-side", "--force-conflicts", "-f", version.TigeraOperatorManifest)
+}
+
 var networkDaemonSets = []struct {
 	namespace string
 	name      string
 }{
+	{"calico-system", "calico-node"},
 	{"kube-system", "kube-multus-ds"},
-	{"kube-system", "kube-sriov-cni-ds"},
 	{"kube-system", "kube-sriov-device-plugin"},
 }
 

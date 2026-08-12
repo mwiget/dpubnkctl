@@ -288,6 +288,12 @@ func Render(p *poc.PoC, plan Plan) (map[string]string, error) {
 	out[filepath.Join("group_vars", "all", "all.yml")] = renderGroupVarsAll(p)
 	out[filepath.Join("group_vars", "k8s_cluster", "k8s-cluster.yml")] = renderGroupVarsK8sCluster(p)
 	out["README.md"] = renderReadme(p, plan)
+
+	if p.Airgap != nil && p.Airgap.Mode != "" {
+		out[filepath.Join("group_vars", "all", "offline.yml")] = renderOfflineYML(p)
+		out[filepath.Join("group_vars", "all", "containerd.yml")] = renderContainerdYML(p)
+	}
+
 	return out, nil
 }
 
@@ -431,25 +437,19 @@ func renderGroupVarsK8sCluster(p *poc.PoC) string {
 
 kube_version: %[3]s
 
-# CNI / networking
-kube_network_plugin: calico
+# CNI / networking — calico is deployed separately via tigera-operator
+# (kubespray's built-in calico doesn't work reliably on BlueField DPUs).
+kube_network_plugin: none
 kube_pods_subnet: 10.233.64.0/18
 kube_service_addresses: 10.233.0.0/18
-calico_mtu: %[4]d
 
-# kube_proxy_mode: iptables (not the kubespray default 'ipvs').
-# Kubespray v2.28.1 + Ubuntu 22.04 kernel 5.15+ trips on a broken
-# modprobe loop for the no-longer-existent nf_conntrack_ipv4 module
-# when kube_proxy_mode == ipvs. iptables sidesteps the bug entirely and
-# is the kubeadm default. Override here if your kernel pre-loads the
-# legacy modules.
 kube_proxy_mode: iptables
 
 # Container runtime
 container_manager: containerd
-containerd_version: %[5]s
-runc_version: %[6]s
-pause_image_tag: "%[7]s"
+containerd_version: %[4]s
+runc_version: %[5]s
+pause_image_tag: "%[6]s"
 
 # Cluster ergonomics — allow workloads on control-plane nodes
 # (single-node and 2-node PoCs need this; multi-node should remove it).
@@ -458,7 +458,6 @@ kubelet_load_modules: true
 		p.Metadata.BNKVersion,
 		version.KubesprayVersion,
 		version.K8sVersionPinned,
-		p.Network.PodMTU,
 		p.Versions.Containerd,
 		p.Versions.Runc,
 		p.Versions.PauseTag,

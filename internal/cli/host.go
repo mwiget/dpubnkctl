@@ -38,6 +38,7 @@ type hostNetworkSetupFlags struct {
 	yolo           bool
 	confirmCluster string
 	dryRun         bool
+	airgap         string
 }
 
 func newHostNetworkSetupCmd() *cobra.Command {
@@ -74,6 +75,7 @@ Required gates:
 	cmd.Flags().BoolVar(&f.yolo, "yolo", false, "Acknowledge netplan rewrite + apply")
 	cmd.Flags().StringVar(&f.confirmCluster, "confirm-cluster", "", "Must equal poc.yaml.metadata.name (typo guard)")
 	cmd.Flags().BoolVar(&f.dryRun, "dry-run", false, "Print rendered netplan without applying")
+	cmd.Flags().StringVar(&f.airgap, "airgap", "", "Airgap mode (propagated from e2e)")
 	return cmd
 }
 

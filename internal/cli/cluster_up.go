@@ -29,6 +29,7 @@ type clusterUpFlags struct {
 	timeout            time.Duration
 	playbook           string
 	stageOnly          bool
+	airgap             string
 }
 
 func newClusterUpCmd() *cobra.Command {
@@ -66,6 +67,7 @@ Required gates:
 	cmd.Flags().DurationVar(&f.timeout, "timeout", 90*time.Minute, "Wall-clock timeout for the kubespray run")
 	cmd.Flags().StringVar(&f.playbook, "playbook", "cluster.yml", "Playbook to run (use reset.yml for tear-down)")
 	cmd.Flags().BoolVar(&f.stageOnly, "stage-only", false, "Stage the kubespray inventory + ssh keys + ssh_config under artifacts/kubespray-inventory and exit. Non-destructive — does not require --yolo. Use this to verify the rendered ssh_config / ansible_ssh_common_args wiring before committing to a real run.")
+	cmd.Flags().StringVar(&f.airgap, "airgap", "", "Airgap mode (propagated from e2e)")
 	return cmd
 }
 

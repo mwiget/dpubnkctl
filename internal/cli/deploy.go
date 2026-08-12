@@ -32,6 +32,7 @@ type deployPrereqsFlags struct {
 	yolo          bool
 	confirmDeploy string
 	skipPull      bool
+	airgap        string
 }
 
 func newDeployPrereqsCmd() *cobra.Command {
@@ -59,6 +60,7 @@ Required gates:
 	cmd.Flags().BoolVar(&f.yolo, "yolo", false, "Acknowledge cluster writes")
 	cmd.Flags().StringVar(&f.confirmDeploy, "confirm-deploy", "", "Must equal poc.yaml.metadata.name (typo guard)")
 	cmd.Flags().BoolVar(&f.skipPull, "skip-pull", false, "Skip docker pull of kubectl + helm images")
+	cmd.Flags().StringVar(&f.airgap, "airgap", "", "Airgap mode (propagated from e2e)")
 	return cmd
 }
 

@@ -319,6 +319,13 @@ func runDiscoverWizard(ctx context.Context, out io.Writer, in io.Reader, pocDir 
 	fmt.Fprintln(out, "  3. Run `dpubnkctl validate` to confirm poc.yaml is consistent.")
 	fmt.Fprintln(out, "  4. `dpubnkctl e2e --yolo` to run the full pipeline, or `dpubnkctl provision dpus <hostname> --yolo --confirm-flash <hostname>` per phase.")
 
+	// Run post-script if present (before validation, so fixes are validated).
+	if err := runPostScript(ctx, repo, p, "wizard", "", out); err != nil {
+		return fmt.Errorf("wizard post-script: %w", err)
+	}
+	// Reload poc.yaml in case the post-script modified it.
+	p, _ = poc.Load(repo)
+
 	fmt.Fprintln(out, "\n--- dpubnkctl validate ---")
 	vr := poc.Validate(p, repo)
 	printValidation(out, vr)

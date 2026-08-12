@@ -46,6 +46,7 @@ func New(name string) *PoC {
 			PodMTU:       version.DefaultPodMTU,
 			DPUMTU:       version.DefaultDPUMTU,
 			VLANs:        []VLAN{},
+			NFSPath:      "/srv/nfs/f5-bnk",
 		},
 		Provisioning: Provisioning{
 			DPUPasswordHashRef: "keys/dpu_password.hash",

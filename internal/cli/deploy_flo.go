@@ -21,6 +21,7 @@ type deployFLOFlags struct {
 	yolo          bool
 	confirmDeploy string
 	skipPull      bool
+	airgap        string
 }
 
 func newDeployFLOCmd() *cobra.Command {
@@ -63,6 +64,7 @@ Required gates:
 	cmd.Flags().BoolVar(&f.yolo, "yolo", false, "Acknowledge cluster writes")
 	cmd.Flags().StringVar(&f.confirmDeploy, "confirm-deploy", "", "Must equal poc.yaml.metadata.name (typo guard)")
 	cmd.Flags().BoolVar(&f.skipPull, "skip-pull", false, "Skip docker pull of alpine/k8s image")
+	cmd.Flags().StringVar(&f.airgap, "airgap", "", "Airgap mode (propagated from e2e)")
 	return cmd
 }
 
@@ -118,7 +120,15 @@ func runDeployFLO(ctx context.Context, out io.Writer, f *deployFLOFlags) error {
 		return fmt.Errorf("extract FAR registry credentials: %w", err)
 	}
 	mfCache := filepath.Join(repo, "artifacts", "release-manifest")
-	manifest, err := deploy.PullReleaseManifest(ctx, farAuth, version.CNEManifestVersion, mfCache)
+	var manifest *deploy.ReleaseManifest
+	if f.airgap != "" {
+		manifest, err = deploy.LoadCachedManifest(mfCache)
+		if err != nil {
+			return fmt.Errorf("load cached release-manifest (airgap): %w", err)
+		}
+	} else {
+		manifest, err = deploy.PullReleaseManifest(ctx, farAuth, version.CNEManifestVersion, mfCache)
+	}
 	if err != nil {
 		return fmt.Errorf("pull release-manifest: %w", err)
 	}
@@ -168,9 +178,20 @@ func runDeployFLO(ctx context.Context, out io.Writer, f *deployFLOFlags) error {
 
 	// 5. cert-manager.
 	fmt.Fprintf(out, "[5/10] Installing cert-manager %s ...\n", version.CertManagerVersion)
-	cmURL := fmt.Sprintf("https://github.com/cert-manager/cert-manager/releases/download/%s/cert-manager.yaml", version.CertManagerVersion)
-	if err := r.Kubectl(ctx, "apply", "-f", cmURL); err != nil {
-		return fmt.Errorf("install cert-manager: %w", err)
+	if f.airgap != "" {
+		cmLocal := filepath.Join(repo, "artifacts", "airgap", "charts", "cert-manager.yaml")
+		cmData, readErr := os.ReadFile(cmLocal)
+		if readErr != nil {
+			return fmt.Errorf("read local cert-manager.yaml (airgap): %w", readErr)
+		}
+		if err := r.Apply(ctx, string(cmData)); err != nil {
+			return fmt.Errorf("install cert-manager (airgap): %w", err)
+		}
+	} else {
+		cmURL := fmt.Sprintf("https://github.com/cert-manager/cert-manager/releases/download/%s/cert-manager.yaml", version.CertManagerVersion)
+		if err := r.Kubectl(ctx, "apply", "-f", cmURL); err != nil {
+			return fmt.Errorf("install cert-manager: %w", err)
+		}
 	}
 	if err := r.Wait(ctx, "cert-manager", "Available", "deployment", 5*time.Minute,
 		"-l", "app.kubernetes.io/instance=cert-manager"); err != nil {
@@ -190,12 +211,12 @@ func runDeployFLO(ctx context.Context, out io.Writer, f *deployFLOFlags) error {
 
 	// 7. far-secret in every namespace that pulls F5 images. In 2.3 the
 	// new shared-component namespace also pulls CWC + observer images.
-	fmt.Fprintf(out, "[7/10] Creating far-secret in f5-operators + default + %s ...\n", deploy.SharedComponentNamespace)
+	fmt.Fprintf(out, "[7/10] Creating far-secret in f5-operators + f5-bnk + default + %s ...\n", deploy.SharedComponentNamespace)
 	dockerCfg, err := deploy.ExtractFARDockerConfig(farPath)
 	if err != nil {
 		return fmt.Errorf("extract FAR dockerconfigjson: %w", err)
 	}
-	for _, ns := range []string{"f5-operators", "default", deploy.SharedComponentNamespace} {
+	for _, ns := range []string{"f5-operators", "f5-bnk", "default", deploy.SharedComponentNamespace} {
 		if err := r.Apply(ctx, deploy.RenderFARSecret(ns, dockerCfg)); err != nil {
 			return fmt.Errorf("create far-secret in %s: %w", ns, err)
 		}
@@ -206,11 +227,15 @@ func runDeployFLO(ctx context.Context, out io.Writer, f *deployFLOFlags) error {
 	// prod/tst split — the license/TEEM block moved to the License CR
 	// which CWC reconciles after CNEInstance brings it up).
 	fmt.Fprintln(out, "[8/10] Rendering FLO values + helm install ...")
-	values, err := deploy.RenderFLOValues(deploy.FLOInputs{
+	floInputs := deploy.FLOInputs{
 		Namespace:                "f5-operators",
 		SharedComponentNamespace: deploy.SharedComponentNamespace,
 		ClusterIssuer:            "bnk-ca-cluster-issuer",
-	})
+	}
+	if f.airgap != "" {
+		floInputs.ImagePullPolicy = "IfNotPresent"
+	}
+	values, err := deploy.RenderFLOValues(floInputs)
 	if err != nil {
 		return err
 	}
@@ -223,14 +248,22 @@ func runDeployFLO(ctx context.Context, out io.Writer, f *deployFLOFlags) error {
 		return err
 	}
 	fmt.Fprintf(out, "      rendered values → %s\n", rendered)
-	if err := r.HelmUpgradeOCI(ctx, farAuth,
-		"flo",
-		version.FLOChartOCIRef,
-		"f5-operators",
-		floVer,
-		values,
-	); err != nil {
-		return err
+	if f.airgap != "" {
+		floChart := filepath.Join(repo, "artifacts", "airgap", "charts",
+			fmt.Sprintf("f5-lifecycle-operator-%s.tgz", floVer))
+		if err := r.HelmUpgradeLocal(ctx, "flo", floChart, "f5-operators", values); err != nil {
+			return err
+		}
+	} else {
+		if err := r.HelmUpgradeOCI(ctx, farAuth,
+			"flo",
+			version.FLOChartOCIRef,
+			"f5-operators",
+			floVer,
+			values,
+		); err != nil {
+			return err
+		}
 	}
 
 	// 9. Wait for FLO controller. The chart names the deployment with
@@ -253,9 +286,18 @@ func runDeployFLO(ctx context.Context, out io.Writer, f *deployFLOFlags) error {
 	// can't start and CNEInstance Available never flips True.
 	fmt.Fprintln(out, "[10/10] Generating + applying CWC API certs ...")
 	certsWorkDir := filepath.Join(repo, "artifacts", "cwc-certs")
-	if err := deploy.PullAndApplyCWCCerts(ctx, r, farAuth, certGenVer, certsWorkDir,
-		deploy.SharedComponentNamespace, prefixWriter{w: out, prefix: "      | "}); err != nil {
-		return fmt.Errorf("CWC cert preflight: %w", err)
+	if f.airgap != "" {
+		certGenChart := filepath.Join(repo, "artifacts", "airgap", "charts",
+			fmt.Sprintf("f5-cert-gen-%s.tgz", certGenVer))
+		if err := deploy.ApplyCWCCertsFromLocal(ctx, r, certGenChart, certsWorkDir,
+			deploy.SharedComponentNamespace, prefixWriter{w: out, prefix: "      | "}); err != nil {
+			return fmt.Errorf("CWC cert preflight (airgap): %w", err)
+		}
+	} else {
+		if err := deploy.PullAndApplyCWCCerts(ctx, r, farAuth, certGenVer, certsWorkDir,
+			deploy.SharedComponentNamespace, prefixWriter{w: out, prefix: "      | "}); err != nil {
+			return fmt.Errorf("CWC cert preflight: %w", err)
+		}
 	}
 	fmt.Fprintln(out, "      cwc-license-certs + cwc-license-client-certs applied.")
 

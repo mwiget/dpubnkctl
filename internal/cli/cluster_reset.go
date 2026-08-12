@@ -19,6 +19,7 @@ type clusterResetFlags struct {
 	yolo           bool
 	confirmCluster string
 	timeout        time.Duration
+	airgap         string
 }
 
 func newClusterResetCmd() *cobra.Command {
@@ -46,6 +47,7 @@ from a prior k8s install. Required gates:
 	cmd.Flags().BoolVar(&f.yolo, "yolo", false, "Acknowledge that this command is destructive")
 	cmd.Flags().StringVar(&f.confirmCluster, "confirm-cluster", "", "Must equal poc.yaml.metadata.name (typo guard)")
 	cmd.Flags().DurationVar(&f.timeout, "timeout", 30*time.Minute, "Wall-clock timeout for the reset run")
+	cmd.Flags().StringVar(&f.airgap, "airgap", "", "Airgap mode (propagated from e2e)")
 	return cmd
 }
 
