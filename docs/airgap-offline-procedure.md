@@ -7,12 +7,58 @@
 
 ## Prerequisites
 
-- Jumphost with Docker installed (no internet required)
-- SSH access to the host (control-plane server)
+- Jumphost running Ubuntu 22.04+ (no internet required)
+- SSH access to the host (control-plane server) via key-based auth
 - DPU connected via tmfifo (192.168.100.x)
 - FAR key (`f5-far-auth-key.tgz`) and JWT (`.jwt`) from F5
 - Post-scripts at `~/shaath/scripts/` (optional — automate lab-specific steps)
 - Artifacts backup from a prior online run (see "Downloading Images" below)
+
+---
+
+## Jumphost Preparation
+
+Docker must be installed on the jumphost **before** going offline. Install it while the jumphost still has internet, or from a local `.deb` package.
+
+### Install Docker (while internet is available)
+
+```bash
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl gnupg
+
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
+
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+  https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin
+
+# Allow current user to run docker without sudo
+sudo usermod -aG docker $USER
+newgrp docker
+
+# Verify
+docker run --rm hello-world
+```
+
+### Install sshpass (needed by post-scripts for DPU access)
+
+```bash
+sudo apt-get install -y sshpass
+```
+
+> **Note:** skopeo is NOT required for offline mode — it is only used during the online image download phase.
+
+### Verify
+
+```bash
+docker version
+ssh -V
+```
 
 ---
 
