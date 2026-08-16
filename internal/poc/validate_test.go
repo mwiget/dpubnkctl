@@ -36,6 +36,8 @@ func goodPoC(t *testing.T) (*PoC, string) {
 			PodMTU:                  8900,
 			ClusterAPIServerAddress: "10.10.41.66",
 			NodeIPRole:              "internal",
+			NFSServer:               "192.168.100.1",
+			NFSPath:                 "/srv/nfs/f5-bnk",
 		},
 		Hosts: []Host{{
 			Name: "host1",

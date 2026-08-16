@@ -28,6 +28,7 @@ type PoC struct {
 	Status       Status       `yaml:"status"`
 	Agent        Agent        `yaml:"agent"`
 	BNKForge     BNKForge     `yaml:"bnk_forge,omitempty"`
+	Airgap       *AirgapConfig `yaml:"airgap,omitempty"`
 }
 
 type Metadata struct {
@@ -309,4 +310,12 @@ type BNKForge struct {
 	AdminPassword string `yaml:"admin_password,omitempty"` // default changeme (dev-only)
 	ProjectColor  string `yaml:"project_color,omitempty"`  // default #0a3a5c
 	ProjectIcon   string `yaml:"project_icon,omitempty"`
+}
+
+// AirgapConfig stores air-gap deployment state. Populated by
+// `dpubnkctl airgap setup` (Phase 0) and consumed by subsequent
+// phases to locate the local registry and file server.
+type AirgapConfig struct {
+	Mode       string `yaml:"mode"`        // "online" | "offline"
+	JumphostIP string `yaml:"jumphost_ip"` // IP targets use to reach the jumphost
 }

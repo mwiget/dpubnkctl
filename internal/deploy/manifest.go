@@ -204,6 +204,17 @@ echo '---DPUBNKCTL-MANIFEST-END---'
 	return m, nil
 }
 
+// LoadCachedManifest reads a previously-cached manifest.yaml from cacheDir
+// without contacting repo.f5.com. Used in airgap mode where the manifest
+// was downloaded during Phase 0 or a prior online run.
+func LoadCachedManifest(cacheDir string) (*ReleaseManifest, error) {
+	data, err := os.ReadFile(filepath.Join(cacheDir, "manifest.yaml"))
+	if err != nil {
+		return nil, fmt.Errorf("read cached manifest: %w (run Phase 0 / airgap setup first)", err)
+	}
+	return ParseReleaseManifest(data)
+}
+
 // extractManifestBody slices out the lines between the BEGIN/END markers
 // the in-container script emits. helm chatter (like login warnings,
 // progress) before BEGIN and any container trailer after END is dropped.

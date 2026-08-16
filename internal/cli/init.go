@@ -76,7 +76,7 @@ Initializes a git repo unless --no-git.`,
 			}
 
 			// Create skeleton dirs.
-			for _, d := range []string{"journal", "inventory", "artifacts", "keys", "personas"} {
+			for _, d := range []string{"journal", "inventory", "artifacts", "keys", "personas", "post-scripts"} {
 				if err := os.MkdirAll(filepath.Join(abs, d), 0o755); err != nil {
 					return err
 				}

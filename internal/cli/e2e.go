@@ -38,6 +38,13 @@ type e2ePhase struct {
 // select a subset via --phase <comma-list> matching .name.
 var canonicalPhases = []e2ePhase{
 	{
+		name:   "airgap-setup",
+		subcmd: []string{"airgap", "setup"},
+		preFlight: func(p *poc.PoC) (string, bool) {
+			return "airgap not active (--airgap not set)", true
+		},
+	},
+	{
 		name:   "validate",
 		subcmd: []string{"validate"},
 	},
@@ -127,6 +134,7 @@ type e2eFlags struct {
 	continueOnFailure bool
 	skipValidate      bool
 	noResume          bool
+	airgap            string
 }
 
 func newE2ECmd() *cobra.Command {
@@ -186,6 +194,7 @@ Invocation summary:
 	cmd.Flags().BoolVar(&f.continueOnFailure, "continue-on-failure", false, "Keep running phases after a failure")
 	cmd.Flags().BoolVar(&f.skipValidate, "skip-validate", false, "Skip the validate precheck (not recommended)")
 	cmd.Flags().BoolVar(&f.noResume, "no-resume", false, "Ignore artifacts/e2e-state.json and re-run every phase from scratch")
+	cmd.Flags().StringVar(&f.airgap, "airgap", "", `Airgap mode: "online" (download+serve+deploy), "offline" (load from pre-staged dir+deploy), or empty (default: no airgap)`)
 	return cmd
 }
 
@@ -264,7 +273,21 @@ func runE2E(ctx context.Context, out io.Writer, f *e2eFlags) error {
 		return fmt.Errorf("not a PoC repo (%s): %w", repo, err)
 	}
 
-	selected, err := selectPhases(f.phaseFilter, f.skipValidate)
+	// Build a local copy of phases so we can patch airgap preFlight
+	// without mutating the package-level canonicalPhases.
+	phases := make([]e2ePhase, len(canonicalPhases))
+	copy(phases, canonicalPhases)
+
+	if f.airgap != "" {
+		// Enable Phase 0 (airgap-setup) by removing the skip-preFlight
+		phases[0].preFlight = nil
+		// Propagate --airgap to every phase subprocess
+		for i := range phases {
+			phases[i].args = append(append([]string{}, phases[i].args...), "--airgap", f.airgap)
+		}
+	}
+
+	selected, err := selectPhasesFrom(phases, f.phaseFilter, f.skipValidate)
 	if err != nil {
 		return err
 	}
@@ -346,9 +369,11 @@ func runE2E(ctx context.Context, out io.Writer, f *e2eFlags) error {
 		fmt.Fprintf(out, "[%d/%d] %s\n      %s\n", idx, len(selected), ph.name, shown)
 
 		if f.dryRun {
-			report.Phases = append(report.Phases, phaseReport{
-				Phase: ph.name, Status: "dry-run", Summary: shown, Index: idx,
-			})
+			rep := phaseReport{Phase: ph.name, Status: "dry-run", Summary: shown, Index: idx}
+			if postScriptExists(repo, ph.name) {
+				fmt.Fprintf(out, "      post-script: post-scripts/%s.sh\n", ph.name)
+			}
+			report.Phases = append(report.Phases, rep)
 			continue
 		}
 
@@ -375,6 +400,12 @@ func runE2E(ctx context.Context, out io.Writer, f *e2eFlags) error {
 		default:
 			rep.Status = "ok"
 			rep.Summary = fmt.Sprintf("completed in %s", rep.Duration)
+		}
+		if rep.Status == "ok" {
+			if psErr := runPostScript(ctx, repo, p, ph.name, logPath, out); psErr != nil {
+				rep.Status = "failed"
+				rep.Summary = fmt.Sprintf("post-script failed: %v", psErr)
+			}
 		}
 		fmt.Fprintf(out, "      %s  (%s, %s)\n\n", strings.ToUpper(rep.Status), rep.Duration, rep.LogPath)
 		report.Phases = append(report.Phases, rep)
@@ -447,18 +478,22 @@ func printE2EPlan(out io.Writer, p *poc.PoC, repo, binary string, selected []e2e
 }
 
 func selectPhases(filter string, skipValidate bool) ([]e2ePhase, error) {
+	return selectPhasesFrom(canonicalPhases, filter, skipValidate)
+}
+
+func selectPhasesFrom(phases []e2ePhase, filter string, skipValidate bool) ([]e2ePhase, error) {
 	if filter == "" {
 		if skipValidate {
-			return canonicalPhases[1:], nil
+			return phases[1:], nil
 		}
-		return canonicalPhases, nil
+		return phases, nil
 	}
 	want := map[string]bool{}
 	for _, n := range strings.Split(filter, ",") {
 		want[strings.TrimSpace(n)] = true
 	}
 	var out []e2ePhase
-	for _, ph := range canonicalPhases {
+	for _, ph := range phases {
 		if want[ph.name] {
 			out = append(out, ph)
 			delete(want, ph.name)
@@ -470,7 +505,7 @@ func selectPhases(filter string, skipValidate bool) ([]e2ePhase, error) {
 			unknown = append(unknown, k)
 		}
 		sort.Strings(unknown)
-		return nil, fmt.Errorf("unknown phase(s): %s (valid: %s)", strings.Join(unknown, ", "), phaseNames(canonicalPhases))
+		return nil, fmt.Errorf("unknown phase(s): %s (valid: %s)", strings.Join(unknown, ", "), phaseNames(phases))
 	}
 	return out, nil
 }
@@ -636,4 +671,59 @@ func statusBadge(s string) string {
 	default:
 		return s
 	}
+}
+
+func postScriptPath(repo, phaseName string) string {
+	return filepath.Join(repo, "post-scripts", phaseName+".sh")
+}
+
+func postScriptExists(repo, phaseName string) bool {
+	_, err := os.Stat(postScriptPath(repo, phaseName))
+	return err == nil
+}
+
+func runPostScript(ctx context.Context, repo string, p *poc.PoC, phaseName, logPath string, out io.Writer) error {
+	scriptPath := postScriptPath(repo, phaseName)
+	info, err := os.Stat(scriptPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stat post-script: %w", err)
+	}
+	if info.Mode()&0o111 == 0 {
+		fmt.Fprintf(out, "      WARN: post-scripts/%s.sh exists but is not executable (chmod +x to enable)\n", phaseName)
+		return nil
+	}
+
+	fmt.Fprintf(out, "      running post-scripts/%s.sh ...\n", phaseName)
+
+	absRepo, _ := filepath.Abs(repo)
+	cmd := exec.CommandContext(ctx, scriptPath)
+	cmd.Dir = absRepo
+	cmd.Env = append(os.Environ(),
+		"DPUBNKCTL_POC_DIR="+absRepo,
+		"DPUBNKCTL_POC_NAME="+p.Metadata.Name,
+		"DPUBNKCTL_PHASE="+phaseName,
+	)
+
+	var logFile *os.File
+	if logPath != "" {
+		logFile, err = os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644)
+		if err == nil {
+			defer logFile.Close()
+			fmt.Fprintf(logFile, "\n=== post-script: %s.sh ===\n", phaseName)
+			cmd.Stdout = logFile
+			cmd.Stderr = logFile
+		}
+	}
+
+	if err := cmd.Run(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			return fmt.Errorf("post-scripts/%s.sh exited %d", phaseName, ee.ExitCode())
+		}
+		return fmt.Errorf("post-scripts/%s.sh: %w", phaseName, err)
+	}
+	fmt.Fprintf(out, "      post-scripts/%s.sh completed.\n", phaseName)
+	return nil
 }

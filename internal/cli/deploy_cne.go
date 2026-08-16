@@ -24,6 +24,7 @@ type deployCNEFlags struct {
 	cneReadyTimeout     time.Duration
 	licenseReadyTimeout time.Duration
 	licenseMode         string
+	airgap              string
 }
 
 func newDeployCNECmd() *cobra.Command {
@@ -47,8 +48,8 @@ func newDeployCNECmd() *cobra.Command {
      poc.yaml.bnk.jwt_ref and wait for state=Active. CWC validates
      against the JWT-derived TEEM endpoint and starts pushing
      F5SPKVlan config to TMM only after the license is Active.
-     (Disconnected-mode customers stay at PendingVerification — run
-     the manual licensing curl ritual from F5's docs to finish.)
+     (Disconnected-mode: when airgap is active, the disconnected
+     license flow runs automatically after PendingVerification.)
   5. Restart the f5-tmm DaemonSet. TMM's bfd_watcher polls once at
      pod-start for VLAN config; if it runs before CWC has pushed
      (license not yet Active, or pod started before the F5SPKVlan
@@ -77,6 +78,7 @@ Required gates:
 	// know they're re-applying.
 	cmd.Flags().DurationVar(&f.licenseReadyTimeout, "license-ready-timeout", 15*time.Minute, "How long to wait for the License CR to reach Active")
 	cmd.Flags().StringVar(&f.licenseMode, "license-mode", "connected", "License CR operationMode: connected or disconnected")
+	cmd.Flags().StringVar(&f.airgap, "airgap", "", "Airgap mode (propagated from e2e)")
 	return cmd
 }
 
@@ -113,9 +115,13 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 	}
 	fmt.Fprintln(out, "      ok")
 
+	// Ensure f5-bnk namespace exists before deploying resources into it.
+	if err := r.Apply(ctx, deploy.RenderNamespace("f5-bnk")); err != nil {
+		return fmt.Errorf("ensure f5-bnk namespace: %w", err)
+	}
+
 	// 2. Apply CNEInstance — FLO watches it and reconciles the downstream
-	//    BNK CRs (TMM, dssm, observer, ...). Lands in `default` per the
-	//    cne-instance.yaml.tmpl namespace (commit 0270d78).
+	//    BNK CRs (TMM, dssm, observer, ...). Lands in f5-bnk namespace.
 	//
 	//    CNEInstance's existence is what triggers FLO's crd-installer to
 	//    reconcile the BNK-specific CRDs (License, F5SPKVlan) — confirmed
@@ -131,6 +137,16 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 	if err := saveAndApply(ctx, r, repo, "artifacts/cne-instance-rendered.yaml", cne); err != nil {
 		return err
 	}
+
+	// 2b. Wait for all BNK pods to be Running (all containers ready)
+	//     or Completed before applying VLANs or License. Polls until
+	//     every pod in f5-bnk and f5-cne-core is healthy — handles
+	//     the "pods don't exist yet" case naturally (0 pods = keep polling).
+	fmt.Fprintln(out, "      Waiting for BNK pods to be ready ...")
+	if err := waitForPodsRunning(ctx, r, []string{"f5-bnk", "f5-cne-core"}, 8*time.Minute, out); err != nil {
+		fmt.Fprintf(out, "      WARN: %v\n", err)
+	}
+	fmt.Fprintln(out, "      BNK pods ready.")
 
 	// 3. Apply F5SPKVlan resources. TMM's bfd_watcher needs these to come
 	//    out of "ERROR: vlan name not found" and let the readiness gates
@@ -173,11 +189,11 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 		// ...: connect: connection refused". Wait for both the
 		// deployment to exist AND become Available before applying.
 		fmt.Fprintln(out, "      Waiting for f5-cne-controller deployment (hosts the admission webhook) ...")
-		if err := r.Kubectl(ctx, "wait", "-n", "default", "--for=create",
+		if err := r.Kubectl(ctx, "wait", "-n", "f5-bnk", "--for=create",
 			"deployment/f5-cne-controller", "--timeout=3m"); err != nil {
 			return fmt.Errorf("f5-cne-controller deployment was not created: %w", err)
 		}
-		if err := r.Wait(ctx, "default", "Available",
+		if err := r.Wait(ctx, "f5-bnk", "Available",
 			"deployment/f5-cne-controller", 5*time.Minute); err != nil {
 			return fmt.Errorf("f5-cne-controller deployment did not become Available: %w", err)
 		}
@@ -220,6 +236,19 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 	//    we applied in step 2 — confirmed empirically May 16, the License
 	//    CRD does NOT exist before a CNEInstance triggers reconciliation).
 	if err := applyLicenseCR(ctx, r, repo, p, f, out); err != nil {
+		if errors.Is(err, ErrLicenseManualStepRequired) {
+			fmt.Fprintln(out, "\n[6/6] Skipped — license not yet Active (offline mode).")
+			fmt.Fprintln(out, "      After completing the manual license step, if TMM does not reach 2/2 readiness gates, run:")
+			fmt.Fprintln(out, "        kubectl rollout restart -n f5-bnk daemonset/f5-tmm")
+			fmt.Fprintln(out, "        kubectl rollout status -n f5-bnk daemonset/f5-tmm --timeout=10m")
+			fmt.Fprintln(out, "\nDONE (license pending). Complete the license flow, then verify with `kubectl get cneinstance -A`.")
+			p.Status.Deploy = "license_pending"
+			p.Status.LastPhaseAt = time.Now().UTC()
+			if err := savePoC(repo, p, out); err != nil {
+				return err
+			}
+			return nil
+		}
 		return err
 	}
 
@@ -239,7 +268,7 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 	//    and RoutingDone goes True on its own.
 	if dpuVLANCount(p) > 0 {
 		fmt.Fprintln(out, "[6/6] Restarting f5-tmm DaemonSet (race-breaker for RoutingDone gate) ...")
-		if err := r.Kubectl(ctx, "rollout", "restart", "-n", "default",
+		if err := r.Kubectl(ctx, "rollout", "restart", "-n", "f5-bnk",
 			"daemonset/f5-tmm"); err != nil {
 			return fmt.Errorf("rollout restart f5-tmm: %w", err)
 		}
@@ -259,7 +288,7 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 		// i.e. RoutingDone+ConfigurationDone both True. That's exactly the
 		// condition we want to gate on.
 		fmt.Fprintln(out, "      restart issued; waiting for rollout to complete (each pod must flip RoutingDone before Ready) ...")
-		if err := r.Kubectl(ctx, "rollout", "status", "-n", "default",
+		if err := r.Kubectl(ctx, "rollout", "status", "-n", "f5-bnk",
 			"daemonset/f5-tmm", "--timeout=10m"); err != nil {
 			return fmt.Errorf("f5-tmm rollout did not converge to Ready: %w", err)
 		}
@@ -283,10 +312,10 @@ func runDeployCNE(ctx context.Context, out io.Writer, f *deployCNEFlags) error {
 	//    let the May 16 wizard run claim "DONE" while TMM was actually
 	//    stuck.
 	fmt.Fprintln(out, "      Waiting for CNEInstance Available (DaemonSet restart needs ~5 min to converge) ...")
-	fmt.Fprintln(out, "      Requires Multus CNI + NADs in default (sf-external, sf-internal — installed by `deploy network`).")
-	if err := r.Wait(ctx, "default", "Available",
+	fmt.Fprintln(out, "      Requires Multus CNI + NADs in f5-bnk (sf-external, sf-internal — installed by `deploy network`).")
+	if err := r.Wait(ctx, "f5-bnk", "Available",
 		"cneinstance/bnk-instance", f.cneReadyTimeout); err != nil {
-		return fmt.Errorf("CNEInstance not Available within %s — check `kubectl get cneinstance -A` and the per-component conditions in its .status. Common causes: license stuck (kubectl -n f5-cne-core get license), Multus DS not Ready (kubectl -n kube-system get ds kube-multus-ds), TMM image pull (kubectl -n default describe pod -l app=f5-tmm): %w", f.cneReadyTimeout, err)
+		return fmt.Errorf("CNEInstance not Available within %s — check `kubectl get cneinstance -A` and the per-component conditions in its .status. Common causes: license stuck (kubectl -n f5-cne-core get license), Multus DS not Ready (kubectl -n kube-system get ds kube-multus-ds), TMM image pull (kubectl -n f5-bnk describe pod -l app=f5-tmm): %w", f.cneReadyTimeout, err)
 	}
 	fmt.Fprintln(out, "      CNEInstance Available.")
 
@@ -315,6 +344,9 @@ func applyLicenseCR(ctx context.Context, r *deploy.Runner, repo string, p *poc.P
 	jwt, err := readJWT(jwtPath)
 	if err != nil {
 		return err
+	}
+	if f.airgap != "" {
+		f.licenseMode = "disconnected"
 	}
 	fmt.Fprintf(out, "[5/6] Applying License CR (mode=%s) ...\n", f.licenseMode)
 	fmt.Fprintln(out, "      Waiting for license CRD ...")
@@ -361,8 +393,28 @@ func applyLicenseCR(ctx context.Context, r *deploy.Runner, repo string, p *poc.P
 	// Verified on the wizard-deploy May 16 redeploy: quota created at
 	// T+0, License apply at T+0 hit "status unknown", retry at T+5min
 	// succeeded. Bounded retry: ~20 attempts × 5s = 100s total.
-	if err := applyWithQuotaRetry(ctx, r, licenseYAML, "f5-single-license-quota", 20, 5*time.Second, out); err != nil {
+	if err := applyWithQuotaRetry(ctx, r, licenseYAML, "f5-single-license-quota", 40, 5*time.Second, out); err != nil {
 		return fmt.Errorf("apply license CR: %w", err)
+	}
+	if f.airgap != "" {
+		// Airgap: wait for PendingVerification (returns immediately when
+		// seen — no arbitrary timeout), then run the disconnected flow.
+		fmt.Fprintln(out, "      License CR applied; waiting for PendingVerification ...")
+		if err := deploy.WaitForLicensePending(ctx, r,
+			deploy.LicenseCRName, deploy.SharedComponentNamespace,
+			3*time.Minute); err != nil {
+			return fmt.Errorf("license did not reach PendingVerification: %w", err)
+		}
+		fmt.Fprintln(out, "      License at PendingVerification — running disconnected license flow ...")
+		if err := runDisconnectedLicense(ctx, repo, p, f.airgap, r, out); err != nil {
+			if errors.Is(err, ErrLicenseManualStepRequired) {
+				fmt.Fprintln(out, "      License flow paused — manual step required (see instructions above).")
+				return ErrLicenseManualStepRequired
+			}
+			return fmt.Errorf("disconnected license flow: %w", err)
+		}
+		fmt.Fprintln(out, "      License Active.")
+		return nil
 	}
 	fmt.Fprintln(out, "      License CR applied; waiting for state=Active ...")
 	if err := deploy.WaitForLicenseActive(ctx, r,
@@ -370,10 +422,6 @@ func applyLicenseCR(ctx context.Context, r *deploy.Runner, repo string, p *poc.P
 		f.licenseReadyTimeout); err != nil {
 		if errors.Is(err, deploy.ErrLicensePendingVerification) {
 			fmt.Fprintln(out, "      WARN: license stuck at PendingVerification — disconnected-mode operator action required (see F5 docs §pg-install-bnk-dpu-kubernetes-flo-install-license-your-cluster-flo).")
-			// Proceed anyway — disconnected-mode flows expect the operator
-			// to finish licensing out-of-band; failing the phase would
-			// trap them. CNEInstance Available wait at step 6 will time
-			// out clearly if TMM never gets configured.
 			return nil
 		}
 		return fmt.Errorf("license did not reach Active within %s — `kubectl -n %s describe license %s`: %w",
@@ -459,4 +507,67 @@ func applyWithQuotaRetry(ctx context.Context, r *deploy.Runner, manifest, quotaN
 		time.Sleep(interval)
 	}
 	return fmt.Errorf("quota %s status never populated: %w", quotaName, applyErr)
+}
+
+// waitForPodsRunning polls until every pod in the given namespaces is
+// either Running with all containers ready (e.g. 7/7) or Completed.
+// Handles pods that don't exist yet (FLO hasn't reconciled them) by
+// requiring at least 1 pod per namespace before declaring ready.
+func waitForPodsRunning(ctx context.Context, r *deploy.Runner, namespaces []string, timeout time.Duration, out io.Writer) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		allReady := true
+		for _, ns := range namespaces {
+			ready, total, notReady := checkPodsInNamespace(ctx, r, ns)
+			if total == 0 {
+				allReady = false
+				continue
+			}
+			if notReady > 0 {
+				allReady = false
+				fmt.Fprintf(out, "      %s: %d/%d pods ready (%d not ready)\n", ns, ready, total, notReady)
+			}
+		}
+		if allReady {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("not all BNK pods reached Running/Completed within %s", timeout)
+		}
+		time.Sleep(10 * time.Second)
+	}
+}
+
+// checkPodsInNamespace returns (readyCount, totalCount, notReadyCount).
+// A pod is ready if it is Running with all containers ready or Completed.
+func checkPodsInNamespace(ctx context.Context, r *deploy.Runner, ns string) (ready, total, notReady int) {
+	out, err := r.KubectlCapture(ctx, "-n", ns, "get", "pods", "--no-headers")
+	if err != nil {
+		return 0, 0, 0
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		total++
+		status := fields[2]
+		readyCounts := fields[1] // e.g. "7/7" or "0/2"
+		if status == "Completed" {
+			ready++
+			continue
+		}
+		if status == "Running" {
+			parts := strings.SplitN(readyCounts, "/", 2)
+			if len(parts) == 2 && parts[0] == parts[1] {
+				ready++
+				continue
+			}
+		}
+		notReady++
+	}
+	return ready, total, notReady
 }

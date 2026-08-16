@@ -81,6 +81,24 @@ func (r *Runner) ApplyInNamespace(ctx context.Context, namespace, manifest strin
 	return nil
 }
 
+// ApplyServerSide pipes manifest YAML to `kubectl apply --server-side -f -`.
+// Server-side apply uses managedFields instead of the last-applied-configuration
+// annotation, avoiding the 262144-byte annotation limit on large CRDs
+// (e.g. tigera-operator's Installation CRD). It's also idempotent —
+// safe to re-run unlike kubectl create.
+func (r *Runner) ApplyServerSide(ctx context.Context, manifest string) error {
+	args := r.kubectlArgs("apply", "--server-side", "--force-conflicts", "-f", "-")
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd.Stdin = strings.NewReader(manifest)
+	var out bytes.Buffer
+	cmd.Stdout = io.MultiWriter(r.Out, &out)
+	cmd.Stderr = cmd.Stdout
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("kubectl apply --server-side: %w\n%s", err, out.String())
+	}
+	return nil
+}
+
 // Kubectl runs an arbitrary kubectl subcommand. Errors include the
 // captured output for diagnostics.
 func (r *Runner) Kubectl(ctx context.Context, args ...string) error {
@@ -257,6 +275,49 @@ func (r *Runner) HelmUpgrade(ctx context.Context, release, chart, repoURL, names
 	cmd.Stderr = cmd.Stdout
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("helm upgrade %s: %w\n%s", release, err, out.String())
+	}
+	return nil
+}
+
+// HelmUpgradeLocal installs a helm chart from a local tarball. The
+// tarball is bind-mounted into the container. Used in airgap mode
+// where OCI/HTTP chart pulls are unavailable.
+func (r *Runner) HelmUpgradeLocal(ctx context.Context, release, chartTarball, namespace, valuesYAML string, extraArgs ...string) error {
+	dockerArgs := []string{
+		"run", "--rm",
+		"-v", r.KubeconfigPath + ":/kubeconfig:ro",
+		"-v", chartTarball + ":/chart.tgz:ro",
+		"--network=host",
+		"-e", "KUBECONFIG=/kubeconfig",
+	}
+	if valuesYAML != "" {
+		tmp, err := os.CreateTemp("", "dpubnkctl-helm-values-*.yaml")
+		if err != nil {
+			return err
+		}
+		defer os.Remove(tmp.Name())
+		if _, err := tmp.WriteString(valuesYAML); err != nil {
+			tmp.Close()
+			return err
+		}
+		tmp.Close()
+		dockerArgs = append(dockerArgs, "-v", tmp.Name()+":/values.yaml:ro")
+	}
+	dockerArgs = append(dockerArgs, version.K8sToolsImage, "helm",
+		"upgrade", "--install", release, "/chart.tgz",
+		"--namespace", namespace, "--create-namespace",
+		"--wait", "--timeout=10m")
+	if valuesYAML != "" {
+		dockerArgs = append(dockerArgs, "-f", "/values.yaml")
+	}
+	dockerArgs = append(dockerArgs, extraArgs...)
+
+	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
+	var out bytes.Buffer
+	cmd.Stdout = io.MultiWriter(r.Out, &out)
+	cmd.Stderr = cmd.Stdout
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("helm upgrade (local) %s: %w\n%s", release, err, out.String())
 	}
 	return nil
 }

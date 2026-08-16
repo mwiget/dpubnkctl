@@ -167,3 +167,27 @@ func PullAndApplyCWCCerts(ctx context.Context, r *Runner, auth OCIAuth, certGenC
 	}
 	return ApplyCWCCerts(ctx, r, workDir, namespace)
 }
+
+// ApplyCWCCertsFromLocal is the airgap equivalent of PullAndApplyCWCCerts.
+// Instead of pulling the cert-gen chart from repo.f5.com, it uses a local
+// chart tarball pre-staged during Phase 0.
+func ApplyCWCCertsFromLocal(ctx context.Context, r *Runner, chartTarball, workDir, namespace string, out io.Writer) error {
+	if err := extractLocalCertGen(ctx, chartTarball, workDir); err != nil {
+		return err
+	}
+	if err := GenerateCWCCerts(ctx, workDir, namespace, out); err != nil {
+		return err
+	}
+	return ApplyCWCCerts(ctx, r, workDir, namespace)
+}
+
+func extractLocalCertGen(ctx context.Context, chartTarball, workDir string) error {
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, "tar", "xzf", chartTarball, "-C", workDir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("extract cert-gen chart: %w\n%s", err, out)
+	}
+	return nil
+}

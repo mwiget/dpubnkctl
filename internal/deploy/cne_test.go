@@ -80,7 +80,7 @@ func TestRenderF5SPKVlans_AggregatesByName(t *testing.T) {
 		"- 10.10.41.5",
 		"- 10.10.41.6",
 		"prefixlen_v4: 24",
-		`auto_lasthop: "AUTO_LASTHOP_ENABLED"`,
+		"namespace: f5-bnk",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("F5SPKVlans missing %q\n%s", want, out)
@@ -97,7 +97,7 @@ func TestRenderGatewayClass(t *testing.T) {
 		"apiVersion: gateway.networking.k8s.io/v1",
 		"kind: GatewayClass",
 		"name: bnk-gatewayclass",
-		"controllerName: f5.com/default-f5-cne-controller",
+		"controllerName: \"f5.com/f5-bnk-f5-cne-controller\"",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("GatewayClass missing %q in:\n%s", want, out)

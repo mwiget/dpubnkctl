@@ -82,13 +82,16 @@ func WaitForLicenseActive(ctx context.Context, r *Runner, name, namespace string
 		switch state {
 		case "Active":
 			return nil
-		case "Registering":
-			// CWC is talking to F5's licensing server to register the
-			// cluster's digital asset. First-time registration on a
-			// connected-mode cluster — takes 5-15 minutes. Keep polling.
+		case "Registering", "Verifying":
+			// Registering: CWC is talking to F5's licensing server to
+			// register the cluster's digital asset. First-time registration
+			// on a connected-mode cluster — takes 5-15 minutes.
+			// Verifying: CWC is processing the license manifest after a
+			// disconnected-mode /receipt POST. Transitional — flips to
+			// Active within seconds to a few minutes. Keep polling.
 			if time.Now().After(deadline) {
-				return fmt.Errorf("license %s/%s stuck at Registering after %s (CWC could not complete device registration; check `kubectl -n %s describe license %s` for the CWC error)",
-					namespace, name, timeout, namespace, name)
+				return fmt.Errorf("license %s/%s stuck at %s after %s (check `kubectl -n %s describe license %s` for the CWC error)",
+					namespace, name, state, timeout, namespace, name)
 			}
 		case "PendingVerification":
 			// disconnected-mode customers stay here forever until they
@@ -120,3 +123,38 @@ func WaitForLicenseActive(ctx context.Context, r *Runner, name, namespace string
 // the operator's manual licensing-server registration call. Callers
 // should typically log + continue rather than fail the deploy.
 var ErrLicensePendingVerification = fmt.Errorf("license stuck at PendingVerification (disconnected-mode operator action required)")
+
+// WaitForLicensePending polls until the license reaches
+// PendingVerification (or Active — in case it somehow resolves on its
+// own). Used in airgap/disconnected mode where we know the license will
+// never reach Active without the automated flow, so there's no point
+// waiting for a timeout. Returns nil as soon as PendingVerification or
+// Active is seen.
+func WaitForLicensePending(ctx context.Context, r *Runner, name, namespace string, timeout time.Duration) error {
+	if name == "" {
+		name = LicenseCRName
+	}
+	if namespace == "" {
+		namespace = SharedComponentNamespace
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		out, err := r.KubectlCapture(ctx, "-n", namespace, "get",
+			"license.k8s.f5net.com", name,
+			"-o", "jsonpath={.status.state}")
+		state := strings.TrimSpace(out)
+		switch state {
+		case "PendingVerification", "Active":
+			return nil
+		case "":
+			if err != nil && !strings.Contains(err.Error(), "NotFound") {
+				return fmt.Errorf("kubectl get license %s/%s: %w", namespace, name, err)
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("license %s/%s did not reach PendingVerification within %s (last state %q)",
+				namespace, name, timeout, state)
+		}
+		time.Sleep(5 * time.Second)
+	}
+}

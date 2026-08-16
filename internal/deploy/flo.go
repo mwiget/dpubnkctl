@@ -19,6 +19,7 @@ type FLOInputs struct {
 	Namespace                string // FLO release namespace (default f5-operators)
 	SharedComponentNamespace string // CWC + license + observer namespace (default f5-cne-core)
 	ClusterIssuer            string // cert-manager ClusterIssuer FLO uses for internal CAs
+	ImagePullPolicy          string // Always or IfNotPresent (default Always)
 }
 
 // RenderFLOValues substitutes the embedded flo-values.yaml.tmpl. Caller
@@ -33,6 +34,9 @@ func RenderFLOValues(in FLOInputs) (string, error) {
 	}
 	if in.ClusterIssuer == "" {
 		in.ClusterIssuer = "bnk-ca-cluster-issuer"
+	}
+	if in.ImagePullPolicy == "" {
+		in.ImagePullPolicy = "Always"
 	}
 	raw, err := embedded.Templates.ReadFile("templates/flo-values.yaml.tmpl")
 	if err != nil {
@@ -76,11 +80,16 @@ metadata:
 spec:
   isCA: true
   commonName: bnk-ca
+  subject:
+    organizations:
+      - F5 Networks
+    organizationalUnits:
+      - BNK
   secretName: bnk-ca-secret
   duration: 87600h
   privateKey:
-    algorithm: ECDSA
-    size: 256
+    algorithm: RSA
+    size: 2048
   issuerRef:
     name: selfsigned-bnk
     kind: ClusterIssuer

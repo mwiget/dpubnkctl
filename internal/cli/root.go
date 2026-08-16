@@ -59,6 +59,8 @@ before driving a PoC.`,
 		newSamplesCmd(),
 		newWizardCmd(),
 		newVersionCmd(),
+		newAirgapCmd(),
+		newLicenseCmd(),
 	)
 
 	return root
@@ -93,6 +95,7 @@ var runtimeRequiredCommands = []string{
 	"dpubnkctl destroy",
 	"dpubnkctl release-manifest pull",
 	"dpubnkctl gateway resync",
+	"dpubnkctl airgap",
 }
 
 func commandNeedsRuntime(path string) bool {

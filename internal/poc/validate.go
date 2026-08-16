@@ -323,6 +323,18 @@ func ValidateForPhase(p *PoC, repoDir string, minPhase Phase) ValidationResult {
 		c.warn(PhaseDeploy, "bnk.internal_selfip is empty — same shape as external_selfip, internal-side")
 	}
 
+	// NFS validation — required for BNK storage (replaces local-path).
+	if p.Network.NFSServer == "" {
+		c.warn(PhaseDeploy, "network.nfs_server is empty — required for BNK PVC storage; set to the NFS server IP (e.g. 192.168.100.1 for airgap, auto-set by airgap setup)")
+	} else if net.ParseIP(p.Network.NFSServer) == nil {
+		c.err(PhaseDeploy, "network.nfs_server %q is not a valid IP", p.Network.NFSServer)
+	}
+	if p.Network.NFSPath == "" {
+		c.warn(PhaseDeploy, "network.nfs_path is empty — required for BNK PVC storage (default /srv/nfs/f5-bnk, auto-set by airgap setup)")
+	} else if !filepath.IsAbs(p.Network.NFSPath) {
+		c.err(PhaseDeploy, "network.nfs_path %q is not an absolute path", p.Network.NFSPath)
+	}
+
 	return r
 }
 

@@ -15,7 +15,7 @@ sharedComponentNamespace: {{.SharedComponentNamespace}}
 image:
   repository: repo.f5.com/images
   name: f5-lifecycle-operator
-  pullPolicy: Always
+  pullPolicy: {{.ImagePullPolicy}}
 
 fluentbit_sidecar:
   enabled: true
@@ -41,7 +41,7 @@ fluentbit_sidecar:
 "f5-ipam-operator":
   image:
     repository: repo.f5.com/images
-    pullPolicy: Always
+    pullPolicy: {{.ImagePullPolicy}}
   namespace: {{.Namespace}}
   nameOverride: f5-ipam-operator
   fullnameOverride: f5-ipam-operator
