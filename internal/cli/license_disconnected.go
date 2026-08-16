@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -58,6 +59,7 @@ func runDisconnectedLicense(ctx context.Context, repo string, p *poc.PoC, airgap
 	if err := extractCWCCerts(ctx, c); err != nil {
 		return err
 	}
+	defer cleanupCWCCerts(ctx, c)
 
 	// Step 2: Get CWC auth token.
 	fmt.Fprintln(out, "      [license] Getting CWC auth token ...")
@@ -127,7 +129,7 @@ func runDisconnectedLicense(ctx context.Context, repo string, p *poc.PoC, airgap
 
 	// ── Branch: online vs offline ──────────────────────────────────
 	if airgapMode == airgap.ModeOffline {
-		return handleOfflineLicenseStop(repo, assetID, jwt, reportData, out)
+		return handleOfflineLicenseStop(repo, assetID, jwtPath, reportData, out)
 	}
 
 	// Online mode: POST config report to F5 licensing server from jumphost.
@@ -137,7 +139,15 @@ func runDisconnectedLicense(ctx context.Context, repo string, p *poc.PoC, airgap
 // handleOfflineLicenseStop saves the config report and asset ID to the
 // PoC artifacts directory and prints instructions for the operator to
 // complete licensing from an internet-connected machine.
-func handleOfflineLicenseStop(repo, assetID, jwt string, reportData []byte, out io.Writer) error {
+//
+// Takes jwtPath, not the JWT itself, on purpose. Everything written to
+// `out` here is captured by e2e into artifacts/logs/<phase>.log at 0644,
+// which is not covered by the PoC .gitignore — the same leak the
+// gitignore already guards against for artifacts/flo-values-rendered.yaml
+// ("contains the raw JWT — keep it out"). The printed command reads the
+// token from disk at run time instead so the entitlement credential
+// never reaches the log.
+func handleOfflineLicenseStop(repo, assetID, jwtPath string, reportData []byte, out io.Writer) error {
 	artifactsDir := filepath.Join(repo, "artifacts")
 	if err := os.MkdirAll(artifactsDir, 0o755); err != nil {
 		return err
@@ -161,15 +171,18 @@ func handleOfflineLicenseStop(repo, assetID, jwt string, reportData []byte, out 
 	fmt.Fprintf(out, "      Config report saved to: %s\n", reportPath)
 	fmt.Fprintf(out, "      DigitalAssetID: %s\n", assetID)
 	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "      1. Copy the config report to an internet-connected machine.")
-	fmt.Fprintln(out, "      2. Run this curl command:")
+	fmt.Fprintln(out, "      1. Copy BOTH of these to an internet-connected machine:")
+	fmt.Fprintf(out, "           %s\n", reportPath)
+	fmt.Fprintf(out, "           %s   (your licensing JWT — treat as a credential)\n", jwtPath)
+	fmt.Fprintln(out, "      2. Run this curl command there, with both files in the")
+	fmt.Fprintln(out, "         working directory:")
 	fmt.Fprintln(out, "")
-	fmt.Fprintf(out, "         curl -sk -X POST https://product.apis.f5.com/ee/v1/entitlements/telemetry \\\n")
+	fmt.Fprintf(out, "         curl -sS -X POST https://product.apis.f5.com/ee/v1/entitlements/telemetry \\\n")
 	fmt.Fprintf(out, "           -H \"Content-Type: application/json\" \\\n")
 	fmt.Fprintf(out, "           -H \"F5-DigitalAssetId: %s\" \\\n", assetID)
 	fmt.Fprintf(out, "           -H \"User-Agent: SPK\" \\\n")
-	fmt.Fprintf(out, "           -H \"Authorization: Bearer %s\" \\\n", jwt)
-	fmt.Fprintf(out, "           -d @%s \\\n", reportPath)
+	fmt.Fprintf(out, "           -H \"Authorization: Bearer $(cat %s)\" \\\n", filepath.Base(jwtPath))
+	fmt.Fprintf(out, "           -d @%s \\\n", filepath.Base(reportPath))
 	fmt.Fprintf(out, "           -o license-manifest.json\n")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "      3. Copy license-manifest.json back to the jumphost.")
@@ -185,15 +198,32 @@ func handleOfflineLicenseStop(repo, assetID, jwt string, reportData []byte, out 
 // jumphost has internet: POST to F5, push manifest, POST receipt.
 func handleOnlineLicensePost(ctx context.Context, c *ssh.Client, r *deploy.Runner, repo, assetID, jwt string, reportData []byte, pfCancel context.CancelFunc, out io.Writer) error {
 	localReport := "/tmp/config-report.json"
+	localManifest := "/tmp/license-manifest.json"
+	// These two are the JUMPHOST's copies — cleanupCWCCerts only reaches
+	// the control-plane host over SSH, so they need their own sweep. The
+	// manifest is a signed entitlement and the report is a cluster
+	// inventory; neither should outlive the command in a shared /tmp.
+	defer func() {
+		os.Remove(localReport)
+		os.Remove(localManifest)
+	}()
 	if err := os.WriteFile(localReport, reportData, 0o600); err != nil {
 		return fmt.Errorf("write local config-report.json: %w", err)
 	}
 
 	// POST config report to F5 licensing server.
 	fmt.Fprintln(out, "      [license] POSTing config report to F5 licensing server ...")
-	localManifest := "/tmp/license-manifest.json"
+	// -sS, never -k: this carries the licensing JWT as a bearer token to a
+	// public F5 endpoint with a valid public chain. Disabling verification
+	// would let anything on-path present its own cert and harvest the
+	// entitlement credential.
+	// -w %{http_code}: curl exits 0 on a 4xx/5xx, so without this the
+	// error body lands in localManifest and looks like a manifest. The
+	// next step spends the CWC /receipt one-shot, so the status has to
+	// be checked here. (-w rather than --fail-with-body, which needs
+	// curl >= 7.76 and would discard the body we want in the error.)
 	curlArgs := []string{
-		"-sk", "-X", "POST",
+		"-sS", "-X", "POST",
 		"https://product.apis.f5.com/ee/v1/entitlements/telemetry",
 		"-H", "Content-Type: application/json",
 		"-H", "F5-DigitalAssetId: " + assetID,
@@ -201,27 +231,26 @@ func handleOnlineLicensePost(ctx context.Context, c *ssh.Client, r *deploy.Runne
 		"-H", "Authorization: Bearer " + jwt,
 		"-d", "@" + localReport,
 		"-o", localManifest,
+		"-w", "%{http_code}",
 	}
 	curlCmd := exec.CommandContext(ctx, "curl", curlArgs...)
 	curlOut, err := curlCmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("F5 licensing POST failed: %w\nOutput: %s", err, string(curlOut))
 	}
-	mfStat, err := os.Stat(localManifest)
-	if err != nil || mfStat.Size() < 100 {
-		size := int64(0)
-		if mfStat != nil {
-			size = mfStat.Size()
-		}
-		return fmt.Errorf("F5 licensing server returned empty/invalid response (%d bytes) — check JWT validity and internet connectivity on jumphost", size)
+	status := strings.TrimSpace(string(curlOut))
+	if status != "200" && status != "201" {
+		body, _ := os.ReadFile(localManifest)
+		return fmt.Errorf("F5 licensing server returned HTTP %s — check JWT validity and jumphost connectivity.\nResponse: %s",
+			status, truncateForErr(body, 500))
 	}
-	fmt.Fprintf(out, "      [license] license-manifest.json received (%d bytes)\n", mfStat.Size())
 
 	// Push manifest to host and POST receipt.
 	mfData, err := os.ReadFile(localManifest)
 	if err != nil {
 		return fmt.Errorf("read local license-manifest.json: %w", err)
 	}
+	fmt.Fprintf(out, "      [license] license-manifest.json received (%d bytes)\n", len(mfData))
 	if err := postReceiptAndWait(ctx, c, r, mfData, pfCancel, out); err != nil {
 		return err
 	}
@@ -233,9 +262,24 @@ func handleOnlineLicensePost(ctx context.Context, c *ssh.Client, r *deploy.Runne
 // for the license to reach Active. Shared by both the online flow
 // and the `license apply-receipt` command.
 func postReceiptAndWait(ctx context.Context, c *ssh.Client, r *deploy.Runner, manifestData []byte, pfCancel context.CancelFunc, out io.Writer) error {
-	// Push manifest to host via SFTP.
+	// Last gate before the one-shot. Whatever reached us — an HTTP error
+	// body from F5, a truncated file the operator carried back by hand, an
+	// HTML captive-portal page — has to be a real manifest, because CWC
+	// accepts exactly one /receipt and recovering from a rejected one is a
+	// manual support exercise. Both entry points (the online flow and
+	// `license apply-receipt`) funnel through here, so this is the one
+	// place the check has to exist.
+	payload, err := licenseManifestPayload(manifestData)
+	if err != nil {
+		return fmt.Errorf("refusing to spend the CWC /receipt one-shot: %w", err)
+	}
+
+	// Push the extracted manifest via SFTP. We send the payload itself
+	// rather than the whole response so the host no longer needs `jq` —
+	// it was an unchecked prerequisite, and if it was missing the shell
+	// substituted an empty body and burned the one-shot.
 	fmt.Fprintln(out, "      [license] Pushing license manifest to host ...")
-	if err := c.PushBytes(ctx, manifestData, "/tmp/license-manifest.json"); err != nil {
+	if err := c.PushBytes(ctx, payload, "/tmp/license-manifest.json"); err != nil {
 		return fmt.Errorf("SFTP push license-manifest.json: %w", err)
 	}
 
@@ -246,7 +290,7 @@ func postReceiptAndWait(ctx context.Context, c *ssh.Client, r *deploy.Runner, ma
 		`-H "Authorization: Bearer $(kubectl get secret cwc-auth-token -n f5-cne-core -o jsonpath='{.data.token}' | base64 -d)" ` +
 		`-H "Content-Type: application/json" ` +
 		`https://localhost:38081/receipt ` +
-		`-d "$(cat /tmp/license-manifest.json | jq -r .manifest)"`
+		`--data-binary @/tmp/license-manifest.json`
 	receiptRes := c.Run(ctx, receiptCurl)
 	if !receiptRes.OK() {
 		return fmt.Errorf("CWC /receipt POST failed (ONE SHOT — do not retry, manual intervention required): exit %d: %s\nstdout: %s",
@@ -271,6 +315,61 @@ func postReceiptAndWait(ctx context.Context, c *ssh.Client, r *deploy.Runner, ma
 
 // ── Shared helpers ─────────────────────────────────────────────────
 
+// licenseManifestPayload validates an F5 licensing response and returns
+// the signed manifest inside it — the exact bytes CWC /receipt expects.
+//
+// The old check was `len(data) >= 100`, which any HTTP error body, HTML
+// error page, or half-copied file clears. Since /receipt is a one-shot,
+// the precondition worth enforcing is the real one: valid JSON carrying
+// a non-empty `manifest`.
+func licenseManifestPayload(data []byte) ([]byte, error) {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, fmt.Errorf("license manifest is empty")
+	}
+	var resp struct {
+		Manifest string `json:"manifest"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("license manifest is not JSON (%v) — first bytes: %s",
+			err, truncateForErr(data, 200))
+	}
+	if strings.TrimSpace(resp.Manifest) == "" {
+		return nil, fmt.Errorf("license manifest JSON has no `manifest` field — F5 returned something else: %s",
+			truncateForErr(data, 300))
+	}
+	return []byte(resp.Manifest), nil
+}
+
+// truncateForErr renders up to n bytes of a response for an error
+// message, collapsing newlines so a multi-line HTML page stays readable.
+func truncateForErr(b []byte, n int) string {
+	s := strings.Join(strings.Fields(string(b)), " ")
+	if len(s) > n {
+		return s[:n] + "..."
+	}
+	return s
+}
+
+// cwcTmpFiles are the credential-bearing scratch files this flow drops on
+// the control-plane host. cleanupCWCCerts removes them; every caller of
+// extractCWCCerts must defer it.
+var cwcTmpFiles = []string{
+	"/tmp/cwc-ca.crt",
+	"/tmp/cwc-client.crt",
+	"/tmp/cwc-client.key",
+	"/tmp/config-report.json",
+	"/tmp/license-manifest.json",
+}
+
+// cleanupCWCCerts removes the CWC client certificate, its private key, and
+// the licensing scratch files from the host. Runs on a cancellation-immune
+// context so an interrupted deploy still cleans up — the private key is the
+// point, leaving it behind hands every local user on that host the ability
+// to talk to CWC's licensing API as this cluster.
+func cleanupCWCCerts(ctx context.Context, c *ssh.Client) {
+	c.Run(context.WithoutCancel(ctx), "rm -f "+strings.Join(cwcTmpFiles, " "))
+}
+
 func extractCWCCerts(ctx context.Context, c *ssh.Client) error {
 	certCmds := []struct {
 		field  string
@@ -281,8 +380,12 @@ func extractCWCCerts(ctx context.Context, c *ssh.Client) error {
 		{"client-key", "/tmp/cwc-client.key"},
 	}
 	for _, cc := range certCmds {
+		// umask 077 before the redirect: the shell creates the target
+		// before base64 writes to it, so the mode has to be right at
+		// creation time — a chmod afterwards leaves a readable window,
+		// and one of these three files is a TLS private key.
 		cmd := fmt.Sprintf(
-			`kubectl get secret cwc-license-client-certs -n f5-cne-core -o jsonpath='{.data.%s}' | base64 -d > %s`,
+			`umask 077 && kubectl get secret cwc-license-client-certs -n f5-cne-core -o jsonpath='{.data.%s}' | base64 -d > %s`,
 			cc.field, cc.remote)
 		res := c.Run(ctx, cmd)
 		if !res.OK() {

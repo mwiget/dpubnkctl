@@ -87,8 +87,13 @@ func runLicenseApplyReceipt(ctx context.Context, out io.Writer, f *licenseReceip
 	if err != nil {
 		return fmt.Errorf("read manifest %s: %w", f.manifest, err)
 	}
-	if len(mfData) < 100 {
-		return fmt.Errorf("manifest file %s is too small (%d bytes) — verify the curl command produced a valid response", f.manifest, len(mfData))
+	// Validate before we SSH anywhere. The operator hand-carried this file
+	// between machines, so a truncated copy or a saved HTTP error page is
+	// the likely failure — and the /receipt POST it feeds is a one-shot.
+	// postReceiptAndWait re-checks, but failing here keeps a bad file from
+	// costing a round trip to the cluster.
+	if _, err := licenseManifestPayload(mfData); err != nil {
+		return fmt.Errorf("manifest %s is not usable: %w", f.manifest, err)
 	}
 	fmt.Fprintf(out, "Manifest: %s (%d bytes)\n\n", f.manifest, len(mfData))
 
@@ -109,6 +114,7 @@ func runLicenseApplyReceipt(ctx context.Context, out io.Writer, f *licenseReceip
 	if err := extractCWCCerts(ctx, c); err != nil {
 		return err
 	}
+	defer cleanupCWCCerts(ctx, c)
 
 	// Start port-forward.
 	fmt.Fprintln(out, "[2/4] Starting CWC port-forward ...")
