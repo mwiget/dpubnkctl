@@ -14,6 +14,14 @@ DPU_IP="192.168.100.2"
 ssh -o StrictHostKeyChecking=no -o BatchMode=yes ubuntu@"$HOST_IP" \
   "ssh-keygen -f /home/ubuntu/.ssh/known_hosts -R $DPU_IP 2>/dev/null || true"
 
+# Sync DPU clock to host — BFB flash resets the DPU clock and without NTP
+# it drifts. BNK uses 1-hour TLS certs; any skew causes gRPC failures.
+echo "  syncing DPU clock to host..."
+HOST_TIME=$(ssh -o StrictHostKeyChecking=no -o BatchMode=yes ubuntu@"$HOST_IP" "date -u +%Y-%m-%dT%H:%M:%SZ")
+ssh -o StrictHostKeyChecking=no -o BatchMode=yes ubuntu@"$HOST_IP" \
+  "export SSHPASS='$DPU_PASS'; sshpass -e ssh -o StrictHostKeyChecking=no ubuntu@$DPU_IP \"sudo date -s '$HOST_TIME' && sudo hwclock --systohc\""
+echo "  DPU clock synced to $HOST_TIME"
+
 # Run OVS bridge setup on DPU via host hop
 ssh -o StrictHostKeyChecking=no -o BatchMode=yes ubuntu@"$HOST_IP" \
   "export SSHPASS='$DPU_PASS'; sshpass -e ssh -o StrictHostKeyChecking=no ubuntu@$DPU_IP 'bash -s'" <<'DPUSCRIPT'
